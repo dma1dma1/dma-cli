@@ -39,14 +39,27 @@ func zoneCard(id string) string { return "card:" + id }
 func zoneColumn(i int) string   { return fmt.Sprintf("col:%d", i) }
 func zoneOption(i int) string   { return fmt.Sprintf("opt:%d", i) }
 
-// panelHeight is how much vertical space the session panel takes. It is a third
-// of the screen by default, all of it when expanded.
+// panelHeight is how much vertical space the session panel takes. It is all of
+// the screen when expanded.
+//
+// Otherwise it takes about two fifths: an agent UI has its own input box and
+// footer, so a third of a normal window leaves it too few rows to be readable,
+// while the columns stay legible with the remainder.
 func (m Model) panelHeight() int {
 	if m.previewFull {
 		return m.height - 1
 	}
-	h := m.height / 3
-	return clamp(h, 10, 18)
+	return clamp(m.height*2/5, 12, 26)
+}
+
+// previewDims is the size the agent's terminal should be rendered at: the
+// panel's interior, minus the rows the chips, rule and input bar occupy.
+//
+// Agents are sized to this rather than to some default, because a tmux session
+// with no client has no natural size and would otherwise draw into 80 columns.
+func (m Model) previewDims() (cols, rows int) {
+	h := m.panelHeight()
+	return max(m.width-4, 20), max(h-2-3, 3)
 }
 
 // viewPanel renders the persistent bottom panel: the three selectors, the live

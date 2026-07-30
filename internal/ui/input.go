@@ -115,9 +115,11 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "e":
-		// Expand the session panel to the whole screen and back.
+		// Expand the session panel to the whole screen and back. The agents are
+		// resized to match, so the expanded view is genuinely more room rather
+		// than the same narrow render in a bigger frame.
 		m.previewFull = !m.previewFull
-		return m, previewCmd(m.selected())
+		return m, tea.Batch(m.syncAgentSize(), previewCmd(m.selected()))
 
 	case "a":
 		s := m.selected()
@@ -251,9 +253,12 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if r, ok := m.cfg.Repo(repo); ok {
 			base = r.BaseBranch
 		}
+		cols, rows := m.previewDims()
 		req := ops.CreateRequest{
 			Title:  task,
 			RepoID: repo,
+			Cols:   cols,
+			Rows:   rows,
 			// A new session joins whatever project the board is filtered to,
 			// which is what the project selector means when creating work.
 			Group:         m.projectFilter,

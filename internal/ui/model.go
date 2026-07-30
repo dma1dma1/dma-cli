@@ -77,6 +77,11 @@ type Model struct {
 	statusErr  bool
 	statusAt   time.Time
 
+	// lastPreviewCols/Rows are the size agents were last told to render at, so a
+	// resize is only issued when it actually changes.
+	lastPreviewCols int
+	lastPreviewRows int
+
 	lastClickID string
 	lastClickAt time.Time
 
@@ -186,7 +191,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.layoutSizes()
-		return m, nil
+		return m, m.syncAgentSize()
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -315,10 +320,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, errStatus(fmt.Errorf("attach: %w", msg.err))
 		}
-		return m, previewCmd(m.selected())
+		// Attaching let tmux resize the window to fill the real terminal; put it
+		// back to the preview size now that nothing is attached.
+		m.lastPreviewCols, m.lastPreviewRows = 0, 0
+		return m, tea.Batch(m.syncAgentSize(), previewCmd(m.selected()))
 	}
 
 	return m, nil
+}
+
+// syncAgentSize tells every agent to render at the current preview size, when
+// that size has changed. Agents reflow on resize, so this must not fire on a
+// timer.
+func (m *Model) syncAgentSize() tea.Cmd {
+	cols, rows := m.previewDims()
+	if cols == m.lastPreviewCols && rows == m.lastPreviewRows {
+		return nil
+	}
+	m.lastPreviewCols, m.lastPreviewRows = cols, rows
+	return resizeSessionsCmd(m.sessions, cols, rows)
 }
 
 func (m Model) refreshDiff() tea.Cmd {
@@ -500,7 +520,9 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	if len(msg.res.Warnings) > 0 {
 		text += " — " + strings.Join(msg.res.Warnings, "; ")
 	}
-	return m, tea.Batch(status(text), observeCmd(m.sessions), previewCmd(s))
+	cols, rows := m.previewDims()
+	return m, tea.Batch(status(text), observeCmd(m.sessions), previewCmd(s),
+		resizeSessionsCmd([]*core.Session{s}, cols, rows))
 }
 
 func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {

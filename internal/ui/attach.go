@@ -29,6 +29,10 @@ func prepareAttach(session string) {
 		runTmux(ctx, "bind-key", "-n", detachTmuxKey, "detach-client")
 	}
 
+	// While attached the window must follow the real terminal, not the small
+	// size the preview pins it to.
+	_ = tmuxx.SetWindowSize(ctx, session, tmuxx.SizeLatest)
+
 	runTmux(ctx, "set-option", "-t", session, "status", "on")
 	runTmux(ctx, "set-option", "-t", session, "status-style", "bg=colour214,fg=colour232,bold")
 	runTmux(ctx, "set-option", "-t", session, "status-left-length", "80")
@@ -44,6 +48,8 @@ func prepareAttach(session string) {
 func restoreAfterAttach(session string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// Back to a fixed size; the board re-applies the preview dimensions.
+	_ = tmuxx.SetWindowSize(ctx, session, tmuxx.SizeManual)
 	for _, opt := range []string{
 		"status-style", "status-left", "status-left-length",
 		"status-right", "pane-active-border-style", "status",

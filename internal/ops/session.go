@@ -28,6 +28,10 @@ type CreateRequest struct {
 	// HookURL points at the running board's hook listener. Empty disables hook
 	// installation, leaving the session on liveness-only state reporting.
 	HookURL string
+	// Cols and Rows size the agent's terminal. They should match the area the
+	// board will render it into: a detached tmux session otherwise defaults to
+	// 80x24 and the agent draws its UI into a narrow strip.
+	Cols, Rows int
 }
 
 // CreateResult carries the new session plus any non-fatal bootstrap warnings.
@@ -101,7 +105,7 @@ func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req
 	tmuxName := tmuxx.SafeName(repo.ID + "-" + branch)
 	tmuxName = uniqueTmux(ctx, tmuxName)
 
-	if err := tmuxx.NewSession(ctx, tmuxName, worktree); err != nil {
+	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows); err != nil {
 		// Roll the worktree back rather than leaving a half-created session.
 		_ = gitx.RemoveWorktree(ctx, repo.Path, worktree, true)
 		_ = gitx.DeleteBranch(ctx, repo.Path, branch, true)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,7 +277,7 @@ func TestObserveReportsLiveness(t *testing.T) {
 	name := "dma-test-observe"
 	ctx := context.Background()
 	_ = tmuxx.KillSession(ctx, name)
-	if err := tmuxx.NewSession(ctx, name, os.TempDir()); err != nil {
+	if err := tmuxx.NewSession(ctx, name, os.TempDir(), 120, 30); err != nil {
 		t.Skipf("cannot start tmux session: %v", err)
 	}
 	defer tmuxx.KillSession(ctx, name)
@@ -385,4 +386,56 @@ func TestShipGitHalf(t *testing.T) {
 	if n != "1" {
 		t.Errorf("commit count = %s, want 1 — an empty commit was created", n)
 	}
+}
+
+// A detached tmux session defaults to 80x24 regardless of the real terminal, so
+// an agent launched without an explicit size renders its UI into a narrow strip
+// no matter how wide the board's panel is.
+func TestCreateSizesTheAgentTerminal(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "sized")
+	cfg := &core.Config{
+		Repos:          []core.Repo{{ID: "sized", Path: repoPath, BaseBranch: "main", WorktreeRoot: filepath.Join(t.TempDir(), "wt")}},
+		DefaultRepo:    "sized",
+		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
+		DefaultProfile: "noop",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := Create(ctx, cfg, nil, CreateRequest{
+		Title: "wide", Profile: "noop", Cols: 164, Rows: 13,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	s := res.Session
+	t.Cleanup(func() { _ = Teardown(context.Background(), cfg, s, TeardownOptions{Force: true}) })
+
+	if got := paneSize(t, s.TmuxSession); got != "164x13" {
+		t.Fatalf("agent terminal is %s, want 164x13 (tmux would default to 80x24)", got)
+	}
+
+	// The panel changes size when the window resizes or the preview expands, and
+	// the agent has to follow it.
+	if err := tmuxx.ResizeWindow(ctx, s.TmuxSession, 100, 30); err != nil {
+		t.Fatalf("ResizeWindow: %v", err)
+	}
+	if got := paneSize(t, s.TmuxSession); got != "100x30" {
+		t.Fatalf("after resize the terminal is %s, want 100x30", got)
+	}
+}
+
+func paneSize(t *testing.T, session string) string {
+	t.Helper()
+	// display-message takes a target-pane, where the "=" exact-match prefix used
+	// elsewhere does not parse.
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", session,
+		"#{window_width}x#{window_height}").Output()
+	if err != nil {
+		t.Fatalf("display-message: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }

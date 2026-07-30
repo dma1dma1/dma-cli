@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -82,9 +83,52 @@ func ListSessions(ctx context.Context) (map[string]bool, error) {
 	return live, nil
 }
 
-// NewSession starts a detached session rooted at dir.
-func NewSession(ctx context.Context, name, dir string) error {
-	_, err := run(ctx, "new-session", "-d", "-s", name, "-c", dir)
+// NewSession starts a detached session rooted at dir, sized to cols x rows.
+//
+// The size matters: a detached tmux session defaults to 80x24 regardless of the
+// terminal, so an agent launched without one renders its whole UI into 80
+// columns and the preview shows a narrow strip inside a wide panel.
+func NewSession(ctx context.Context, name, dir string, cols, rows int) error {
+	args := []string{"new-session", "-d", "-s", name, "-c", dir}
+	if cols > 0 && rows > 0 {
+		args = append(args, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	}
+	if _, err := run(ctx, args...); err != nil {
+		return err
+	}
+	if cols > 0 && rows > 0 {
+		// new-session -x/-y sets the initial size; pinning it manual keeps tmux
+		// from resizing the window out from under the preview.
+		_ = ResizeWindow(ctx, name, cols, rows)
+	}
+	return nil
+}
+
+// Window size modes.
+const (
+	// SizeManual holds the window at whatever size we set, which is what the
+	// preview needs while nothing is attached.
+	SizeManual = "manual"
+	// SizeLatest lets the window follow the most recent client, which is what
+	// an attached user needs so the agent fills their terminal.
+	SizeLatest = "latest"
+)
+
+// ResizeWindow pins a detached session's window to an explicit size. tmux sets
+// window-size to manual as a side effect.
+func ResizeWindow(ctx context.Context, name string, cols, rows int) error {
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	_, err := run(ctx, "resize-window", "-t", "="+name,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	return err
+}
+
+// SetWindowSize switches a session between following clients and holding a
+// fixed size.
+func SetWindowSize(ctx context.Context, name, mode string) error {
+	_, err := run(ctx, "set-option", "-t", "="+name, "window-size", mode)
 	return err
 }
 
@@ -110,14 +154,20 @@ func KillSession(ctx context.Context, name string) error {
 	return err
 }
 
-// CapturePane returns the last n lines of visible pane content. This is how the
-// detail view shows recent agent output without owning a PTY. It is display
-// only -- agent state comes from hooks, never from scraping this.
-func CapturePane(ctx context.Context, name string, lines int) (string, error) {
-	if lines <= 0 {
-		lines = 200
+// CapturePane returns pane content, which is how the board shows agent output
+// without owning a PTY. It is display only -- agent state comes from hooks, or
+// from probing, never from parsing this.
+//
+// history <= 0 captures just the visible screen, which is what you want for a
+// full-screen agent UI: those draw on the alternate screen, so their scrollback
+// holds whatever was on the normal screen beforehand and splicing the two
+// together renders stale fragments over the live view.
+func CapturePane(ctx context.Context, name string, history int) (string, error) {
+	args := []string{"capture-pane", "-p", "-e", "-t", name}
+	if history > 0 {
+		args = append(args, "-S", fmt.Sprintf("-%d", history))
 	}
-	return run(ctx, "capture-pane", "-p", "-e", "-t", name, "-S", fmt.Sprintf("-%d", lines))
+	return run(ctx, args...)
 }
 
 // AttachCmd builds the command that hands the terminal to tmux. When the TUI is

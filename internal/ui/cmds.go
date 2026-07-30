@@ -133,6 +133,28 @@ func probeTickCmd() tea.Cmd {
 	return tea.Tick(probeInterval, func(t time.Time) tea.Msg { return probeTickMsg(t) })
 }
 
+// resizeSessionsCmd points every agent's terminal at the current preview size.
+//
+// Only issued when the size actually changes: a resize makes an agent redraw
+// and reflow, so doing it on a timer would make the UI twitch.
+func resizeSessionsCmd(sessions []*core.Session, cols, rows int) tea.Cmd {
+	names := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		names = append(names, s.TmuxSession)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		for _, n := range names {
+			_ = tmuxx.ResizeWindow(ctx, n, cols, rows)
+		}
+		return nil
+	}
+}
+
 // previewCmd captures the selected session's pane for display. Nothing is
 // inferred from this text; state comes from hooks or the prober.
 func previewCmd(s *core.Session) tea.Cmd {
@@ -143,7 +165,7 @@ func previewCmd(s *core.Session) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		out, _ := tmuxx.CapturePane(ctx, sess.TmuxSession, 300)
+		out, _ := tmuxx.CapturePane(ctx, sess.TmuxSession, 0)
 		return previewMsg{id: sess.ID, content: out}
 	}
 }

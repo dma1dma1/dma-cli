@@ -73,7 +73,7 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session) State {
 		return State{SessionID: s.ID, Agent: core.AgentIdle, Detail: "session ended", Alive: false}
 	}
 
-	content, err := tmuxx.CapturePane(ctx, s.TmuxSession, 200)
+	content, err := tmuxx.CapturePane(ctx, s.TmuxSession, 0)
 	if err != nil {
 		return State{SessionID: s.ID, Agent: s.AgentState, Alive: true}
 	}
