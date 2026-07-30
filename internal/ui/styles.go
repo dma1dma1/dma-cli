@@ -8,58 +8,65 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
-// Palette is a small semantic set. Colors carry meaning here -- danger means
-// "this session is blocked on you" -- so they are named by role, not by hue.
+// Palette is named by role, not by hue: in this UI color carries meaning, and
+// danger specifically means "a session is blocked on you".
 type Palette struct {
 	Text     color.Color
 	Muted    color.Color
 	Subtle   color.Color
+	Faint    color.Color
 	Accent   color.Color
 	Success  color.Color
 	Warning  color.Color
 	Danger   color.Color
 	Critical color.Color
 	Border   color.Color
-	Selected color.Color
+	Focus    color.Color
+	Chip     color.Color
+	ChipText color.Color
 }
 
 func newPalette() Palette {
 	return Palette{
-		Text:     lipgloss.Color("252"),
-		Muted:    lipgloss.Color("245"),
-		Subtle:   lipgloss.Color("240"),
+		Text:     lipgloss.Color("253"),
+		Muted:    lipgloss.Color("246"),
+		Subtle:   lipgloss.Color("242"),
+		Faint:    lipgloss.Color("239"),
 		Accent:   lipgloss.Color("111"),
 		Success:  lipgloss.Color("78"),
 		Warning:  lipgloss.Color("214"),
 		Danger:   lipgloss.Color("203"),
 		Critical: lipgloss.Color("197"),
 		Border:   lipgloss.Color("238"),
-		Selected: lipgloss.Color("117"),
+		Focus:    lipgloss.Color("117"),
+		Chip:     lipgloss.Color("236"),
+		ChipText: lipgloss.Color("251"),
 	}
 }
 
 type Styles struct {
 	P Palette
 
-	ColumnHeader          lipgloss.Style
-	ColumnHeaderFocused   lipgloss.Style
-	GroupHeader           lipgloss.Style
-	GroupRollup           lipgloss.Style
-	Card                  lipgloss.Style
-	CardSelected          lipgloss.Style
-	CardAttention         lipgloss.Style
-	CardAttentionSelected lipgloss.Style
-	Title                 lipgloss.Style
-	Meta                  lipgloss.Style
-	RepoTag               lipgloss.Style
-	KeyHint               lipgloss.Style
-	KeyDesc               lipgloss.Style
-	Error                 lipgloss.Style
-	Status                lipgloss.Style
-	DetailHeader          lipgloss.Style
-	PaneTitle             lipgloss.Style
-	AttachBanner          lipgloss.Style
-	Dialog                lipgloss.Style
+	CardTitle         lipgloss.Style
+	CardTitleSelected lipgloss.Style
+	Meta              lipgloss.Style
+	Faint             lipgloss.Style
+	RepoTag           lipgloss.Style
+	ProjectTag        lipgloss.Style
+
+	KeyHint lipgloss.Style
+	KeyDesc lipgloss.Style
+	Error   lipgloss.Style
+	Status  lipgloss.Style
+	Title   lipgloss.Style
+
+	Chip        lipgloss.Style
+	ChipFocused lipgloss.Style
+	ChipLabel   lipgloss.Style
+
+	Prompt   lipgloss.Style
+	Dialog   lipgloss.Style
+	Selected lipgloss.Style
 }
 
 func newStyles() Styles {
@@ -69,43 +76,31 @@ func newStyles() Styles {
 	return Styles{
 		P: p,
 
-		ColumnHeader: base.Foreground(p.Muted).Bold(true).Padding(0, 1),
-		ColumnHeaderFocused: base.Foreground(p.Selected).Bold(true).Padding(0, 1).
-			Underline(true),
-
-		GroupHeader: base.Foreground(p.Text).Bold(true),
-		GroupRollup: base.Foreground(p.Muted),
-
-		Card: base.Border(lipgloss.RoundedBorder()).BorderForeground(p.Border).
-			Padding(0, 1),
-		CardSelected: base.Border(lipgloss.RoundedBorder()).BorderForeground(p.Selected).
-			Padding(0, 1),
-		// A needs_you card is identifiable by border alone, without reading text.
-		CardAttention: base.Border(lipgloss.RoundedBorder()).BorderForeground(p.Danger).
-			Padding(0, 1),
-		CardAttentionSelected: base.Border(lipgloss.ThickBorder()).BorderForeground(p.Critical).
-			Padding(0, 1),
-
-		Title:   base.Foreground(p.Text).Bold(true),
-		Meta:    base.Foreground(p.Subtle),
-		RepoTag: base.Foreground(p.Accent),
+		CardTitle:         base.Foreground(p.Text).Bold(true),
+		CardTitleSelected: base.Foreground(p.Focus).Bold(true),
+		Meta:              base.Foreground(p.Subtle),
+		Faint:             base.Foreground(p.Faint),
+		RepoTag:           base.Foreground(p.Accent),
+		ProjectTag:        base.Foreground(lipgloss.Color("140")),
 
 		KeyHint: base.Foreground(p.Accent).Bold(true),
 		KeyDesc: base.Foreground(p.Subtle),
+		Error:   base.Foreground(p.Danger),
+		Status:  base.Foreground(p.Muted),
+		Title:   base.Foreground(p.Text).Bold(true),
 
-		Error:  base.Foreground(p.Danger),
-		Status: base.Foreground(p.Muted),
+		Chip:        base.Foreground(p.ChipText).Background(p.Chip).Padding(0, 1),
+		ChipFocused: base.Foreground(lipgloss.Color("232")).Background(p.Focus).Bold(true).Padding(0, 1),
+		ChipLabel:   base.Foreground(p.Subtle),
 
-		DetailHeader: base.Foreground(p.Text).Bold(true),
-		PaneTitle:    base.Foreground(p.Muted).Bold(true),
-
-		AttachBanner: base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true),
-		Dialog: base.Border(lipgloss.RoundedBorder()).BorderForeground(p.Warning).
-			Padding(1, 2),
+		Prompt:   base.Foreground(p.Success).Bold(true),
+		Dialog:   base.Border(lipgloss.RoundedBorder()).BorderForeground(p.Warning).Padding(0, 2),
+		Selected: base.Foreground(lipgloss.Color("232")).Background(p.Focus),
 	}
 }
 
-// agentColor maps an agent state to its badge color.
+// agentColor maps an agent state to the color used for its badge and the card's
+// accent bar.
 func (s Styles) agentColor(st core.AgentState) color.Color {
 	switch st {
 	case core.AgentWorking:
@@ -119,14 +114,30 @@ func (s Styles) agentColor(st core.AgentState) color.Color {
 	}
 }
 
-// badgeText is the plain badge string: state plus time in state. "needs you"
-// alone is not actionable; "needs you 8m" is.
+// columnAccent colors a column title. Idle is the column you act on, so it is
+// not styled as inactive.
+func (s Styles) columnAccent(l core.Lifecycle) color.Color {
+	switch l {
+	case core.LifecycleIdle:
+		return s.P.Text
+	case core.LifecycleActive:
+		return s.P.Warning
+	case core.LifecyclePROpen:
+		return s.P.Accent
+	case core.LifecycleMerged:
+		return s.P.Success
+	}
+	return s.P.Muted
+}
+
+// badgeText is the plain badge: state plus time in state. "needs you" alone is
+// not actionable; "needs you 8m" is.
 func (s Styles) badgeText(sess *core.Session) string {
 	return sess.AgentState.Badge() + " " + core.FormatDuration(sess.TimeInState())
 }
 
-// badgeStyle colors the badge. A session blocked for a long time is a different
-// problem from one that just asked, so it escalates visually.
+// badgeStyle colors the badge, escalating a session that has been blocked long
+// enough for it to be a different problem.
 func (s Styles) badgeStyle(sess *core.Session) lipgloss.Style {
 	st := lipgloss.NewStyle().Foreground(s.agentColor(sess.AgentState))
 	if sess.AgentState == core.AgentNeedsYou && sess.TimeInState() >= escalateAfter {
@@ -135,12 +146,10 @@ func (s Styles) badgeStyle(sess *core.Session) lipgloss.Style {
 	return st
 }
 
-// badge renders the styled badge.
 func (s Styles) badge(sess *core.Session) string {
 	return s.badgeStyle(sess).Render(s.badgeText(sess))
 }
 
-// ciStyle colors a CI verdict.
 func (s Styles) ciStyle(ci core.CIState) lipgloss.Style {
 	switch ci {
 	case core.CIPass:

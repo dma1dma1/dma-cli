@@ -61,7 +61,7 @@ func (m Model) viewRepos() string {
 		}
 		name := r.ID
 		if i == m.repos.cursor {
-			name = lipgloss.NewStyle().Foreground(st.P.Selected).Bold(true).Render(r.ID)
+			name = lipgloss.NewStyle().Foreground(st.P.Focus).Bold(true).Render(r.ID)
 		} else {
 			name = st.Title.Render(r.ID)
 		}

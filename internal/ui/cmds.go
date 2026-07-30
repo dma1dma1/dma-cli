@@ -15,6 +15,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
 	"github.com/dma1dma1/dma-cli/internal/ops"
+	"github.com/dma1dma1/dma-cli/internal/probe"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
@@ -22,6 +23,17 @@ import (
 
 type tickMsg time.Time
 type pollTickMsg time.Time
+type previewTickMsg time.Time
+type probeTickMsg time.Time
+
+// previewMsg carries recent terminal output for the panel.
+type previewMsg struct {
+	id      string
+	content string
+}
+
+// probeMsg carries inferred state for agents that cannot report their own.
+type probeMsg struct{ states []probe.State }
 
 type hookMsg hooks.Event
 
@@ -103,6 +115,66 @@ func tickCmd() tea.Cmd {
 
 func pollTickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return pollTickMsg(t) })
+}
+
+// previewInterval keeps the panel feeling live without spawning a capture more
+// often than a person can read.
+const previewInterval = 1200 * time.Millisecond
+
+func previewTickCmd() tea.Cmd {
+	return tea.Tick(previewInterval, func(t time.Time) tea.Msg { return previewTickMsg(t) })
+}
+
+// probeInterval is slower: it exists to notice an agent going quiet, and
+// probe.IdleAfter is measured in tens of seconds.
+const probeInterval = 4 * time.Second
+
+func probeTickCmd() tea.Cmd {
+	return tea.Tick(probeInterval, func(t time.Time) tea.Msg { return probeTickMsg(t) })
+}
+
+// previewCmd captures the selected session's pane for display. Nothing is
+// inferred from this text; state comes from hooks or the prober.
+func previewCmd(s *core.Session) tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		out, _ := tmuxx.CapturePane(ctx, sess.TmuxSession, 300)
+		return previewMsg{id: sess.ID, content: out}
+	}
+}
+
+// probeCmd infers state for sessions whose agent has no hook channel. Sessions
+// running a hook-capable agent are skipped: their own reports are exact, and a
+// heuristic could only contradict them.
+func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session) tea.Cmd {
+	var targets []*core.Session
+	keep := map[string]bool{}
+	for _, s := range sessions {
+		keep[s.ID] = true
+		if prof, ok := cfg.Profile(s.AgentProfile); ok && prof.Hooks {
+			continue
+		}
+		copied := *s
+		targets = append(targets, &copied)
+	}
+	p.Forget(keep)
+	if len(targets) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		states := make([]probe.State, 0, len(targets))
+		for _, s := range targets {
+			states = append(states, p.Probe(ctx, s))
+		}
+		return probeMsg{states: states}
+	}
 }
 
 // waitForHook blocks on the hook channel and re-arms itself after each event,

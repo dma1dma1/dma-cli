@@ -4,168 +4,162 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
-// lane is one swimlane: a user-defined group, split across the four columns.
-// Swimlanes are always groups, never repos.
-type lane struct {
-	Group     string
-	Collapsed bool
-	Columns   [4][]*core.Session
-	All       []*core.Session
-	Rollup    core.Rollup
+// cardPos is a resolved cursor position on the board.
+type cardPos struct {
+	col, row int
+	ok       bool
 }
 
-// Label is the group's display name; the empty group renders last as
-// "ungrouped".
-func (l lane) Label() string {
-	if l.Group == "" {
-		return "ungrouped"
-	}
-	return l.Group
-}
-
-type layout struct {
-	Lanes []lane
-}
-
-// buildLayout groups sessions into swimlanes and columns, applying the repo
-// filter and per-column sort.
-func buildLayout(cfg *core.Config, sessions []*core.Session, collapsed map[string]bool, repoFilter string) layout {
-	var visible []*core.Session
-	for _, s := range sessions {
-		if repoFilter != "" && s.RepoID != repoFilter {
+// visible applies the repo and project filters. Filtering, rather than
+// swimlanes, is how the board narrows: with four bordered columns there is no
+// room for a second visual axis.
+func (m Model) visible() []*core.Session {
+	var out []*core.Session
+	for _, s := range m.sessions {
+		if m.repoFilter != "" && s.RepoID != m.repoFilter {
 			continue
 		}
-		visible = append(visible, s)
-	}
-
-	order := core.GroupOrder(cfg, visible)
-	var lanes []lane
-	for _, g := range order {
-		var members []*core.Session
-		for _, s := range visible {
-			if s.Group == g {
-				members = append(members, s)
-			}
-		}
-		if len(members) == 0 && g == "" {
-			// Do not render an empty ungrouped lane just because it exists.
+		if m.projectFilter != "" && s.Group != m.projectFilter {
 			continue
 		}
-		l := lane{Group: g, Collapsed: collapsed[g], All: members, Rollup: core.RollupOf(members)}
-		for _, s := range members {
-			idx := s.Lifecycle.ColumnIndex()
-			l.Columns[idx] = append(l.Columns[idx], s)
-		}
-		for i := range l.Columns {
-			core.SortColumn(l.Columns[i])
-		}
-		lanes = append(lanes, l)
+		out = append(out, s)
 	}
-	return layout{Lanes: lanes}
+	return out
 }
 
-// pos is a resolved cursor position within the layout.
-type pos struct {
-	Lane, Col, Row int
-	OK             bool
+// columns buckets the visible sessions into the four columns, sorted so the
+// sessions wanting attention are at the top of each.
+func (m Model) columns() [4][]*core.Session {
+	var cols [4][]*core.Session
+	for _, s := range m.visible() {
+		cols[s.Lifecycle.ColumnIndex()] = append(cols[s.Lifecycle.ColumnIndex()], s)
+	}
+	for i := range cols {
+		core.SortColumn(cols[i])
+	}
+	return cols
 }
 
-// find locates a session in the layout. Selection is anchored to a session id
-// and re-resolved every frame, so re-sorting a column never drags the cursor
-// onto a different card.
-func (ly layout) find(id string) pos {
-	for li, l := range ly.Lanes {
-		for c := 0; c < 4; c++ {
-			for r, s := range l.Columns[c] {
-				if s.ID == id {
-					return pos{Lane: li, Col: c, Row: r, OK: true}
-				}
+// findSelected re-resolves the cursor from the selected session id every frame.
+//
+// Anchoring to the id rather than to a coordinate is what makes agent-driven
+// columns safe: when a session stops working and its card moves from active to
+// idle, the cursor follows the card instead of landing on whichever card took
+// its place.
+func (m Model) findSelected() cardPos {
+	cols := m.columns()
+	for c := range cols {
+		for r, s := range cols[c] {
+			if s.ID == m.selectedID {
+				return cardPos{col: c, row: r, ok: true}
 			}
 		}
 	}
-	return pos{}
+	return cardPos{}
 }
 
-func (ly layout) at(p pos) *core.Session {
-	if p.Lane < 0 || p.Lane >= len(ly.Lanes) {
+func (m Model) sessionAt(p cardPos) *core.Session {
+	if !p.ok {
 		return nil
 	}
-	l := ly.Lanes[p.Lane]
-	if p.Col < 0 || p.Col > 3 {
+	cols := m.columns()
+	if p.col < 0 || p.col > 3 || p.row < 0 || p.row >= len(cols[p.col]) {
 		return nil
 	}
-	col := l.Columns[p.Col]
-	if p.Row < 0 || p.Row >= len(col) {
-		return nil
-	}
-	return col[p.Row]
+	return cols[p.col][p.row]
 }
 
-// first returns the first selectable session, scanning lanes then columns.
-func (ly layout) first() *core.Session {
-	for _, l := range ly.Lanes {
-		if l.Collapsed {
-			continue
-		}
-		for c := 0; c < 4; c++ {
-			if len(l.Columns[c]) > 0 {
-				return l.Columns[c][0]
-			}
-		}
-	}
-	// Everything is collapsed: fall back to any session so actions still work.
-	for _, l := range ly.Lanes {
-		for c := 0; c < 4; c++ {
-			if len(l.Columns[c]) > 0 {
-				return l.Columns[c][0]
-			}
+// firstSession returns something selectable, scanning columns left to right.
+func (m Model) firstSession() *core.Session {
+	cols := m.columns()
+	for c := range cols {
+		if len(cols[c]) > 0 {
+			return cols[c][0]
 		}
 	}
 	return nil
 }
 
-// moveHorizontal steps to the nearest non-empty column in the given direction
-// within the same lane, so pressing l never lands the cursor on nothing.
-func (ly layout) moveHorizontal(from pos, dir int) *core.Session {
-	if !from.OK {
-		return nil
+// moveH steps to the nearest occupied column in a direction, so pressing l
+// never parks the cursor on an empty column.
+func (m Model) moveH(dir int) *core.Session {
+	p := m.findSelected()
+	if !p.ok {
+		return m.firstSession()
 	}
-	l := ly.Lanes[from.Lane]
-	for c := from.Col + dir; c >= 0 && c <= 3; c += dir {
-		if len(l.Columns[c]) > 0 {
-			row := min(from.Row, len(l.Columns[c])-1)
-			return l.Columns[c][row]
+	cols := m.columns()
+	for c := p.col + dir; c >= 0 && c <= 3; c += dir {
+		if len(cols[c]) > 0 {
+			return cols[c][min(p.row, len(cols[c])-1)]
 		}
 	}
 	return nil
 }
 
-// moveVertical steps within the current column, spilling into the same column
-// of the next or previous lane when it runs off the end.
-func (ly layout) moveVertical(from pos, dir int, collapsed map[string]bool) *core.Session {
-	if !from.OK {
+// moveV steps within the current column.
+func (m Model) moveV(dir int) *core.Session {
+	p := m.findSelected()
+	if !p.ok {
+		return m.firstSession()
+	}
+	col := m.columns()[p.col]
+	next := p.row + dir
+	if next < 0 || next >= len(col) {
 		return nil
 	}
-	col := ly.Lanes[from.Lane].Columns[from.Col]
-	next := from.Row + dir
-	if next >= 0 && next < len(col) {
-		return col[next]
+	return col[next]
+}
+
+// flatOrder is the board read left to right, top to bottom, for stepping
+// through every session regardless of column.
+func (m Model) flatOrder() []*core.Session {
+	var flat []*core.Session
+	cols := m.columns()
+	for c := range cols {
+		flat = append(flat, cols[c]...)
 	}
-	for li := from.Lane + dir; li >= 0 && li < len(ly.Lanes); li += dir {
-		l := ly.Lanes[li]
-		if l.Collapsed {
-			continue
-		}
-		c := l.Columns[from.Col]
-		if len(c) == 0 {
-			continue
-		}
-		if dir > 0 {
-			return c[0]
-		}
-		return c[len(c)-1]
+	return flat
+}
+
+func (m Model) stepSession(dir int) *core.Session {
+	flat := m.flatOrder()
+	if len(flat) == 0 {
+		return nil
 	}
-	return nil
+	idx := -1
+	for i, s := range flat {
+		if s.ID == m.selectedID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return flat[0]
+	}
+	next := idx + dir
+	if next < 0 || next >= len(flat) {
+		return nil
+	}
+	return flat[next]
+}
+
+// projects lists the project labels in use, for the picker.
+func (m Model) projects() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, g := range m.cfg.Groups {
+		if g != "" && !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	for _, s := range m.sessions {
+		if s.Group != "" && !seen[s.Group] {
+			seen[s.Group] = true
+			out = append(out, s.Group)
+		}
+	}
+	return out
 }
 
 func min(a, b int) int {

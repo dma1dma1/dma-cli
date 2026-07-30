@@ -28,8 +28,10 @@ func LoadSessions() ([]*Session, error) {
 		return nil, fmt.Errorf("parse %s: %w", StatePath(), err)
 	}
 	for _, s := range sf.Sessions {
-		if s.Lifecycle == "" {
-			s.Lifecycle = LifecycleActive
+		// "review" was a manual-only column that has been replaced by the
+		// agent-driven idle/active split; anything still in it lands in idle.
+		if s.Lifecycle == "" || s.Lifecycle == "review" {
+			s.Lifecycle = LifecycleIdle
 		}
 		if s.AgentState == "" {
 			s.AgentState = AgentIdle
@@ -48,6 +50,11 @@ func LoadSessions() ([]*Session, error) {
 		}
 		if s.PRMergeable == "" {
 			s.PRMergeable = MergeUnknown
+		}
+		// An agent cannot still be working across a restart of the board: its
+		// state is re-established by the first hook or probe.
+		if !s.Lifecycle.PRDriven() && s.AgentState == AgentWorking {
+			s.Lifecycle = LifecycleActive
 		}
 	}
 	return sf.Sessions, nil

@@ -9,33 +9,60 @@ import (
 	"time"
 )
 
-// Lifecycle determines which board column a card sits in. It changes only on
-// user action or on durable git/PR events -- never on agent activity.
+// Lifecycle determines which board column a card sits in.
+//
+// The first two columns are owned by the agent: a session is active while its
+// agent is working and idle otherwise. The last two are owned by durable git
+// facts, and agent activity can never move a card out of them -- whether a
+// process happens to be mid-tool-call says nothing about whether its PR is
+// merged.
 type Lifecycle string
 
 const (
+	LifecycleIdle   Lifecycle = "idle"
 	LifecycleActive Lifecycle = "active"
-	LifecycleReview Lifecycle = "review"
 	LifecyclePROpen Lifecycle = "pr_open"
 	LifecycleMerged Lifecycle = "merged"
 )
 
 // Columns is the fixed, ordered set of board columns. There are exactly four;
-// additional axes become swimlanes, not columns.
-var Columns = []Lifecycle{LifecycleActive, LifecycleReview, LifecyclePROpen, LifecycleMerged}
+// additional axes become filters, not columns.
+var Columns = []Lifecycle{LifecycleIdle, LifecycleActive, LifecyclePROpen, LifecycleMerged}
 
 func (l Lifecycle) Title() string {
 	switch l {
+	case LifecycleIdle:
+		return "idle"
 	case LifecycleActive:
 		return "active"
-	case LifecycleReview:
-		return "review"
 	case LifecyclePROpen:
 		return "pr open"
 	case LifecycleMerged:
 		return "merged"
 	}
 	return string(l)
+}
+
+// Subtitle explains a column, since "idle" alone does not say whether it means
+// broken, finished or waiting on you.
+func (l Lifecycle) Subtitle() string {
+	switch l {
+	case LifecycleIdle:
+		return "waiting on you"
+	case LifecycleActive:
+		return "agent working"
+	case LifecyclePROpen:
+		return "pushed"
+	case LifecycleMerged:
+		return "done"
+	}
+	return ""
+}
+
+// PRDriven reports whether a column is owned by pull request state rather than
+// by the agent.
+func (l Lifecycle) PRDriven() bool {
+	return l == LifecyclePROpen || l == LifecycleMerged
 }
 
 // ColumnIndex returns the position of l in Columns, or 0 if unknown.
@@ -48,8 +75,8 @@ func (l Lifecycle) ColumnIndex() int {
 	return 0
 }
 
-// AgentState determines the card's badge. It changes every few seconds and must
-// never influence Lifecycle.
+// AgentState determines the card's badge, and which of the first two columns a
+// session sits in.
 type AgentState string
 
 const (
@@ -177,9 +204,12 @@ func (s *Session) TimeInState() time.Duration {
 	return time.Since(s.AgentStateSince)
 }
 
-// SetAgentState updates the badge and its clock. It deliberately cannot touch
-// Lifecycle: agent activity must never move a card between columns, or the
-// selection would jump out from under the cursor mid-keystroke.
+// SetAgentState updates the badge and its clock, and moves the card between the
+// idle and active columns to match.
+//
+// It will not move a session out of a PR-driven column: those record git facts,
+// and a card that fell back to "idle" because its agent exited would be lying
+// about a PR that is still open.
 func (s *Session) SetAgentState(st AgentState, detail string) (changed bool) {
 	if s.AgentState == st && s.AgentStateDetail == detail {
 		return false
@@ -189,7 +219,20 @@ func (s *Session) SetAgentState(st AgentState, detail string) (changed bool) {
 	}
 	s.AgentState = st
 	s.AgentStateDetail = detail
+	s.syncColumn()
 	return true
+}
+
+// syncColumn keeps the agent-owned columns in step with the badge.
+func (s *Session) syncColumn() {
+	if s.Lifecycle.PRDriven() {
+		return
+	}
+	if s.AgentState == AgentWorking {
+		s.Lifecycle = LifecycleActive
+		return
+	}
+	s.Lifecycle = LifecycleIdle
 }
 
 // HasPR reports whether a pull request is known for this session.

@@ -33,6 +33,11 @@ type Repo struct {
 type AgentProfile struct {
 	Name    string `json:"name"`
 	Command string `json:"command"`
+	// Hooks is true when the agent reports its own state through dma's hook
+	// listener, as Claude Code does. Agents without that channel fall back to
+	// liveness plus a pane-change heuristic, which is coarser but never blocks
+	// the feature on universal coverage.
+	Hooks bool `json:"hooks"`
 }
 
 type Config struct {
@@ -43,17 +48,20 @@ type Config struct {
 	Groups           []string       `json:"groups"`
 	PollIntervalSecs int            `json:"poll_interval_secs"`
 	HookPort         int            `json:"hook_port"`
-
-	// AutoAdvanceOnStop controls whether the agent's Stop hook moves a session
-	// from active to review. Off by default: an agent that resumes work would
-	// otherwise flap the card between columns.
-	AutoAdvanceOnStop bool `json:"auto_advance_on_stop"`
 }
 
 const (
 	DefaultPollInterval = 45
 	DefaultHookPort     = 8787
 )
+
+// DefaultProfiles are the agents dma knows how to launch out of the box.
+func DefaultProfiles() []AgentProfile {
+	return []AgentProfile{
+		{Name: "claude", Command: "claude", Hooks: true},
+		{Name: "codex", Command: "codex", Hooks: false},
+	}
+}
 
 // Dir is the application's state directory.
 func Dir() string {
@@ -73,7 +81,7 @@ func StatePath() string  { return filepath.Join(Dir(), "state.json") }
 func DefaultConfig() *Config {
 	return &Config{
 		Repos:            []Repo{},
-		AgentProfiles:    []AgentProfile{{Name: "claude", Command: "claude"}},
+		AgentProfiles:    DefaultProfiles(),
 		DefaultProfile:   "claude",
 		Groups:           []string{},
 		PollIntervalSecs: DefaultPollInterval,
@@ -111,7 +119,7 @@ func (c *Config) normalize() {
 		c.HookPort = DefaultHookPort
 	}
 	if len(c.AgentProfiles) == 0 {
-		c.AgentProfiles = []AgentProfile{{Name: "claude", Command: "claude"}}
+		c.AgentProfiles = DefaultProfiles()
 	}
 	if c.DefaultProfile == "" {
 		c.DefaultProfile = c.AgentProfiles[0].Name

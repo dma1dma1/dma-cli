@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -16,18 +17,18 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/hooks"
 	"github.com/dma1dma1/dma-cli/internal/notify"
 	"github.com/dma1dma1/dma-cli/internal/ops"
+	"github.com/dma1dma1/dma-cli/internal/probe"
 )
 
 type mode int
 
 const (
 	modeBoard mode = iota
-	modeDetail
+	modeDiff
 	modeHelp
-	modeCompose
+	modeRepos
 	modePrompt
 	modeConfirm
-	modeRepos
 )
 
 // Model is the root Bubble Tea model.
@@ -35,32 +36,39 @@ type Model struct {
 	cfg      *core.Config
 	sessions []*core.Session
 	styles   Styles
+	prober   *probe.Prober
 
-	mode   mode
+	mode  mode
+	focus focusArea
+
 	width  int
 	height int
 
-	layout     layout
 	selectedID string
-	collapsed  map[string]bool
-	// repoFilter resets to empty on each launch rather than persisting: a
-	// filter you forgot you set is a board that silently lies about what is
+	// repoFilter and projectFilter both reset on launch rather than persisting:
+	// a filter you forgot you set is a board that silently lies about what is
 	// running.
-	repoFilter string
+	repoFilter    string
+	projectFilter string
 
-	compose compose
-	prompt  prompt
-	confirm confirmState
-	repos   repoPicker
+	// activeRepo and agentChoice are what new sessions are built from. They are
+	// seeded from the launch directory and the configured default.
+	activeRepo  string
+	agentChoice string
 
-	// activeRepo is the repo new sessions default to. It is seeded from the
-	// directory dma was launched in, so standing in a repo is enough to work
-	// in it.
-	activeRepo string
+	input    textinput.Model
+	dropdown dropdown
+	prompt   prompt
+	confirm  confirmState
+	repos    repoPicker
 
-	diffView   viewport.Model
-	outputView viewport.Model
-	diffMode   gitx.DiffMode
+	// preview is the selected session's recent terminal output, refreshed on a
+	// timer. Display only.
+	preview     string
+	previewFull bool
+
+	diffView viewport.Model
+	diffMode gitx.DiffMode
 
 	hookEvents <-chan hooks.Event
 	hookURL    string
@@ -75,18 +83,7 @@ type Model struct {
 	quitting bool
 }
 
-// doubleClickWindow is how close two clicks on the same card must be to count
-// as opening it.
 const doubleClickWindow = 400 * time.Millisecond
-
-func (m Model) isDoubleClick() bool {
-	return m.lastClickID == m.selectedID && time.Since(m.lastClickAt) < doubleClickWindow
-}
-
-func (m *Model) markClick() {
-	m.lastClickID = m.selectedID
-	m.lastClickAt = time.Now()
-}
 
 type confirmState struct {
 	active  bool
@@ -106,41 +103,41 @@ type Options struct {
 	Notice string
 }
 
-// New builds the root model.
 func New(opt Options) Model {
+	ti := textinput.New()
+	ti.Placeholder = "what should the agent do?"
+	ti.SetVirtualCursor(true)
+
 	m := Model{
-		cfg:        opt.Config,
-		sessions:   opt.Sessions,
-		styles:     newStyles(),
-		mode:       modeBoard,
-		collapsed:  map[string]bool{},
-		hookEvents: opt.HookEvents,
-		hookURL:    opt.HookURL,
-		activeRepo: opt.LaunchRepo,
-		diffView:   viewport.New(),
-		outputView: viewport.New(),
-		diffMode:   gitx.DiffUncommitted,
-		width:      100,
-		height:     30,
+		cfg:         opt.Config,
+		sessions:    opt.Sessions,
+		styles:      newStyles(),
+		prober:      probe.New(),
+		mode:        modeBoard,
+		focus:       focusBoard,
+		hookEvents:  opt.HookEvents,
+		hookURL:     opt.HookURL,
+		activeRepo:  opt.LaunchRepo,
+		agentChoice: opt.Config.DefaultProfile,
+		input:       ti,
+		diffView:    viewport.New(),
+		diffMode:    gitx.DiffUncommitted,
+		width:       120,
+		height:      36,
 	}
 	if opt.Notice != "" {
 		m.statusText, m.statusAt = opt.Notice, time.Now()
 	}
-	// Put the picker cursor on the active repo, not on whatever is first.
 	for i, r := range m.cfg.Repos {
 		if r.ID == m.activeRepoID() {
 			m.repos.cursor = i
 		}
 	}
-	m.rebuild()
-	if s := m.layout.first(); s != nil {
+	if s := m.firstSession(); s != nil {
 		m.selectedID = s.ID
 	}
+	m.layoutSizes()
 	return m
-}
-
-func (m *Model) rebuild() {
-	m.layout = buildLayout(m.cfg, m.sessions, m.collapsed, m.repoFilter)
 }
 
 func (m Model) selected() *core.Session {
@@ -149,16 +146,34 @@ func (m Model) selected() *core.Session {
 
 func (m *Model) save() {
 	if err := core.SaveSessions(m.sessions); err != nil {
-		m.statusText = "save state: " + err.Error()
-		m.statusErr = true
-		m.statusAt = time.Now()
+		m.statusText, m.statusErr, m.statusAt = "save state: "+err.Error(), true, time.Now()
 	}
+}
+
+// rebuild exists so callers do not need to know that the layout is derived on
+// demand rather than cached.
+func (m *Model) rebuild() {
+	if m.selected() == nil {
+		if s := m.firstSession(); s != nil {
+			m.selectedID = s.ID
+		} else {
+			m.selectedID = ""
+		}
+	}
+}
+
+func (m *Model) layoutSizes() {
+	m.input.SetWidth(max(m.width-10, 20))
+	m.diffView.SetWidth(max(m.width-4, 20))
+	m.diffView.SetHeight(max(m.height-6, 5))
 }
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
 		pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
+		previewTickCmd(),
+		probeTickCmd(),
 		waitForHook(m.hookEvents),
 		observeCmd(m.sessions),
 		pollPRsCmd(m.cfg, m.sessions),
@@ -170,7 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.resizePanes()
+		m.layoutSizes()
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -180,19 +195,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tickMsg:
-		// Re-render so time in state stays honest.
 		return m, tickCmd()
+
+	case previewTickMsg:
+		// Only the selected session is captured: the panel shows one at a time,
+		// and capturing every pane every second would spawn a process per
+		// session per tick for output nobody is looking at.
+		return m, tea.Batch(previewTickCmd(), previewCmd(m.selected()))
+
+	case probeTickMsg:
+		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions))
 
 	case pollTickMsg:
 		return m, tea.Batch(
 			pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
 			pollPRsCmd(m.cfg, m.sessions),
 			observeCmd(m.sessions),
-			m.refreshDetailPanes(),
+			m.refreshDiff(),
 		)
 
 	case hookMsg:
 		return m.handleHook(hooks.Event(msg))
+
+	case probeMsg:
+		return m.handleProbe(msg)
+
+	case previewMsg:
+		if msg.id == m.selectedID {
+			m.preview = msg.content
+		}
+		return m, nil
 
 	case observeMsg:
 		byID := map[string]ops.Observation{}
@@ -225,7 +257,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repos.cursor = i
 			}
 		}
-		m.rebuild()
 		if !msg.added {
 			return m, status(msg.repo.ID + " was already registered — now active")
 		}
@@ -245,7 +276,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.PRState = core.PRMerged
 			s.Lifecycle = core.LifecycleMerged
 			m.save()
-			m.rebuild()
 		}
 		return m, status("merged")
 
@@ -277,14 +307,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffView.SetContent(content)
 		return m, nil
 
-	case captureMsg:
-		if msg.id != m.selectedID {
-			return m, nil
-		}
-		m.outputView.SetContent(msg.content)
-		m.outputView.GotoBottom()
-		return m, nil
-
 	case statusMsg:
 		m.statusText, m.statusErr, m.statusAt = msg.text, msg.isErr, time.Now()
 		return m, nil
@@ -293,41 +315,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, errStatus(fmt.Errorf("attach: %w", msg.err))
 		}
-		return m, m.refreshDetailPanes()
+		return m, previewCmd(m.selected())
 	}
 
 	return m, nil
 }
 
-func (m *Model) resizePanes() {
-	w := max(m.width-4, 20)
-	// Two panes share the detail body: header, chips, two titles, bottom bar.
-	body := max(m.height-9, 6)
-	diffH := body * 2 / 3
-	outH := body - diffH
-	m.diffView.SetWidth(w)
-	m.diffView.SetHeight(max(diffH, 3))
-	m.outputView.SetWidth(w)
-	m.outputView.SetHeight(max(outH, 3))
-	if m.compose.active {
-		m.compose.input.SetWidth(composeInputWidth(m.width))
-	}
-}
-
-// refreshDetailPanes reloads the diff and pane capture when the detail view is
-// on screen. Nothing is fetched while the board is showing.
-func (m Model) refreshDetailPanes() tea.Cmd {
-	if m.mode != modeDetail {
+func (m Model) refreshDiff() tea.Cmd {
+	if m.mode != modeDiff {
 		return nil
 	}
-	s := m.selected()
-	if s == nil {
-		return nil
+	if s := m.selected(); s != nil {
+		return diffCmd(s, m.diffMode)
 	}
-	return tea.Batch(diffCmd(s, m.diffMode), captureCmd(s))
+	return nil
 }
 
-// --- hook handling ---
+// --- hooks and probing ---
 
 func (m Model) handleHook(ev hooks.Event) (tea.Model, tea.Cmd) {
 	next := waitForHook(m.hookEvents)
@@ -340,56 +344,71 @@ func (m Model) handleHook(ev hooks.Event) (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, next
 	}
-	if ev.ClaudeSessionID != "" && s.ClaudeSessionID != ev.ClaudeSessionID {
+	if ev.ClaudeSessionID != "" {
 		s.ClaudeSessionID = ev.ClaudeSessionID
 	}
 
 	was := s.AgentState
-	changed := s.SetAgentState(out.State, out.Detail)
-
-	var cmds []tea.Cmd
-	cmds = append(cmds, next)
-
-	// Notify on the transition into needs_you, not on every event while there.
-	if changed && out.State == core.AgentNeedsYou && was != core.AgentNeedsYou {
-		detail := out.Detail
-		if detail == "" {
-			detail = "needs your input"
-		}
-		notify.Notify(s.Title, detail)
-	}
-
-	// The Stop hook may advance lifecycle, but only when the user opted in:
-	// an agent that resumes work would otherwise flap the card between columns.
-	if out.Stopped && m.cfg.AutoAdvanceOnStop && s.Lifecycle == core.LifecycleActive {
-		s.Lifecycle = core.LifecycleReview
+	if s.SetAgentState(out.State, out.Detail) {
+		m.notifyIfBlocked(s, was)
+		m.save()
 	}
 	if out.Ended {
 		s.TmuxAlive = false
 	}
+	return m, next
+}
 
-	if changed {
-		m.save()
-		m.rebuild()
+// handleProbe applies inferred state for agents that cannot report their own.
+func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
+	dirty := false
+	for _, st := range msg.states {
+		s := core.FindByID(m.sessions, st.SessionID)
+		if s == nil {
+			continue
+		}
+		s.TmuxAlive = st.Alive
+		was := s.AgentState
+		if s.SetAgentState(st.Agent, st.Detail) {
+			m.notifyIfBlocked(s, was)
+			dirty = true
+		}
+		// The probe already paid for a capture; reuse it as the preview.
+		if st.Content != "" && s.ID == m.selectedID {
+			m.preview = st.Content
+		}
 	}
-	return m, tea.Batch(cmds...)
+	if dirty {
+		m.save()
+	}
+	return m, nil
+}
+
+// notifyIfBlocked raises a desktop notification on the transition into
+// needs_you, not on every event while it stays there.
+func (m Model) notifyIfBlocked(s *core.Session, was core.AgentState) {
+	if s.AgentState != core.AgentNeedsYou || was == core.AgentNeedsYou {
+		return
+	}
+	detail := s.AgentStateDetail
+	if detail == "" {
+		detail = "needs your input"
+	}
+	notify.Notify(s.Title, detail)
 }
 
 // --- PR sync ---
 
 func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		// A failing repo reports itself but never blocks the UI or the other
-		// repos' polls.
 		return m, status(fmt.Sprintf("%s: %v", msg.repoID, msg.err))
 	}
 
-	// Index by (repo_id, branch). Matching on headRefName alone would
+	// Index by (repo_id, branch): matching on headRefName alone would
 	// cross-assign PRs between repos that share a branch name.
 	byKey := map[core.Key]ghx.PR{}
 	for _, pr := range msg.prs {
 		k := core.Key{RepoID: msg.repoID, Branch: pr.Branch}
-		// Keep the highest-numbered PR for a branch, which is the current one.
 		if prev, ok := byKey[k]; ok && prev.Number > pr.Number {
 			continue
 		}
@@ -397,33 +416,33 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 	}
 
 	repo, _ := m.cfg.Repo(msg.repoID)
-
 	dirty := false
 	var follow []tea.Cmd
+
 	for _, s := range m.sessions {
 		if s.RepoID != msg.repoID {
 			continue
 		}
-		pr, ok := byKey[s.Key()]
 		core.Touch(s)
+		pr, ok := byKey[s.Key()]
 		if !ok {
-			// The list holds only open PRs. A tracked PR missing from it has
-			// reached a terminal state, so resolve that one directly.
+			// Only open PRs are listed, so a tracked PR missing from the list
+			// has reached a terminal state; resolve that one directly.
 			if s.PRNumber > 0 && s.PRState != core.PRMerged && s.PRState != core.PRClosed {
 				follow = append(follow, prDetailCmd(repo.Remote, s.ID, s.PRNumber))
 			}
 			continue
 		}
+		hadPR := s.HasPR()
 		if s.PRNumber != pr.Number || s.PRState != pr.State || s.PRCI != pr.CI ||
 			s.PRReview != pr.Review || s.PRMergeable != pr.Mergeable {
 			dirty = true
 		}
-		hadPR := s.HasPR()
 		s.PRNumber, s.PRState = pr.Number, pr.State
 		s.PRCI, s.PRReview, s.PRMergeable = pr.CI, pr.Review, pr.Mergeable
 
-		// Lifecycle auto-advances on exactly two durable events: a PR appearing
-		// for the branch, and that PR becoming merged.
+		// A PR appearing, and that PR merging, are the two durable events that
+		// move a card into the git-owned columns.
 		if !hadPR && s.HasPR() && s.Lifecycle != core.LifecycleMerged {
 			s.Lifecycle = core.LifecyclePROpen
 			dirty = true
@@ -435,7 +454,6 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 	}
 	if dirty {
 		m.save()
-		m.rebuild()
 	}
 	if len(follow) > 0 {
 		return m, tea.Batch(follow...)
@@ -443,7 +461,6 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handlePRDetail applies the resolved state of a PR that left the open list.
 func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		return m, nil
@@ -455,15 +472,12 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	s.PRState, s.PRCI = msg.pr.State, msg.pr.CI
 	s.PRReview, s.PRMergeable = msg.pr.Review, msg.pr.Mergeable
 	core.Touch(s)
-
-	// Merged is the second and last durable event that advances lifecycle.
-	// A PR closed without merging stays where it is and is shown as closed on
-	// the card, rather than silently vanishing from the board.
-	if msg.pr.State == core.PRMerged && s.Lifecycle != core.LifecycleMerged {
+	// A PR closed without merging keeps its column and is labelled closed on the
+	// card, rather than vanishing from the board.
+	if msg.pr.State == core.PRMerged {
 		s.Lifecycle = core.LifecycleMerged
 	}
 	m.save()
-	m.rebuild()
 	return m, nil
 }
 
@@ -479,14 +493,14 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()
-	m.rebuild()
 	m.selectedID = s.ID
+	m.preview = ""
 
-	text := "created " + s.Branch
+	text := "started " + s.Branch
 	if len(msg.res.Warnings) > 0 {
 		text += " — " + strings.Join(msg.res.Warnings, "; ")
 	}
-	return m, tea.Batch(status(text), observeCmd(m.sessions))
+	return m, tea.Batch(status(text), observeCmd(m.sessions), previewCmd(s))
 }
 
 func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
@@ -498,12 +512,10 @@ func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.number > 0 {
-		s.PRNumber = msg.number
-		s.PRState = core.PROpen
+		s.PRNumber, s.PRState = msg.number, core.PROpen
 		s.Lifecycle = core.LifecyclePROpen
 	}
 	m.save()
-	m.rebuild()
 	return m, tea.Batch(status(fmt.Sprintf("opened PR #%d", msg.number)),
 		pollPRsCmd(m.cfg, m.sessions))
 }
@@ -513,8 +525,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 		s := core.FindByID(m.sessions, msg.id)
 		switch e := msg.err.(type) {
 		case *ops.DirtyError:
-			return m.askConfirm(
-				fmt.Sprintf("%s has uncommitted changes. Discard and prune?", nameOf(s)),
+			return m.askConfirm(fmt.Sprintf("%s has uncommitted changes. Discard and prune?", nameOf(s)),
 				func(mm *Model) tea.Cmd {
 					if s == nil {
 						return nil
@@ -522,8 +533,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					return teardownCmd(mm.cfg, s, true)
 				})
 		case *ops.BranchNotMergedError:
-			return m.askConfirm(
-				fmt.Sprintf("Branch %s is not fully merged. Delete anyway?", e.Branch),
+			return m.askConfirm(fmt.Sprintf("Branch %s is not fully merged. Delete anyway?", e.Branch),
 				func(mm *Model) tea.Cmd {
 					if s == nil {
 						return nil
@@ -542,13 +552,9 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 	}
 	m.save()
 	m.rebuild()
-	if m.selected() == nil {
-		if s := m.layout.first(); s != nil {
-			m.selectedID = s.ID
-		} else {
-			m.selectedID = ""
-			m.mode = modeBoard
-		}
+	m.preview = ""
+	if m.selectedID == "" {
+		m.mode = modeBoard
 	}
 	return m, status("pruned")
 }
@@ -571,8 +577,6 @@ func (m Model) askConfirm(message string, action func(*Model) tea.Cmd) (tea.Mode
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
-	// Mouse tracking is declared in the view; it is disabled while attached
-	// because tmux and the agent need the events instead.
 	v.MouseMode = tea.MouseModeCellMotion
 	if c := m.activeCursor(); c != nil {
 		v.Cursor = c
@@ -580,13 +584,12 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// activeCursor surfaces the text cursor while an input is focused.
 func (m Model) activeCursor() *tea.Cursor {
-	switch m.mode {
-	case modeCompose:
-		return m.compose.input.Cursor()
-	case modePrompt:
+	switch {
+	case m.mode == modePrompt:
 		return m.prompt.input.Cursor()
+	case m.mode == modeBoard && m.focus == focusInput:
+		return m.input.Cursor()
 	}
 	return nil
 }
@@ -595,62 +598,71 @@ func (m Model) render() string {
 	if m.quitting {
 		return ""
 	}
-	var body string
+
 	switch m.mode {
 	case modeHelp:
-		body = m.viewHelp()
-	case modeDetail:
-		body = m.viewDetail()
+		return zone.Scan(m.frame(m.viewHelp()))
 	case modeRepos:
-		body = m.viewRepos()
-	default:
-		body = m.viewBoard()
+		return zone.Scan(m.frame(m.viewRepos()))
+	case modeDiff:
+		return zone.Scan(m.frame(m.viewDiff()))
 	}
 
-	bar := m.viewBottomBar()
-	statusLine := m.viewStatus()
+	// Board: columns on top, session panel pinned to the bottom. The panel is
+	// always present, so the input is always one key away.
+	panelH := m.panelHeight()
+	statusH := 1
+	boardH := m.height - panelH - statusH
 
-	content := lipgloss.JoinVertical(lipgloss.Left, body, statusLine, bar)
-	// Scan registers the zone positions from the rendered frame; without it,
-	// mouse coordinates cannot be resolved back to components.
-	return zone.Scan(content)
+	var parts []string
+	if !m.previewFull && boardH >= minBoardRows {
+		parts = append(parts, m.viewBoard(boardH))
+	} else if !m.previewFull {
+		// Too short for cards: keep the panel usable rather than rendering a
+		// column frame with nothing inside it.
+		panelH = m.height - statusH
+	}
+	parts = append(parts, m.viewPanel(panelH))
+	parts = append(parts, m.statusBar())
+
+	return zone.Scan(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
-func (m Model) viewStatus() string {
-	if m.statusText == "" || time.Since(m.statusAt) > 12*time.Second {
-		return ""
-	}
-	st := m.styles.Status
-	if m.statusErr {
-		st = m.styles.Error
-	}
-	return st.Render("  " + truncate(m.statusText, max(m.width-2, 10)))
+// frame wraps a full-screen sub-view with the status bar, so every mode has the
+// same footer.
+func (m Model) frame(body string) string {
+	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar())
 }
 
-func (m Model) viewBottomBar() string {
-	switch m.mode {
-	case modeCompose:
-		return m.viewCompose()
-	case modePrompt:
-		return m.viewPrompt()
-	case modeConfirm:
-		return m.styles.Dialog.Render(m.confirm.message + "   [y/n]")
-	case modeRepos:
-		return m.hintLine([]hint{
-			{"j/k", "move"}, {"enter", "use for new sessions"},
-			{"a", "add repo"}, {"x", "unregister"}, {"esc", "back"},
-		})
+// statusBar is the single bottom line: a transient message when there is one,
+// otherwise the keys for the current focus.
+func (m Model) statusBar() string {
+	st := m.styles
+
+	if m.mode == modeConfirm {
+		return lipgloss.NewStyle().Width(m.width).
+			Render(truncate(st.Dialog.Render(m.confirm.message+"  [y/n]"), m.width))
+	}
+	if m.mode == modePrompt {
+		line := st.KeyHint.Render(m.prompt.label+":") + " " + m.prompt.input.View() +
+			st.KeyDesc.Render("   enter · esc")
+		return lipgloss.NewStyle().Width(m.width).Render(truncate(line, m.width))
+	}
+	if m.statusText != "" && time.Since(m.statusAt) < 10*time.Second {
+		text := st.Status
+		if m.statusErr {
+			text = st.Error
+		}
+		return lipgloss.NewStyle().Width(m.width).
+			Render(text.Render(truncate(" "+m.statusText, m.width)))
 	}
 
-	hints := boardHints(m.cfg.MultiRepo())
-	if m.mode == modeDetail {
-		hints = detailHints()
-	}
-	line := m.hintLine(hints)
+	var line string
 	if m.repoFilter != "" {
-		line = m.styles.RepoTag.Render("[repo:"+m.repoFilter+"] ") + line
+		line += st.RepoTag.Render("[repo:" + m.repoFilter + "] ")
 	}
-	return lipgloss.NewStyle().Width(m.width).Render(truncate(line, m.width))
+	line += m.hintLine(m.hints())
+	return lipgloss.NewStyle().Width(m.width).Render(truncate(" "+line, m.width))
 }
 
 func (m Model) hintLine(hints []hint) string {
@@ -671,14 +683,14 @@ func (m Model) viewHelp() string {
 			continue
 		}
 		b.WriteString(fmt.Sprintf("    %s  %s\n",
-			st.KeyHint.Render(pad(row[1], 10)), st.KeyDesc.Render(row[2])))
+			st.KeyHint.Render(padRight(row[1], 12)), st.KeyDesc.Render(row[2])))
 	}
-	b.WriteString("\n  " + st.Meta.Render("hook listener: "+m.hookURL) + "\n")
-	b.WriteString("  " + st.Meta.Render("press any key to return") + "\n")
+	b.WriteString("\n  " + st.Faint.Render("hook listener: "+m.hookURL) + "\n")
+	b.WriteString("  " + st.Faint.Render("press any key to return") + "\n")
 	return b.String()
 }
 
-func pad(s string, n int) string {
+func padRight(s string, n int) string {
 	if len(s) >= n {
 		return s
 	}

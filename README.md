@@ -11,21 +11,26 @@ You run 3–10 coding agents at once. Each gets its own git worktree and branch.
 Agents run inside tmux, so they survive the board exiting. The TUI never owns a PTY.
 
 ```
- active (2)              review (0)              pr open (1)             merged (0)
-▾ auth work · 1 working, 1 needs you
-╭──────────────────────╮                        ╭──────────────────────╮
-│ token refresh        │                        │ session cookies      │
-│ feat/token-refresh   │                        │ #412 ✓ ci ✓ approved │
-│ ● working 4m         │                        │ ○ idle 1h20m         │
-│ +212 −38             │                        │ +88 −12              │
-╰──────────────────────╯                        ╰──────────────────────╯
-┏━━━━━━━━━━━━━━━━━━━━━━┓
-┃ rate limiter         ┃
-┃ feat/rate-limiter    ┃
-┃ ◆ needs you 8m       ┃
-┃ Bash(rm -rf build)   ┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ idle 2 · waiting on you ━━━━━┓ ╭─ active 1 · agent working ────╮ ╭─ pr open 1 · pushed ──────────╮ ╭─ merged · done ───────────────╮
+┃ ▌ rate limiter                ┃ │ ▌ token refresh               │ │ ▌ session cookies             │ │   —                           │
+┃ ▌ feat/rate-limiter           ┃ │ ▌ feat/token-refresh          │ │ ▌ #412 ✓ ci ✓ approved        │ │                               │
+┃ ▌ ◆ needs you 8m              ┃ │ ▌ ● working 4m                │ │ ▌ ○ idle 1h20m                │ │                               │
+┃ ▌ Bash(rm -rf build)          ┃ │ ▌ +212 −38                    │ │ ▌ +88 −12                     │ │                               │
+┃                               ┃ │                               │ │                               │ │                               │
+┃ ┃ audit logging               ┃ │                               │ │                               │ │                               │
+┃ ┃ ✓ done 2m                   ┃ │                               │ │                               │ │                               │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ ╰───────────────────────────────╯ ╰───────────────────────────────╯ ╰───────────────────────────────╯
+╭─ audit logging · dma-cli-audit-logging ────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ▾ agent claude   ▾ repo dma-cli                                                                          ▾ project all projects  │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ● Wrote internal/audit/log.go                                                                                                      │
+│   ran tests: 42 passed                                                                                                             │
+│ Done in 18s.                                                                                                                       │
+│ ❯ press i to describe a task for a new agent session                                                                               │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+The panel at the bottom is always there: the selected session's live terminal, the three selectors that define a new session, and an input bar. Press `e` to expand it to the full screen, `a` to attach to it for real.
 
 ## Requirements
 
@@ -60,7 +65,7 @@ dma
 
 That's it. There is no setup step. The repo you are standing in is registered on first launch and becomes the default for new sessions, so `cd` is how you choose what to work on.
 
-Press `n`, type what you want the agent to do, press enter.
+Press `i`, type what you want the agent to do, press enter. The agent, repo and project it uses are whatever the three selectors at the bottom show.
 
 Press `r` at any time to switch repos, add another one, or unregister one.
 
@@ -96,58 +101,65 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 
 | Key | Action |
 |---|---|
-| `h` `j` `k` `l` | move selection |
-| `enter` | open session detail |
-| `n` | new session (compose in bottom bar) |
-| `H` `L` | move selected card to previous/next column |
-| `g` | collapse/expand current group |
-| `G` | change selected session's group |
-| `d` | jump to diff for selected session |
-| `s` | commit and push branch, open PR |
-| `m` | merge PR |
-| `x` | prune worktree and branch |
-| `D` | kill agent session (worktree kept) |
-| `R` | force PR refresh |
+| `h` `j` `k` `l` | move between cards and columns |
+| `i` | focus the task input at the bottom |
+| `tab` | cycle board → input → agent → repo → project |
+| `a` | attach to the selected session's terminal |
+| `e` | expand the session panel to full screen |
+| `enter` `d` | review the diff |
+| `H` `L` | move a card to the previous/next column |
+| `G` | set the selected session's project |
+| `s` | commit and push the branch, open a PR |
+| `m` | merge the PR |
+| `x` | prune the worktree and branch |
+| `D` | kill the agent, keep the worktree |
+| `R` | refresh PR and session state now |
 | `r` | repositories: switch, add, unregister |
-| `f` | filter to one repo, or clear (hidden with one repo) |
+| `p` | pick a project to filter the board |
+| `f` | filter to the active repo, or clear |
 | `?` | help |
-| `q` | quit — sessions keep running |
+| `q` | quit — agents keep running |
 
-**Session detail**
+**Task input** — `enter` starts an agent using the agent/repo/project shown in the selectors. `esc` returns to the board.
 
-| Key | Action |
-|---|---|
-| `a` | attach to the live terminal |
-| `esc` | back to board |
-| `j` `k` | previous/next session |
-| `tab` | toggle uncommitted diff / branch diff |
-| `d` `s` `m` `x` | same as board |
+**Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too.
+
+**Diff** — `tab` toggles working tree / branch diff, `j` `k` step between sessions, `esc` returns.
 
 **Attached** — every keystroke goes to the agent, including `esc`. `ctrl-q` detaches. While attached the tmux status line turns orange and says so.
 
-## How state works
+## The four columns
 
-Each session carries two independent state fields.
+| Column | Owned by | Means |
+|---|---|---|
+| **idle** | the agent | not working — blocked on you, finished, or sitting there |
+| **active** | the agent | working right now; leave it alone |
+| **pr open** | git | branch pushed, PR exists |
+| **merged** | git | PR merged; the worktree is a prune candidate |
 
-**`lifecycle`** decides which column a card is in: `active → review → pr_open → merged`. It changes only on a user action or a durable git/PR event — a PR appearing for the branch, or that PR merging.
+The first two move on their own as agents start and stop, so **idle is the column you act on** — everything waiting for you, whether that is a permission prompt or a finished diff.
 
-**`agent_state`** decides the card's badge: `idle`, `working`, `needs_you`, `done`. It is driven by Claude Code lifecycle hooks and changes every few seconds.
+The last two are owned by durable git facts, and agent activity can never pull a card out of them: whether a process happens to be mid-tool-call says nothing about whether its PR is merged.
 
-**Agent state never moves a card between columns.** If it did, the selection would jump out from under the cursor mid-keystroke and card positions would never become memorable.
+Because cards move by themselves, **selection is anchored to the session, not to a position.** When a card crosses columns the cursor follows it rather than landing on whatever took its place, and a card appearing above the cursor never shifts it.
 
-Time in state is always rendered next to the badge. `needs you 8m` is the actionable signal; `needs you` alone is not. Past 15 minutes a blocked session escalates its color.
+Within a column, `needs you` sorts first, then longest time in state. Time in state is always shown next to the badge — `needs you 8m` is the actionable signal, `needs you` alone is not. Past 15 minutes a blocked session escalates its color.
 
-### Agent state comes from hooks, not from scraping
+### Where agent state comes from
 
-`dma` runs an HTTP listener on `127.0.0.1:<hook_port>` and writes a hook config into each worktree's `.claude/settings.local.json` when the session is created. Only agents this tool launched report to it; an unrelated Claude Code session elsewhere is untouched.
-
-Run `dma hooks print` to see exactly what gets written.
+**Claude Code reports it exactly**, through lifecycle hooks. `dma` runs an HTTP listener on `127.0.0.1:<hook_port>` and writes a hook config into each worktree's `.claude/settings.local.json` at creation, so only agents this tool launched report to it and an unrelated Claude Code session elsewhere is untouched. Run `dma hooks print` to see what gets written.
 
 Hook responses are strictly passive — they report state and never return a blocking decision. A `Stop` hook that made the agent act would loop forever.
 
-Entering `needs_you` raises a desktop notification. The point of the tool is not to be babysat.
+**Codex and anything else is inferred**, from process liveness plus whether the pane is still changing. A pane quiet for 25 seconds means the turn ended; a pane whose tail looks like an approval request (`[y/n]`, `Allow …?`, a numbered choice list) means it needs you. This is deliberately coarse — pane text is a rendering of a UI, not a state machine, so the heuristic keys on structure rather than on wording that changes between releases.
 
-Agents without hook support degrade to process liveness plus recent pane output.
+Entering `needs_you` raises a desktop notification either way. The point of the tool is not to be babysat.
+
+## Projects
+
+A project is an arbitrary label, chosen with the selector when you start a session or with `G` afterwards. Typing a label that does not exist creates it. The project selector filters the board to one project, and new sessions started while filtered join it.
+
+Projects and repos are orthogonal: a project may span several repos, and one repo's sessions may sit in several projects.
 
 ## Multiple repos
 
@@ -189,16 +201,18 @@ Set `DMA_HOME` to relocate both.
     }
   ],
   "default_repo": "my-project",
-  "agent_profiles": [{ "name": "claude", "command": "claude" }],
+  "agent_profiles": [
+    { "name": "claude", "command": "claude", "hooks": true },
+    { "name": "codex",  "command": "codex",  "hooks": false }
+  ],
   "default_profile": "claude",
-  "groups": ["auth work"],                 // display order of swimlanes
+  "groups": ["auth work"],                 // known project labels
   "poll_interval_secs": 45,
-  "hook_port": 8787,
-  "auto_advance_on_stop": false            // Stop hook moves active → review
+  "hook_port": 8787
 }
 ```
 
-`auto_advance_on_stop` is off by default: an agent that resumes work would otherwise flap its card between columns.
+`hooks: false` puts a profile on the inferred-state path described above. Add any agent you like — the command is run inside the worktree's tmux session.
 
 ## Commands
 
@@ -216,12 +230,15 @@ You normally need none of these — `cd` into a repo and run `dma`. `dma repo ad
 
 ## Design notes
 
-- **Exactly four columns.** At 100 characters wide, four columns leaves ~22 characters of card content. Additional axes become swimlanes, never a fifth column.
-- **Compose is inline**, not a modal, so the board stays visible while you type — it should be obvious if a session for that work already exists.
+- **Exactly four columns.** At 100 characters wide, four columns leaves ~22 characters of card content. Additional axes become filters, never a fifth column.
+- **The input is always on screen**, so starting work is one key away and the board stays visible while you type — it should be obvious if a session for that work already exists.
+- **Cards are rows with a colored accent bar**, not nested boxes. Borders inside borders read as noise, and the bar carries the state signal more cheaply.
+- **There was a fifth idea, `review`, and it was cut.** It meant "diff ready, not pushed" but nothing filled it automatically, so it was manual bookkeeping in a tool whose premise is not doing bookkeeping. `idle` says the same thing from real evidence.
 - **A single click only selects.** Opening takes `enter` or a double click; misclicks on a dense board are frequent.
 - **`needs_you` cards sort first** within each column, then by time in state descending.
 - **A collapsed group keeps its rollup**, so collapsing can never hide the fact that something needs attention.
 - **PR polling lists open PRs only**, once per repo that has a live session. Asking GitHub for the full PR history with check rollups times out with a 502 on large repos; a tracked PR that leaves the open set is resolved individually instead.
+- **Only the selected session's pane is captured** for the preview. Capturing every pane every second would spawn a process per session per tick for output nobody is reading.
 - **Diffs are not parsed.** `git diff --color=always`, optionally piped through `delta`, rendered into a viewport. Untracked files are included explicitly — a new file is an agent's most common output and plain `git diff` omits it.
 - **Registration is a side effect, not a step.** Standing in a repo is a complete statement of intent; making someone declare it first is ceremony. Detection reads the checkout instead of asking.
 - **Teardown never forces.** A dirty worktree or an unmerged branch requires a second, explicit confirmation.

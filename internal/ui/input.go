@@ -15,30 +15,72 @@ import (
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// Modal states own the keyboard outright.
 	switch m.mode {
-	case modeCompose:
-		return m.keyCompose(msg, key)
-	case modePrompt:
-		return m.keyPrompt(msg, key)
 	case modeConfirm:
 		return m.keyConfirm(key)
+	case modePrompt:
+		return m.keyPrompt(msg, key)
 	case modeHelp:
 		m.mode = modeBoard
 		return m, nil
-	case modeDetail:
-		return m.keyDetail(msg, key)
 	case modeRepos:
 		return m.keyRepos(key)
+	case modeDiff:
+		return m.keyDiff(msg, key)
+	}
+
+	if m.dropdown.open {
+		return m.keyDropdown(key)
+	}
+
+	// ctrl+c always quits, wherever focus is; sessions keep running.
+	if key == "ctrl+c" {
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	switch key {
+	case "tab":
+		m.focus = focusRing[wrap(indexOfFocus(m.focus)+1, len(focusRing))]
+		return m, m.onFocusChange()
+	case "shift+tab":
+		m.focus = focusRing[wrap(indexOfFocus(m.focus)-1, len(focusRing))]
+		return m, m.onFocusChange()
+	}
+
+	switch m.focus {
+	case focusInput:
+		return m.keyInput(msg, key)
+	case focusAgent, focusRepo, focusProject:
+		return m.keyChip(key)
 	}
 	return m.keyBoard(key)
 }
 
-// --- board ---
+func indexOfFocus(f focusArea) int {
+	for i, x := range focusRing {
+		if x == f {
+			return i
+		}
+	}
+	return 0
+}
+
+// onFocusChange manages the text cursor, which must only blink in the input.
+func (m *Model) onFocusChange() tea.Cmd {
+	if m.focus == focusInput {
+		return m.input.Focus()
+	}
+	m.input.Blur()
+	return nil
+}
+
+// --- board focus ---
 
 func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "q", "ctrl+c":
-		// Sessions keep running: quitting the board does not stop the agents.
+	case "q":
 		m.quitting = true
 		return m, tea.Quit
 
@@ -46,22 +88,18 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		m.mode = modeHelp
 		return m, nil
 
-	case "r":
-		m.mode = modeRepos
-		return m, nil
-
-	case "n":
-		m.startCompose()
-		m.mode = modeCompose
-		return m, nil
+	case "i", "n":
+		m.focus = focusInput
+		return m, m.onFocusChange()
 
 	case "h", "left", "l", "right":
 		dir := -1
 		if key == "l" || key == "right" {
 			dir = 1
 		}
-		if s := m.layout.moveHorizontal(m.layout.find(m.selectedID), dir); s != nil {
-			m.selectedID = s.ID
+		if s := m.moveH(dir); s != nil {
+			m.selectedID, m.preview = s.ID, ""
+			return m, previewCmd(s)
 		}
 		return m, nil
 
@@ -70,35 +108,53 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		if key == "k" || key == "up" {
 			dir = -1
 		}
-		if s := m.layout.moveVertical(m.layout.find(m.selectedID), dir, m.collapsed); s != nil {
-			m.selectedID = s.ID
+		if s := m.moveV(dir); s != nil {
+			m.selectedID, m.preview = s.ID, ""
+			return m, previewCmd(s)
 		}
 		return m, nil
 
-	case "enter":
+	case "e":
+		// Expand the session panel to the whole screen and back.
+		m.previewFull = !m.previewFull
+		return m, previewCmd(m.selected())
+
+	case "a":
+		s := m.selected()
+		if s == nil {
+			return m, nil
+		}
+		if !s.TmuxAlive {
+			return m, errStatus(fmt.Errorf("terminal for %s is not running", s.Title))
+		}
+		return m, attachCmd(s)
+
+	case "enter", "d":
 		if m.selected() == nil {
 			return m, nil
 		}
-		m.mode = modeDetail
-		m.resizePanes()
-		return m, m.refreshDetailPanes()
+		m.mode = modeDiff
+		return m, m.refreshDiff()
 
 	case "H", "L":
 		return m.moveCard(key == "L")
-
-	case "g":
-		g := m.currentGroup()
-		m.collapsed[g] = !m.collapsed[g]
-		m.rebuild()
-		return m, nil
 
 	case "G":
 		s := m.selected()
 		if s == nil {
 			return m, nil
 		}
-		m.startPrompt(promptGroup, "group", s.Group, s.ID)
+		m.startPrompt(promptGroup, "project", s.Group, s.ID)
 		m.mode = modePrompt
+		return m, nil
+
+	case "r":
+		m.mode = modeRepos
+		return m, nil
+
+	case "p":
+		m.focus = focusProject
+		m.openDropdown(focusProject)
 		return m, nil
 
 	case "f":
@@ -110,32 +166,20 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 			m.rebuild()
 			return m, status("repo filter cleared")
 		}
-		m.startPrompt(promptRepoFilter, "filter repo", "", "")
-		m.mode = modePrompt
-		return m, nil
-
-	case "d":
-		if m.selected() == nil {
-			return m, nil
-		}
-		m.mode = modeDetail
-		m.resizePanes()
-		return m, m.refreshDetailPanes()
+		m.repoFilter = m.activeRepoID()
+		m.rebuild()
+		return m, status("showing only " + m.repoFilter)
 
 	case "R":
-		return m, tea.Batch(
-			pollPRsCmd(m.cfg, m.sessions),
-			observeCmd(m.sessions),
-			status("refreshing…"),
-		)
+		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
+			probeCmd(m.prober, m.cfg, m.sessions), status("refreshing…"))
 	}
 
-	return m.sharedAction(key)
+	return m.sessionAction(key)
 }
 
-// sharedAction handles the bindings that mean the same thing on the board and
-// in the detail view.
-func (m Model) sharedAction(key string) (tea.Model, tea.Cmd) {
+// sessionAction handles keys that mean the same thing wherever you are.
+func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 	s := m.selected()
 	if s == nil {
 		return m, nil
@@ -154,19 +198,18 @@ func (m Model) sharedAction(key string) (tea.Model, tea.Cmd) {
 			func(mm *Model) tea.Cmd { return mergeCmd(mm.cfg, s) })
 
 	case "x":
-		return m.askConfirm(
-			fmt.Sprintf("Prune worktree and branch for %q?", s.Title),
+		return m.askConfirm(fmt.Sprintf("Prune worktree and branch for %q?", s.Title),
 			func(mm *Model) tea.Cmd { return teardownCmd(mm.cfg, s, false) })
 
 	case "D":
-		return m.askConfirm(fmt.Sprintf("Kill agent session for %q? (worktree kept)", s.Title),
+		return m.askConfirm(fmt.Sprintf("Kill the agent for %q? (worktree kept)", s.Title),
 			func(mm *Model) tea.Cmd { return killCmd(s) })
 	}
 	return m, nil
 }
 
-// moveCard is the manual lifecycle override. Only user actions and durable
-// git/PR events move cards between columns.
+// moveCard is the manual column override. It is most useful for the PR-owned
+// columns; the idle/active pair is reclaimed by the agent on its next report.
 func (m Model) moveCard(right bool) (tea.Model, tea.Cmd) {
 	s := m.selected()
 	if s == nil {
@@ -183,35 +226,103 @@ func (m Model) moveCard(right bool) (tea.Model, tea.Cmd) {
 	}
 	s.Lifecycle = core.Columns[idx]
 	m.save()
-	m.rebuild()
 	return m, status("moved to " + s.Lifecycle.Title())
 }
 
-// --- detail ---
+// --- input focus ---
 
-func (m Model) keyDetail(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
+func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc":
-		m.mode = modeBoard
-		return m, nil
+		m.focus = focusBoard
+		return m, m.onFocusChange()
 
-	case "q", "ctrl+c":
+	case "enter":
+		task := strings.TrimSpace(m.input.Value())
+		if task == "" {
+			m.focus = focusBoard
+			return m, m.onFocusChange()
+		}
+		repo := m.activeRepoID()
+		if repo == "" {
+			return m, errStatus(fmt.Errorf("no repo selected — press r to add one"))
+		}
+		base := ""
+		if r, ok := m.cfg.Repo(repo); ok {
+			base = r.BaseBranch
+		}
+		req := ops.CreateRequest{
+			Title:  task,
+			RepoID: repo,
+			// A new session joins whatever project the board is filtered to,
+			// which is what the project selector means when creating work.
+			Group:         m.projectFilter,
+			Profile:       m.agentChoice,
+			BaseBranch:    base,
+			InitialPrompt: task,
+			HookURL:       m.hookURL,
+		}
+		m.input.SetValue("")
+		m.focus = focusBoard
+		return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, m.sessions, req),
+			status("starting "+m.agentChoice+" in "+repo+"…"))
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// --- chip focus ---
+
+func (m Model) keyChip(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.focus = focusBoard
+		return m, nil
+	case "enter", " ", "down":
+		m.openDropdown(m.focus)
+		return m, nil
+	case "left", "h":
+		return m, m.cycleChip(m.focus, -1)
+	case "right", "l":
+		return m, m.cycleChip(m.focus, 1)
+	case "q":
 		m.quitting = true
 		return m, tea.Quit
+	}
+	return m, nil
+}
 
-	case "?":
-		m.mode = modeHelp
+// --- dropdown ---
+
+func (m Model) keyDropdown(key string) (tea.Model, tea.Cmd) {
+	n := len(m.dropdown.options)
+	switch key {
+	case "esc", "q":
+		m.dropdown = dropdown{}
 		return m, nil
+	case "j", "down":
+		m.dropdown.cursor = wrap(m.dropdown.cursor+1, n)
+		return m, nil
+	case "k", "up":
+		m.dropdown.cursor = wrap(m.dropdown.cursor-1, n)
+		return m, nil
+	case "enter", " ":
+		cmd := m.applyDropdown()
+		m.focus = focusBoard
+		return m, cmd
+	}
+	return m, nil
+}
 
-	case "a":
-		s := m.selected()
-		if s == nil {
-			return m, nil
-		}
-		if !s.TmuxAlive {
-			return m, errStatus(fmt.Errorf("tmux session %s is not running", s.TmuxSession))
-		}
-		return m, attachCmd(s)
+// --- diff view ---
+
+func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "d", "q":
+		m.mode = modeBoard
+		return m, nil
 
 	case "tab":
 		if m.diffMode == gitx.DiffUncommitted {
@@ -219,190 +330,32 @@ func (m Model) keyDetail(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.diffMode = gitx.DiffUncommitted
 		}
-		return m, m.refreshDetailPanes()
+		return m, m.refreshDiff()
 
 	case "j", "down", "k", "up":
-		// j/k step to the next session without going back up to the board.
 		dir := 1
 		if key == "k" || key == "up" {
 			dir = -1
 		}
-		if s := m.nextSession(dir); s != nil {
-			m.selectedID = s.ID
-			return m, m.refreshDetailPanes()
+		if s := m.stepSession(dir); s != nil {
+			m.selectedID, m.preview = s.ID, ""
+			return m, tea.Batch(m.refreshDiff(), previewCmd(s))
 		}
 		return m, nil
 
-	case "R":
-		return m, tea.Batch(m.refreshDetailPanes(), pollPRsCmd(m.cfg, m.sessions))
-	}
-
-	if mm, cmd := m.sharedAction(key); cmd != nil {
-		return mm, cmd
-	}
-	// Anything left over scrolls the diff pane.
-	var cmd tea.Cmd
-	m.diffView, cmd = m.diffView.Update(msg)
-	return m, cmd
-}
-
-// nextSession walks the flattened board order, so j/k in the detail view visits
-// every session exactly once.
-func (m Model) nextSession(dir int) *core.Session {
-	var flat []*core.Session
-	for _, l := range m.layout.Lanes {
-		for c := 0; c < 4; c++ {
-			flat = append(flat, l.Columns[c]...)
-		}
-	}
-	if len(flat) == 0 {
-		return nil
-	}
-	idx := -1
-	for i, s := range flat {
-		if s.ID == m.selectedID {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return flat[0]
-	}
-	next := idx + dir
-	if next < 0 || next >= len(flat) {
-		return nil
-	}
-	return flat[next]
-}
-
-// --- compose ---
-
-func (m Model) keyCompose(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc":
-		m.compose = compose{}
-		m.mode = modeBoard
-		return m, nil
-
-	case "tab":
-		m.compose.cycle(1)
-		return m, nil
-
-	case "shift+tab":
-		m.compose.cycle(-1)
-		return m, nil
-
-	case "left", "right":
-		// On the repo field the arrows pick a repo; elsewhere they move the
-		// text cursor as usual.
-		if m.compose.focusedField() == fieldRepo {
-			dir := 1
-			if key == "left" {
-				dir = -1
-			}
-			m.compose.cycleRepo(m.cfg.Repos, dir)
+	case "a":
+		s := m.selected()
+		if s == nil || !s.TmuxAlive {
 			return m, nil
 		}
-
-	case "enter":
-		m.compose.syncField()
-		c := m.compose
-		task := strings.TrimSpace(c.get(fieldTask))
-		if task == "" {
-			return m, errStatus(fmt.Errorf("a task description is required"))
-		}
-		req := ops.CreateRequest{
-			Title:         task,
-			RepoID:        c.get(fieldRepo),
-			Group:         c.get(fieldGroup),
-			Profile:       c.get(fieldProfile),
-			BaseBranch:    c.get(fieldBase),
-			InitialPrompt: task,
-			HookURL:       m.hookURL,
-		}
-		m.compose = compose{}
-		m.mode = modeBoard
-		return m, tea.Batch(createCmd(m.cfg, m.sessions, req), status("creating session…"))
+		return m, attachCmd(s)
 	}
 
-	m.compose.consumeFresh(isPrintable(msg))
-	var cmd tea.Cmd
-	m.compose.input, cmd = m.compose.input.Update(msg)
-	return m, cmd
-}
-
-// isPrintable reports whether a key press inserts a character, as opposed to
-// navigating or editing.
-func isPrintable(msg tea.KeyPressMsg) bool {
-	return msg.Text != "" && msg.Mod&(tea.ModCtrl|tea.ModAlt) == 0
-}
-
-// --- prompt ---
-
-func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc":
-		m.prompt = prompt{}
-		m.mode = modeBoard
-		return m, nil
-
-	case "enter":
-		p := m.prompt
-		val := strings.TrimSpace(p.input.Value())
-		m.prompt = prompt{}
-		m.mode = modeBoard
-
-		switch p.kind {
-		case promptGroup:
-			s := core.FindByID(m.sessions, p.target)
-			if s == nil {
-				return m, nil
-			}
-			s.Group = val
-			// Typing a label that does not exist creates it.
-			if m.cfg.AddGroup(val) {
-				_ = core.SaveConfig(m.cfg)
-			}
-			m.save()
-			m.rebuild()
-			return m, status("group set")
-
-		case promptRepoFilter:
-			if val != "" {
-				if _, ok := m.cfg.Repo(val); !ok {
-					return m, errStatus(fmt.Errorf("no repo with id %q", val))
-				}
-			}
-			m.repoFilter = val
-			m.rebuild()
-			if s := m.selected(); s == nil {
-				if f := m.layout.first(); f != nil {
-					m.selectedID = f.ID
-				}
-			}
-			return m, status("repo filter: " + val)
-
-		case promptAddRepo:
-			if val == "" {
-				return m, nil
-			}
-			return m, tea.Batch(adoptCmd(m.cfg, val), status("registering "+val+"…"))
-
-		case promptPRTitle:
-			s := core.FindByID(m.sessions, p.target)
-			if s == nil {
-				return m, nil
-			}
-			if val == "" {
-				val = s.Title
-			}
-			return m, tea.Batch(shipCmd(m.cfg, s, val), status("pushing and opening PR…"))
-		}
-		return m, nil
+	if mm, cmd := m.sessionAction(key); cmd != nil {
+		return mm, cmd
 	}
-
 	var cmd tea.Cmd
-	m.prompt.input, cmd = m.prompt.input.Update(msg)
+	m.diffView, cmd = m.diffView.Update(msg)
 	return m, cmd
 }
 
@@ -430,22 +383,20 @@ func (m Model) keyConfirm(key string) (tea.Model, tea.Cmd) {
 // --- mouse ---
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// Mouse is meaningless while a modal input owns the bottom bar.
-	if m.mode == modeConfirm {
+	if m.mode == modeConfirm || m.mode == modePrompt {
 		return m, nil
 	}
 
 	switch msg.(type) {
 	case tea.MouseWheelMsg:
-		// Scroll routes by zone: the diff in the detail view, swimlanes on the
-		// board.
-		if m.mode == modeDetail {
+		// Scroll routes by zone: the diff when it is open, otherwise nothing --
+		// the columns are not scrollable yet.
+		if m.mode == modeDiff {
 			var cmd tea.Cmd
 			m.diffView, cmd = m.diffView.Update(msg)
 			return m, cmd
 		}
 		return m, nil
-
 	case tea.MouseClickMsg:
 		return m.handleClick(msg)
 	}
@@ -453,13 +404,38 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// Group headers toggle collapse.
-	for _, l := range m.layout.Lanes {
-		if z := zone.Get(zoneGroup(l.Group)); z != nil && z.InBounds(msg) {
-			m.collapsed[l.Group] = !m.collapsed[l.Group]
-			m.rebuild()
+	// An open dropdown owns the clicks inside the panel.
+	if m.dropdown.open {
+		for i := range m.dropdown.options {
+			if z := zone.Get(zoneOption(i)); z != nil && z.InBounds(msg) {
+				m.dropdown.cursor = i
+				cmd := m.applyDropdown()
+				m.focus = focusBoard
+				return m, cmd
+			}
+		}
+		m.dropdown = dropdown{}
+		return m, nil
+	}
+
+	for _, c := range []struct {
+		z    string
+		area focusArea
+	}{
+		{zoneAgentChip, focusAgent},
+		{zoneRepoChip, focusRepo},
+		{zoneProjectChip, focusProject},
+	} {
+		if z := zone.Get(c.z); z != nil && z.InBounds(msg) {
+			m.focus = c.area
+			m.openDropdown(c.area)
 			return m, nil
 		}
+	}
+
+	if z := zone.Get(zoneInput); z != nil && z.InBounds(msg) {
+		m.focus = focusInput
+		return m, m.onFocusChange()
 	}
 
 	for _, s := range m.sessions {
@@ -467,17 +443,17 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if z == nil || !z.InBounds(msg) {
 			continue
 		}
-		// A single click only selects. Misclicks on a dense board are frequent,
-		// so opening a session takes a double click or enter.
-		if m.selectedID == s.ID && m.isDoubleClick() {
-			m.selectedID = s.ID
-			m.mode = modeDetail
-			m.resizePanes()
-			return m, m.refreshDetailPanes()
+		// A single click selects; opening the diff takes a double click or enter,
+		// because misclicks on a dense board are frequent.
+		if m.selectedID == s.ID && m.lastClickID == s.ID &&
+			timeSince(m.lastClickAt) < doubleClickWindow {
+			m.mode = modeDiff
+			return m, m.refreshDiff()
 		}
-		m.selectedID = s.ID
-		m.markClick()
-		return m, nil
+		m.focus = focusBoard
+		m.selectedID, m.preview = s.ID, ""
+		m.lastClickID, m.lastClickAt = s.ID, now()
+		return m, previewCmd(s)
 	}
 	return m, nil
 }
