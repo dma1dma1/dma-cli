@@ -20,6 +20,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
+	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 	"github.com/dma1dma1/dma-cli/internal/ui"
 )
@@ -27,7 +28,7 @@ import (
 const usage = `dma — a kanban board for parallel coding agent sessions
 
 usage:
-  dma                       open the board
+  dma                       open the board (registers the repo you are in)
   dma repo add <path>       register a repository
   dma repo list             list registered repositories
   dma repo remove <id>      unregister a repository
@@ -35,7 +36,10 @@ usage:
   dma hooks print           print the hook config the board installs
   dma doctor                check required external tools
 
-state lives in ` + "`$DMA_HOME`" + ` (default ~/.dma)
+Most of the time you need none of these: cd into a repo and run dma.
+Repos can also be added from inside the board by pressing r.
+
+state lives in $DMA_HOME (default ~/.dma)
 `
 
 func main() {
@@ -75,12 +79,15 @@ func runBoard() error {
 	if err != nil {
 		return err
 	}
-	if len(cfg.Repos) == 0 {
-		return fmt.Errorf("no repositories registered yet.\n\nRegister one first:\n  dma repo add /path/to/repo")
-	}
 	if !tmuxx.Available() {
 		return fmt.Errorf("tmux is required but not on PATH")
 	}
+
+	// Adopt whatever repo we are standing in. Being in a repo is the whole
+	// declaration of intent -- there is no reason to make someone register it
+	// first, and its dependencies and env files are detectable from the
+	// checkout itself.
+	launchRepo, notice := adoptCwd(cfg)
 
 	sessions, err := core.LoadSessions()
 	if err != nil {
@@ -102,10 +109,44 @@ func runBoard() error {
 	zone.NewGlobal()
 	defer zone.Close()
 
-	m := ui.New(cfg, sessions, srv.Events(), srv.URL())
+	m := ui.New(ui.Options{
+		Config:     cfg,
+		Sessions:   sessions,
+		HookEvents: srv.Events(),
+		HookURL:    srv.URL(),
+		LaunchRepo: launchRepo,
+		Notice:     notice,
+	})
 	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err
+}
+
+// adoptCwd registers the repo containing the working directory, if there is
+// one. It returns the repo id to default new sessions to, plus a one-line
+// notice when something was registered, so adoption is never silent.
+func adoptCwd(cfg *core.Config) (repoID, notice string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if !gitx.IsRepo(ctx, cwd) {
+		if len(cfg.Repos) == 0 {
+			return "", "Not in a git repository — press r then a to add one."
+		}
+		return "", ""
+	}
+	repo, added, err := ops.Adopt(ctx, cfg, cwd)
+	if err != nil {
+		return "", "could not register this repo: " + err.Error()
+	}
+	if !added {
+		return repo.ID, ""
+	}
+	return repo.ID, fmt.Sprintf("registered %s — %s", repo.ID, ops.SummarizeBootstrap(repo.Bootstrap))
 }
 
 // --- repo ---
@@ -204,8 +245,13 @@ func runRepoAdd(args []string) error {
 	}
 
 	r.BranchPrefix = *prefix
-	r.Bootstrap.Symlink = splitList(*symlink)
-	r.Bootstrap.Copy = splitList(*copyPaths)
+	// Explicit flags win; otherwise detect what a fresh worktree will need.
+	if *symlink == "" && *copyPaths == "" {
+		r.Bootstrap = ops.DetectBootstrap(ctx, path)
+	} else {
+		r.Bootstrap.Symlink = splitList(*symlink)
+		r.Bootstrap.Copy = splitList(*copyPaths)
+	}
 
 	cfg.Repos = append(cfg.Repos, r)
 	if *setDefault || cfg.DefaultRepo == "" {
@@ -220,12 +266,7 @@ func runRepoAdd(args []string) error {
 	fmt.Printf("  remote        %s\n", orDash(r.Remote))
 	fmt.Printf("  base branch   %s\n", r.BaseBranch)
 	fmt.Printf("  worktrees     %s\n", r.WorktreeRoot)
-	if len(r.Bootstrap.Symlink) == 0 && len(r.Bootstrap.Copy) == 0 {
-		fmt.Printf("\nNo bootstrap paths set. Without them each new worktree starts with no\n")
-		fmt.Printf("dependencies installed and no local env file. Add them with:\n")
-		fmt.Printf("  dma repo add --symlink node_modules,.venv --copy .env %s\n", r.Path)
-		fmt.Printf("or edit %s\n", core.ConfigPath())
-	}
+	fmt.Printf("  bootstrap     %s\n", ops.SummarizeBootstrap(r.Bootstrap))
 	return nil
 }
 

@@ -54,22 +54,41 @@ go build -o ~/bin/dma ./cmd/dma
 ## Quick start
 
 ```sh
-dma repo add --symlink node_modules,.venv --copy .env ~/code/my-project
+cd ~/code/my-project
 dma
 ```
 
-Then press `n`, type what you want the agent to do, and press enter.
+That's it. There is no setup step. The repo you are standing in is registered on first launch and becomes the default for new sessions, so `cd` is how you choose what to work on.
 
-### Bootstrap paths matter
+Press `n`, type what you want the agent to do, press enter.
 
-`--symlink` and `--copy` are the difference between a usable tool and one you stop reaching for. A fresh worktree with no `node_modules` and no `.env` needs a dependency install and a hand-copied config file before the agent can do anything, and under time pressure you will skip creating the worktree instead.
+Press `r` at any time to switch repos, add another one, or unregister one.
 
-- **`--symlink`** — shared across worktrees: `node_modules`, `.venv`, `target`, `.gradle`, package manager caches.
-- **`--copy`** — duplicated per worktree, because each session needs its own: `.env`, `.env.local`.
+### What gets set up for you
 
-These are **per repo**, not global — a Node repo and a Python repo need different lists. Both are recorded in `config.json` and can be edited there later.
+Registration reads everything it needs from the checkout:
 
-Bootstrapped paths are added to the repo's `.git/info/exclude`, so they never make a worktree read as dirty.
+| | |
+|---|---|
+| `remote` | from `git remote get-url origin` |
+| `base_branch` | from `origin/HEAD`, falling back to `main`/`master` |
+| `worktree_root` | `~/.dma/worktrees/<id>`, namespaced per repo |
+| **bootstrap paths** | **detected — see below** |
+
+**Bootstrap** is the step that decides whether the tool is usable. A fresh worktree with no `node_modules` and no `.env` needs a dependency install and a hand-copied config file before the agent can do anything, and under time pressure you will skip creating the worktree instead.
+
+So it's detected rather than configured. dma looks for dependency trees and env files that **git is ignoring** — anything git tracks already arrives with the worktree — and splits them:
+
+- **symlinked** (shared across worktrees): `node_modules`, `.venv`, `target`, `.gradle`, `vendor`, `Pods`, `.terraform`, package-manager caches — including per-package copies in a monorepo (`packages/*`, `apps/*`, `services/*`, …).
+- **copied** (each session needs its own): `.env`, `.env.local`, and friends.
+
+On a pnpm monorepo that typically means ~40 symlinks and one copied `.env`, found in well under a second. The board tells you what it found:
+
+```
+registered devops-copilot — shares .pnpm-store, .venv, node_modules +40 more, copies .env
+```
+
+Everything is written to `~/.dma/config.json` and can be edited there. Bootstrapped paths are added to the repo's `.git/info/exclude`, so they never make a worktree read as dirty.
 
 ## Keys
 
@@ -89,6 +108,7 @@ Bootstrapped paths are added to the repo's `.git/info/exclude`, so they never ma
 | `x` | prune worktree and branch |
 | `D` | kill agent session (worktree kept) |
 | `R` | force PR refresh |
+| `r` | repositories: switch, add, unregister |
 | `f` | filter to one repo, or clear (hidden with one repo) |
 | `?` | help |
 | `q` | quit — sessions keep running |
@@ -130,6 +150,8 @@ Entering `needs_you` raises a desktop notification. The point of the tool is not
 Agents without hook support degrade to process liveness plus recent pane output.
 
 ## Multiple repos
+
+Press `r` for the repo list: `j`/`k` to move, `enter` to make one the default for new sessions, `a` to add another by path, `x` to unregister (which never touches the repo on disk). In the compose bar, `tab` to the `repo` field and use `←`/`→` to pick — the base branch follows your choice.
 
 One repo is the common case and stays uncluttered — the repo handle is not rendered on cards, and the compose bar hides the repo field entirely.
 
@@ -181,14 +203,16 @@ Set `DMA_HOME` to relocate both.
 ## Commands
 
 ```
-dma                    open the board
-dma repo add <path>    register a repository
+dma                    open the board (registers the repo you are in)
+dma repo add <path>    register a repository explicitly
 dma repo list          list registered repositories
 dma repo remove <id>   unregister a repository
 dma ls                 list sessions without opening the TUI
 dma hooks print        print the hook config the board installs
 dma doctor             check required external tools
 ```
+
+You normally need none of these — `cd` into a repo and run `dma`. `dma repo add` exists for scripting and for overriding detection with explicit `--symlink` / `--copy` lists.
 
 ## Design notes
 
@@ -199,6 +223,7 @@ dma doctor             check required external tools
 - **A collapsed group keeps its rollup**, so collapsing can never hide the fact that something needs attention.
 - **PR polling lists open PRs only**, once per repo that has a live session. Asking GitHub for the full PR history with check rollups times out with a 502 on large repos; a tracked PR that leaves the open set is resolved individually instead.
 - **Diffs are not parsed.** `git diff --color=always`, optionally piped through `delta`, rendered into a viewport. Untracked files are included explicitly — a new file is an agent's most common output and plain `git diff` omits it.
+- **Registration is a side effect, not a step.** Standing in a repo is a complete statement of intent; making someone declare it first is ceremony. Detection reads the checkout instead of asking.
 - **Teardown never forces.** A dirty worktree or an unmerged branch requires a second, explicit confirmation.
 
 ## Not in scope

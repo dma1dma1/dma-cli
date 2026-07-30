@@ -25,9 +25,10 @@ func boardHints(multiRepo bool) []hint {
 		{"m", "merge"},
 		{"x", "prune"},
 		{"R", "refresh"},
+		{"r", "repos"},
 	}
 	if multiRepo {
-		h = append(h, hint{"f", "repo"})
+		h = append(h, hint{"f", "filter"})
 	}
 	return append(h, hint{"?", "help"}, hint{"q", "quit"})
 }
@@ -60,6 +61,7 @@ var helpText = [][3]string{
 	{"", "x", "prune worktree and branch"},
 	{"", "D", "kill session (worktree kept)"},
 	{"", "R", "force PR refresh"},
+	{"", "r", "repositories: switch, add, unregister"},
 	{"", "f", "filter board to one repo, or clear"},
 	{"", "?", "help"},
 	{"", "q", "quit (sessions keep running)"},
@@ -69,6 +71,11 @@ var helpText = [][3]string{
 	{"", "j k", "previous/next session"},
 	{"", "tab", "toggle uncommitted diff / branch diff"},
 	{"", "d s m x", "same as board"},
+	{"Repositories", "", ""},
+	{"", "j k", "move"},
+	{"", "enter", "use this repo for new sessions"},
+	{"", "a", "add a repo by path (dependencies detected automatically)"},
+	{"", "x", "unregister (the repo on disk is untouched)"},
 	{"Attached", "", ""},
 	{"", "ctrl-q", "detach back to session detail"},
 	{"", "", "all other keys pass through to the agent"},

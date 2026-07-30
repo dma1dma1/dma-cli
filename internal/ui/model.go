@@ -27,6 +27,7 @@ const (
 	modeCompose
 	modePrompt
 	modeConfirm
+	modeRepos
 )
 
 // Model is the root Bubble Tea model.
@@ -50,6 +51,12 @@ type Model struct {
 	compose compose
 	prompt  prompt
 	confirm confirmState
+	repos   repoPicker
+
+	// activeRepo is the repo new sessions default to. It is seeded from the
+	// directory dma was launched in, so standing in a repo is enough to work
+	// in it.
+	activeRepo string
 
 	diffView   viewport.Model
 	outputView viewport.Model
@@ -87,21 +94,43 @@ type confirmState struct {
 	action  func(m *Model) tea.Cmd
 }
 
+// Options configures the root model.
+type Options struct {
+	Config     *core.Config
+	Sessions   []*core.Session
+	HookEvents <-chan hooks.Event
+	HookURL    string
+	// LaunchRepo is the repo dma was started in, if any.
+	LaunchRepo string
+	// Notice is shown once on startup, e.g. that a repo was just adopted.
+	Notice string
+}
+
 // New builds the root model.
-func New(cfg *core.Config, sessions []*core.Session, hookEvents <-chan hooks.Event, hookURL string) Model {
+func New(opt Options) Model {
 	m := Model{
-		cfg:        cfg,
-		sessions:   sessions,
+		cfg:        opt.Config,
+		sessions:   opt.Sessions,
 		styles:     newStyles(),
 		mode:       modeBoard,
 		collapsed:  map[string]bool{},
-		hookEvents: hookEvents,
-		hookURL:    hookURL,
+		hookEvents: opt.HookEvents,
+		hookURL:    opt.HookURL,
+		activeRepo: opt.LaunchRepo,
 		diffView:   viewport.New(),
 		outputView: viewport.New(),
 		diffMode:   gitx.DiffUncommitted,
 		width:      100,
 		height:     30,
+	}
+	if opt.Notice != "" {
+		m.statusText, m.statusAt = opt.Notice, time.Now()
+	}
+	// Put the picker cursor on the active repo, not on whatever is first.
+	for i, r := range m.cfg.Repos {
+		if r.ID == m.activeRepoID() {
+			m.repos.cursor = i
+		}
 	}
 	m.rebuild()
 	if s := m.layout.first(); s != nil {
@@ -185,6 +214,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case prDetailMsg:
 		return m.handlePRDetail(msg)
+
+	case adoptedMsg:
+		if msg.err != nil {
+			return m, errStatus(msg.err)
+		}
+		m.activeRepo = msg.repo.ID
+		for i, r := range m.cfg.Repos {
+			if r.ID == msg.repo.ID {
+				m.repos.cursor = i
+			}
+		}
+		m.rebuild()
+		if !msg.added {
+			return m, status(msg.repo.ID + " was already registered — now active")
+		}
+		return m, status(fmt.Sprintf("added %s — %s", msg.repo.ID, ops.SummarizeBootstrap(msg.repo.Bootstrap)))
 
 	case createdMsg:
 		return m.handleCreated(msg)
@@ -556,6 +601,8 @@ func (m Model) render() string {
 		body = m.viewHelp()
 	case modeDetail:
 		body = m.viewDetail()
+	case modeRepos:
+		body = m.viewRepos()
 	default:
 		body = m.viewBoard()
 	}
@@ -588,21 +635,30 @@ func (m Model) viewBottomBar() string {
 		return m.viewPrompt()
 	case modeConfirm:
 		return m.styles.Dialog.Render(m.confirm.message + "   [y/n]")
+	case modeRepos:
+		return m.hintLine([]hint{
+			{"j/k", "move"}, {"enter", "use for new sessions"},
+			{"a", "add repo"}, {"x", "unregister"}, {"esc", "back"},
+		})
 	}
 
 	hints := boardHints(m.cfg.MultiRepo())
 	if m.mode == modeDetail {
 		hints = detailHints()
 	}
-	var parts []string
-	for _, h := range hints {
-		parts = append(parts, m.styles.KeyHint.Render(h.key)+" "+m.styles.KeyDesc.Render(h.desc))
-	}
-	line := strings.Join(parts, m.styles.KeyDesc.Render(" · "))
+	line := m.hintLine(hints)
 	if m.repoFilter != "" {
 		line = m.styles.RepoTag.Render("[repo:"+m.repoFilter+"] ") + line
 	}
 	return lipgloss.NewStyle().Width(m.width).Render(truncate(line, m.width))
+}
+
+func (m Model) hintLine(hints []hint) string {
+	var parts []string
+	for _, h := range hints {
+		parts = append(parts, m.styles.KeyHint.Render(h.key)+" "+m.styles.KeyDesc.Render(h.desc))
+	}
+	return strings.Join(parts, m.styles.KeyDesc.Render(" · "))
 }
 
 func (m Model) viewHelp() string {

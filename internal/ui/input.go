@@ -27,6 +27,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case modeDetail:
 		return m.keyDetail(msg, key)
+	case modeRepos:
+		return m.keyRepos(key)
 	}
 	return m.keyBoard(key)
 }
@@ -42,6 +44,10 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 
 	case "?":
 		m.mode = modeHelp
+		return m, nil
+
+	case "r":
+		m.mode = modeRepos
 		return m, nil
 
 	case "n":
@@ -286,6 +292,18 @@ func (m Model) keyCompose(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) 
 		m.compose.cycle(-1)
 		return m, nil
 
+	case "left", "right":
+		// On the repo field the arrows pick a repo; elsewhere they move the
+		// text cursor as usual.
+		if m.compose.focusedField() == fieldRepo {
+			dir := 1
+			if key == "left" {
+				dir = -1
+			}
+			m.compose.cycleRepo(m.cfg.Repos, dir)
+			return m, nil
+		}
+
 	case "enter":
 		m.compose.syncField()
 		c := m.compose
@@ -363,6 +381,12 @@ func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, status("repo filter: " + val)
+
+		case promptAddRepo:
+			if val == "" {
+				return m, nil
+			}
+			return m, tea.Batch(adoptCmd(m.cfg, val), status("registering "+val+"…"))
 
 		case promptPRTitle:
 			s := core.FindByID(m.sessions, p.target)

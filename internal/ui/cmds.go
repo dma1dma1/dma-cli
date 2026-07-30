@@ -3,6 +3,9 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -38,6 +41,13 @@ type prDetailMsg struct {
 	sessionID string
 	pr        ghx.PR
 	err       error
+}
+
+// adoptedMsg reports a repo registered from inside the TUI.
+type adoptedMsg struct {
+	repo  core.Repo
+	added bool
+	err   error
 }
 
 type createdMsg struct {
@@ -267,6 +277,25 @@ func attachCmd(s *core.Session) tea.Cmd {
 		restoreAfterAttach(name)
 		return attachDoneMsg{err: err}
 	})
+}
+
+// contextWithTimeout is the standard budget for a repo-registration call.
+func contextWithTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
+}
+
+// expandPath resolves ~ so a pasted path works as typed.
+func expandPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if p == "~" {
+				return home
+			}
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
 }
 
 func status(text string) tea.Cmd {

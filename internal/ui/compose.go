@@ -5,6 +5,8 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/lipgloss/v2"
+
+	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
 // Compose field keys.
@@ -45,12 +47,10 @@ func (m *Model) startCompose() {
 	// Group comes from the selected swimlane.
 	c.values[fieldGroup] = m.currentGroup()
 
-	// Repo comes from the selected card's repo, else the configured default.
-	// It is never inferred from the group: group and repo are orthogonal.
-	repo := m.cfg.DefaultRepo
-	if s := m.selected(); s != nil {
-		repo = s.RepoID
-	}
+	// Repo is the active repo -- the one dma was launched in, or whatever was
+	// last chosen in the repo picker. It is never inferred from the group:
+	// group and repo are orthogonal.
+	repo := m.activeRepoID()
 	if m.repoFilter != "" {
 		repo = m.repoFilter
 	}
@@ -116,6 +116,38 @@ func (c *compose) consumeFresh(printable bool) {
 	}
 }
 
+// cycleRepo steps the repo field through the registered repos, so choosing one
+// is arrow keys rather than typing an id from memory.
+func (c *compose) cycleRepo(repos []core.Repo, dir int) {
+	if len(repos) == 0 || c.fields[c.focused] != fieldRepo {
+		return
+	}
+	cur := c.input.Value()
+	idx := 0
+	for i, r := range repos {
+		if r.ID == cur {
+			idx = i
+			break
+		}
+	}
+	idx = ((idx+dir)%len(repos) + len(repos)) % len(repos)
+	c.input.SetValue(repos[idx].ID)
+	c.input.CursorEnd()
+	c.fresh = false
+	// The base branch belongs to the repo, so it has to follow the choice --
+	// otherwise picking a repo that branches off master would silently keep
+	// the previous repo's main.
+	c.values[fieldBase] = repos[idx].BaseBranch
+}
+
+// focusedField is the key of the field currently being edited.
+func (c compose) focusedField() string {
+	if c.focused >= 0 && c.focused < len(c.fields) {
+		return c.fields[c.focused]
+	}
+	return ""
+}
+
 // viewCompose renders the compose bar into one row.
 func (m Model) viewCompose() string {
 	st := m.styles
@@ -124,8 +156,11 @@ func (m Model) viewCompose() string {
 	var parts []string
 	for i, key := range c.fields {
 		if i == c.focused {
-			parts = append(parts,
-				st.KeyHint.Render(key+":")+" "+c.input.View())
+			label := key + ":"
+			if key == fieldRepo {
+				label = "◂ " + key + ":"
+			}
+			parts = append(parts, st.KeyHint.Render(label)+" "+c.input.View())
 			continue
 		}
 		val := c.values[key]
@@ -156,6 +191,7 @@ const (
 	promptGroup
 	promptRepoFilter
 	promptPRTitle
+	promptAddRepo
 )
 
 // prompt is a one-shot single-field input in the bottom bar.
