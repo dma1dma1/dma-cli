@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	zone "github.com/lrstanley/bubblezone/v2"
@@ -55,9 +56,15 @@ func zoneOption(i int) string   { return fmt.Sprintf("opt:%d", i) }
 // rule and input bar, plus enough of the agent's output to be worth reading.
 const minPanelHeight = 12
 
-// inputBoxHeight is what the task input claims once it draws its own frame: two
-// rows of border around the one row you type on.
-const inputBoxHeight = 3
+// minInputBoxHeight is the least the task input claims once it draws its own
+// frame: two rows of border around the one row you type on. It grows from there
+// as the task wraps.
+const minInputBoxHeight = 3
+
+// maxInputRows caps how tall the task input grows. Past it the text scrolls
+// inside the box, because the next row would come out of the board or the
+// agent's output -- and a task that long is being written, not read back.
+const maxInputRows = 8
 
 // inputDetached reports whether the task input gets a frame of its own below the
 // panel.
@@ -71,8 +78,45 @@ func (m Model) inputDetached() bool {
 	}
 	// On a window too short for both, the input stays in the panel: a frame of
 	// its own is not worth the rows it takes off the agent's output.
-	return m.height-1 >= inputBoxHeight+minPanelHeight
+	return m.height-1 >= minInputBoxHeight+minPanelHeight
 }
+
+// inputWidth is the width the task field lays its text out to: the panel's
+// interior, which is also the interior of the input's own box.
+func (m Model) inputWidth() int { return max(m.contentWidth()-4, 20) }
+
+// inputRows is how many rows of text the task input needs right now -- one per
+// wrapped line, and never more than the window can spare.
+//
+// The textarea is already held to the same ceiling, so this is what the box and
+// the field agree on: a field rendering rows the frame then clipped would put
+// the caret somewhere off screen.
+func (m Model) inputRows() int {
+	return clamp(m.input.Height(), 1, m.inputRowsMax())
+}
+
+// inputRowsMax is how many rows of task text the window can spare.
+//
+// The board lends whatever it holds above its floor and the panel gives up the
+// rest, so what is left over is the screen minus both minimums, minus the row
+// the input bar was using inside the panel anyway, minus the row the notice line
+// borrows.
+//
+// That last row is held back whether or not a notice is up. Deliberately a
+// function of the window alone: taken from what is free right now, the ceiling
+// would move under the caret every time a session appeared, and twice more for
+// every notice -- once when it is posted and again when it expires.
+func (m Model) inputRowsMax() int {
+	avail := max(m.height-1, 3)
+	return clamp(avail-minBoardRows-minPanelHeight-1-noticeRows, 1, maxInputRows)
+}
+
+// noticeRows is the row the notice line takes when there is something on it.
+const noticeRows = 1
+
+// inputBoxHeight is the rows the input's own box needs: its frame, plus a row
+// per wrapped line of the task.
+func (m Model) inputBoxHeight() int { return m.inputRows() + 2 }
 
 // splitHeights divides the screen between the columns, the panel and the task
 // input's own box, above the footer.
@@ -84,11 +128,12 @@ func (m Model) inputDetached() bool {
 func (m Model) splitHeights() (boardH, panelH, inputH int) {
 	boardH, panelH = m.baseHeights()
 	if m.inputDetached() {
-		// The panel gives up the row the input bar was using, and the two the new
-		// frame adds are borrowed.
-		inputH = inputBoxHeight
+		// The panel gives up the row the input bar was using, and the rest -- the two
+		// rows of new frame, plus a row for every line the task has wrapped onto --
+		// is borrowed.
+		inputH = m.inputBoxHeight()
 		panelH--
-		boardH, panelH = borrowRows(boardH, panelH, inputBoxHeight-1)
+		boardH, panelH = borrowRows(boardH, panelH, inputH-1)
 	}
 	if m.noticeActive() {
 		boardH, panelH = borrowRows(boardH, panelH, 1)
@@ -209,7 +254,7 @@ func (m Model) viewInputBox(height int) string {
 		Height:   height,
 		Focused:  true,
 	}
-	return b.Render(m.inputRow(max(m.contentWidth()-4, 20)))
+	return b.Render(m.inputRow(m.inputWidth()))
 }
 
 // newSessionTarget names what pressing enter would start. The chips say the same
@@ -350,20 +395,100 @@ func centered(rows, width int, msg string) []string {
 // marked as the action it is.
 const newSessionGlyph = "+ "
 
+// newTaskInput builds the task field.
+//
+// It is a textarea rather than a single-line input so that a task longer than
+// the box wraps onto the next row instead of scrolling sideways. A description
+// whose beginning has slid out of view is one you cannot read back before
+// pressing enter, and enter is the key that spends a worktree and an agent on it.
+//
+// Enter still starts the agent: keyInput takes that key before the field ever
+// sees it, so the rows here come from wrapping (or from a pasted task that
+// arrived with its own line breaks), never from a keystroke.
+func newTaskInput(st Styles) textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = "what should the agent do?"
+	ta.ShowLineNumbers = false
+	ta.SetVirtualCursor(true)
+	// The box is sized from the field, so the field has to measure itself: one row
+	// per wrapped line, up to the ceiling layoutSizes gives it.
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	ta.MaxHeight = maxInputRows
+	ta.SetStyles(taskInputStyles(st))
+	return ta
+}
+
+// setInputPrompt puts the new-session glyph, and the pending-image badge when
+// there is one, in front of the field's first row.
+//
+// Both ride the prompt rather than being prepended to the view: the row is
+// several lines tall now, so a lead written on top of it would sit on the first
+// line and leave the rest hanging under nothing. Wrapped rows indent to clear it
+// instead, which keeps the task in one column.
+//
+// It is re-set from layoutSizes rather than fixed at construction because the
+// badge comes and goes, and the prompt's width is what the text wraps against.
+func (m *Model) setInputPrompt() {
+	st := m.styles
+	summary := m.imageSummary()
+	width := lipgloss.Width(newSessionGlyph) + lipgloss.Width(summary)
+	lead := st.Prompt.Render(newSessionGlyph) + st.RepoTag.Render(summary)
+	m.input.SetPromptFunc(width, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return lead
+		}
+		return strings.Repeat(" ", width)
+	})
+}
+
+// taskInputStyles strips the textarea back to a plain field. Its defaults dress
+// a standalone editor -- a filled cursor line, a dimmed body while blurred -- and
+// in here it is a few rows inside a box that already carries the focus.
+func taskInputStyles(st Styles) textarea.Styles {
+	s := textarea.DefaultDarkStyles()
+	plain := lipgloss.NewStyle()
+	for _, state := range []*textarea.StyleState{&s.Focused, &s.Blurred} {
+		state.Base = plain
+		state.CursorLine = plain
+		state.EndOfBuffer = plain
+		// The prompt func returns the glyph already styled.
+		state.Prompt = plain
+		state.Text = plain
+		state.Placeholder = st.Faint
+	}
+	return s
+}
+
 // inputRow is the always-present task input. It stays on screen even when the
 // board has focus, so starting work is never more than one key away.
+//
+// Focused it is as many rows as the task has wrapped onto; unfocused it is
+// always one, because the panel it sits in has one row to give.
 func (m Model) inputRow(width int) string {
 	st := m.styles
 	glyph := st.Prompt.Render(newSessionGlyph)
 	summary := m.imageSummary()
 	if m.focus == focusInput {
-		image := st.RepoTag.Render(summary)
-		return zone.Mark(zoneInput, pad(glyph+image+m.input.View(), width))
+		// The glyph and the image badge are both in the field's prompt, so what is
+		// left to do here is pad the rows the field returned.
+		lines := strings.Split(m.input.View(), "\n")
+		if len(lines) > m.inputRows() {
+			lines = lines[:m.inputRows()]
+		}
+		for i, l := range lines {
+			lines[i] = pad(l, width)
+		}
+		// One mark around the block: paired markers describe a rectangle, so a mark
+		// per line would collapse the zone onto the last of them.
+		return zone.Mark(zoneInput, strings.Join(lines, "\n"))
 	}
 	// Naming the session as new is what keeps the row from being mistaken for
 	// the agent's own input; the keystroke alone would not say where it goes.
 	hint := "new session — press i to describe a task"
-	if v := m.input.Value(); v != "" {
+	// The row is one row: a task with line breaks in it shows the line that says
+	// what the work is, the same one the card would be titled with.
+	if v := firstLine(m.input.Value()); v != "" {
 		hint = v
 	}
 	hint = summary + hint

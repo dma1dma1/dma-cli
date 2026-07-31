@@ -447,7 +447,10 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		return m, readClipboardCmd()
 
 	case "backspace":
-		if len(m.pendingImages) > 0 && m.input.Position() == 0 {
+		// The very start of the task, which in a field that wraps means the first
+		// row as well as the first column -- backspace anywhere else in the text is
+		// still deleting text.
+		if len(m.pendingImages) > 0 && m.input.Line() == 0 && m.input.Column() == 0 {
 			m.pendingImages = m.pendingImages[:len(m.pendingImages)-1]
 			m.layoutSizes()
 			return m, nil
@@ -475,7 +478,10 @@ func (m Model) newSessionRequest(task string) (ops.CreateRequest, error) {
 		images[i] = ops.ImageAttachment{PNG: append([]byte(nil), image.PNG...)}
 	}
 	return ops.CreateRequest{
-		Title:  task,
+		// A task that arrived with line breaks in it still names one session: the
+		// first line is the title a card can show and a branch can be slugged from,
+		// and the whole of it is what the agent is started on.
+		Title:  firstLine(task),
 		RepoID: repo,
 		Cols:   cols,
 		Rows:   rows,
@@ -538,6 +544,21 @@ func (m Model) handleClipboard(msg clipboardMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// firstLine is the first line of a task with anything on it.
+//
+// The input wraps rather than scrolls, so a task can be several lines long --
+// pasted, most of the time. Where only one line fits, a leading blank line is
+// not the one to show: it would title a card with nothing, and the empty title
+// would be refused on the way to creating the session.
+func firstLine(task string) string {
+	for _, l := range strings.Split(task, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // --- chip focus ---

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -63,7 +63,7 @@ type Model struct {
 	activeRepo  string
 	agentChoice string
 
-	input textinput.Model
+	input textarea.Model
 	// pendingImages belong to the new-session composer. Their bytes stay in
 	// memory until ops.Create has a worktree in which to stage them.
 	pendingImages []clip.Image
@@ -137,17 +137,12 @@ type Options struct {
 }
 
 func New(opt Options) Model {
-	ti := textinput.New()
-	ti.Placeholder = "what should the agent do?"
-	// The row draws its own marker, and textinput's default "> " on top of it
-	// would be a second caret in a panel that already shows the agent's prompt.
-	ti.Prompt = ""
-	ti.SetVirtualCursor(true)
+	styles := newStyles()
 
 	m := Model{
 		cfg:         opt.Config,
 		sessions:    opt.Sessions,
-		styles:      newStyles(),
+		styles:      styles,
 		prober:      probe.New(),
 		typedAt:     map[string]time.Time{},
 		mode:        modeBoard,
@@ -156,7 +151,7 @@ func New(opt Options) Model {
 		hookURL:     opt.HookURL,
 		activeRepo:  opt.LaunchRepo,
 		agentChoice: opt.Config.DefaultProfile,
-		input:       ti,
+		input:       newTaskInput(styles),
 		diffView:    viewport.New(),
 		diffMode:    gitx.DiffUncommitted,
 		width:       120,
@@ -236,7 +231,12 @@ func (m *Model) rebuild() {
 }
 
 func (m *Model) layoutSizes() {
-	m.input.SetWidth(max(m.contentWidth()-10-lipgloss.Width(m.imageSummary()), 20))
+	// Prompt and ceiling before SetWidth: the field wraps its text against the
+	// width left over after the prompt, and re-measures itself against the ceiling,
+	// so SetWidth has to be the last of the three.
+	m.setInputPrompt()
+	m.input.MaxHeight = m.inputRowsMax()
+	m.input.SetWidth(m.inputWidth())
 	m.diffView.SetWidth(max(m.contentWidth()-4, 20))
 	m.diffView.SetHeight(max(m.height-6, 5))
 }
