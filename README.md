@@ -131,7 +131,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 
 **Diff** — `tab` toggles working tree / branch diff, `j` `k` step between sessions, `esc` returns.
 
-**Attached** — every keystroke goes to the agent, including `esc`. `ctrl-q` detaches. While attached the tmux status line turns orange and says so.
+**Attached** — every keystroke goes to the agent, including `esc`. `ctrl-q` detaches. While attached the tmux status line turns orange and says so. The mouse wheel scrolls back through the agent's output: tmux owns the mouse for the duration, which is what makes the wheel work for agents that draw inline (Codex writes its transcript into the pane's scrollback), and which means text selection needs `shift` — `⌥` in some macOS terminals. Your own tmux `mouse` setting is restored on detach.
 
 ## The four columns
 

@@ -149,4 +149,5 @@ var helpText = [][3]string{
 	{"Attached", "", ""},
 	{"", "ctrl-q", "detach back to the board"},
 	{"", "", "every other key, Escape included, goes to the agent"},
+	{"", "wheel", "scroll the agent's history (hold shift to select text)"},
 }
