@@ -6,6 +6,7 @@ package gitx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/dma1dma1/dma-cli/internal/render"
 )
 
 // Error carries the stderr of a failed git invocation, which is what the user
@@ -655,46 +659,42 @@ func diffTracked(ctx context.Context, wt, base string, mode DiffMode, path strin
 
 // renderDiff runs git with args and pipes the result through delta when it is
 // installed.
+//
+// Git's output is buffered rather than streamed into delta, because the margin
+// width has to be measured off the whole patch before either renderer starts:
+// delta is told the width as part of the format it is pinned to, and the
+// fallback writes the margin itself. The patch is one file's worth of text and
+// delta's output was always fully buffered anyway, so the streaming this gives
+// up bought nothing.
 func renderDiff(ctx context.Context, args []string, opts DiffOpts) (string, error) {
 	git := exec.CommandContext(ctx, "git", args...)
 	git.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
+	var patch, stderr bytes.Buffer
+	git.Stdout = &patch
+	git.Stderr = &stderr
+	gitErr := git.Run()
+	if gitErr != nil && patch.Len() == 0 {
+		return "", &Error{Args: args, Stderr: stderr.String(), Err: gitErr}
+	}
+	width := MarginWidth(patch.String())
+
 	if delta, err := exec.LookPath("delta"); err == nil {
-		d := exec.CommandContext(ctx, delta, deltaArgs(opts)...)
+		d := exec.CommandContext(ctx, delta, deltaArgs(opts, width)...)
 		d.Env = append(os.Environ(), "DELTA_PAGER=cat")
-		pipe, err := git.StdoutPipe()
-		if err != nil {
-			return "", err
-		}
-		d.Stdin = pipe
+		d.Stdin = bytes.NewReader(patch.Bytes())
 		var out, derr bytes.Buffer
 		d.Stdout = &out
 		d.Stderr = &derr
-		if err := git.Start(); err != nil {
-			return "", err
-		}
-		if err := d.Start(); err != nil {
-			return "", err
-		}
-		gitErr := git.Wait()
-		if err := d.Wait(); err != nil && out.Len() == 0 {
+		if err := d.Run(); err != nil && out.Len() == 0 {
 			return "", fmt.Errorf("delta: %s", strings.TrimSpace(derr.String()))
-		}
-		if out.Len() == 0 && gitErr != nil {
-			return "", gitErr
 		}
 		return out.String(), nil
 	}
 
-	var stdout, stderr bytes.Buffer
-	git.Stdout = &stdout
-	git.Stderr = &stderr
-	if err := git.Run(); err != nil && stdout.Len() == 0 {
-		return "", &Error{Args: args, Stderr: stderr.String(), Err: err}
-	}
 	// Git puts the line numbers in the hunk header and nowhere else, so the margin
 	// is added here -- the one thing delta does for the diff that git cannot.
-	return numberLines(stdout.String()), nil
+	return numberLines(patch.String(), width), nil
 }
 
 // HasDelta reports whether delta is installed. Side-by-side is the one thing the
@@ -710,7 +710,7 @@ func HasDelta() bool {
 // Flags given here beat the user's [delta] gitconfig, but only additively:
 // side-by-side turned on there cannot be turned back off from the command line,
 // so a user who has set it sees two columns whatever the view says.
-func deltaArgs(opts DiffOpts) []string {
+func deltaArgs(opts DiffOpts, marginWidth int) []string {
 	args := []string{"--paging=never"}
 	if opts.Width > 0 {
 		args = append(args, fmt.Sprintf("-w=%d", opts.Width))
@@ -719,6 +719,15 @@ func deltaArgs(opts DiffOpts) []string {
 	// function: where a change sits in the file is a question the margin now answers
 	// on every row, so the header repeating it for the first row is noise.
 	args = append(args, "--line-numbers", "--hunk-header-style=syntax")
+	// The margin is pinned to a format of our own rather than left as delta's,
+	// because it is the only thing in the rendered output that says which line
+	// a row is. Reading it back is what lets the pane jump between changes,
+	// point an agent at a line, and scroll to a search hit -- see package
+	// render. Delta's own default says the same thing in a shape we would have
+	// to guess at, and that could change under us on any upgrade.
+	args = append(args,
+		"--line-numbers-left-format="+render.DeltaLeftFormat(marginWidth),
+		"--line-numbers-right-format="+render.DeltaRightFormat(marginWidth))
 	// Delta's defaults clip a long line before the pane ever gets the chance to
 	// scroll it. Let it wrap instead, so the whole line stays reachable.
 	args = append(args, "--max-line-length=0", "--wrap-max-lines=unlimited")
@@ -812,4 +821,40 @@ func AddLocalExclude(ctx context.Context, worktree string, patterns ...string) e
 		return err
 	}
 	return nil
+}
+
+// hasRipgrep reports whether ripgrep is on PATH, looked up once. The answer
+// cannot change while the board is running, and the searches ask per keystroke.
+var hasRipgrep = sync.OnceValue(func() bool {
+	_, err := exec.LookPath("rg")
+	return err == nil
+})
+
+// runTool runs a non-git command in a worktree and returns its stdout. The
+// error is returned alongside whatever was written, because the search tools
+// exit non-zero to mean "no matches" and the output is the real answer.
+func runTool(ctx context.Context, dir, name string, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), &Error{Args: append([]string{name}, args...), Stderr: stderr.String(), Err: err}
+	}
+	return stdout.String(), nil
+}
+
+// exitCode is the status a failed command exited with, or -1 when it did not
+// run at all.
+func exitCode(err error) int {
+	var ee *exec.ExitError
+	var ge *Error
+	if errors.As(err, &ge) {
+		err = ge.Err
+	}
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }

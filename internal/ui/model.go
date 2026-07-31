@@ -19,6 +19,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/notify"
 	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/probe"
+	"github.com/dma1dma1/dma-cli/internal/render"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
@@ -109,35 +110,9 @@ type Model struct {
 	// both change the pane, and only one of them means the agent is working.
 	typedAt map[string]time.Time
 
-	diffView viewport.Model
-	diffMode gitx.DiffMode
-	// diffFiles is the file tree beside the diff. The diff pane renders one row
-	// of it at a time, so a session with fifty changed files costs one file's
-	// worth of git rather than fifty.
-	diffFiles fileTree
-	// diffCache holds rendered diffs by cacheKey. Stepping back to a file you
-	// have already read should not spend a git process on it again; the cache is
-	// dropped whole on a refresh, so it can never outlive the work it describes.
-	diffCache map[string]string
-	// diffContent is what the pane is showing, kept beside the viewport because
-	// the hunk rows are worked out by searching the rendered text and the
-	// viewport does not hand its content back.
-	diffContent string
-	// diffHunks is the structure of the diff on screen: where each separate
-	// change in the file starts and ends. diffHunkRows is the row each one landed
-	// on once rendered, which is what } and { scroll to.
-	diffHunks     []gitx.Hunk
-	diffHunkRows  []int
-	diffHunkCache map[string][]gitx.Hunk
-	// diffTreeFocus routes j/k to the tree rather than the diff.
-	diffTreeFocus bool
-	// diffTreeHidden gives the whole width to the diff. A narrow window starts
-	// out this way, since a tree pane and a diff cannot both be legible in 80
-	// columns.
-	diffTreeHidden bool
-	// diffSideBySide asks delta for two columns. Without delta there is only one
-	// layout git can produce, so the toggle says so rather than silently failing.
-	diffSideBySide bool
+	// review is the full-screen review view: the file tree, the pane beside it,
+	// and the searches that choose what the pane shows. See review.go.
+	review review
 
 	hookEvents <-chan hooks.Event
 	hookURL    string
@@ -195,8 +170,7 @@ func New(opt Options) Model {
 		activeRepo:  opt.LaunchRepo,
 		agentChoice: opt.Config.DefaultProfile,
 		input:       newTaskInput(styles),
-		diffView:    viewport.New(),
-		diffMode:    gitx.DiffUncommitted,
+		review:      review{view: viewport.New(), mode: gitx.DiffUncommitted},
 		width:       120,
 		height:      36,
 	}
@@ -287,8 +261,8 @@ func (m *Model) layoutSizes() {
 	m.setInputPrompt()
 	m.input.MaxHeight = m.inputRowsMax()
 	m.input.SetWidth(m.inputWidth())
-	m.diffView.SetWidth(m.diffPaneWidth())
-	m.diffView.SetHeight(m.diffPaneHeight())
+	m.review.view.SetWidth(m.diffPaneWidth())
+	m.review.view.SetHeight(m.diffPaneHeight())
 }
 
 // diffTreeWidth is the width of the file tree pane, zero when it is not drawn.
@@ -298,7 +272,7 @@ func (m *Model) layoutSizes() {
 // the diff needs more. Below the cutoff neither pane would be readable, so the
 // tree gives way entirely.
 func (m Model) diffTreeWidth() int {
-	if m.diffTreeHidden || m.contentWidth() < diffTreeMinTotal {
+	if m.review.treeHidden || m.contentWidth() < diffTreeMinTotal {
 		return 0
 	}
 	return diffTreeCols
@@ -530,14 +504,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case changedFilesMsg:
-		if msg.id != m.selectedID || msg.mode != m.diffMode {
+		if msg.id != m.selectedID || msg.mode != m.review.mode {
 			return m, nil
 		}
 		if msg.err != nil {
 			return m, errStatus(msg.err)
 		}
-		m.diffFiles.setFiles(msg.files)
-		return m, m.showSelectedFile()
+		m.review.files.setFiles(msg.files)
+		return m, m.showTreeSelection()
 
 	case diffMsg:
 		if msg.id != m.selectedID {
@@ -550,10 +524,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(content) == "" {
 			content = "(no changes)"
 		}
-		if m.diffCache == nil {
-			m.diffCache = map[string]string{}
+		if m.review.cache == nil {
+			m.review.cache = map[string]string{}
 		}
-		m.diffCache[msg.key] = content
+		m.review.cache[msg.key] = content
 		// A render that finished after the cursor moved on is worth keeping but
 		// not worth showing: the pane already holds the file it moved to.
 		if msg.key == m.diffKey() {
@@ -561,21 +535,35 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case hunksMsg:
-		if msg.err != nil || msg.id != m.selectedID {
+	case fileMsg:
+		return m.handleFile(msg)
+
+	case worktreeFilesMsg:
+		if msg.id != m.selectedID || msg.err != nil {
 			return m, nil
 		}
-		if m.diffHunkCache == nil {
-			m.diffHunkCache = map[string][]gitx.Hunk{}
-		}
-		m.diffHunkCache[msg.key] = msg.hunks
-		// Same as a late diff: worth filing, only worth showing if it is still
-		// the file on screen.
-		if msg.key == m.hunkKey() {
-			m.diffHunks = msg.hunks
-			m.syncHunkRows()
+		m.review.paths = msg.paths
+		// The finder may already be open on an empty list: the path list is
+		// asked for when the view opens and f can be pressed before it lands.
+		if m.review.picker.kind == pickerFiles {
+			m.rankPaths()
 		}
 		return m, nil
+
+	case grepDebounceMsg:
+		// Anything typed since this was scheduled has started a newer one.
+		if msg.gen != m.review.picker.gen || m.review.picker.kind != pickerGrep {
+			return m, nil
+		}
+		s := m.selected()
+		if s == nil || m.review.picker.query == "" {
+			return m, nil
+		}
+		m.review.picker.searching = true
+		return m, grepCmd(s, m.review.picker.query, msg.gen)
+
+	case grepMsg:
+		return m.handleGrep(msg)
 
 	case noticeMsg:
 		m.notice, m.noticeErr, m.noticeAt = msg.text, true, time.Now()
@@ -613,7 +601,7 @@ func (m *Model) syncAgentSize() tea.Cmd {
 // which change to read is the first thing to do in it.
 func (m *Model) openDiff() tea.Cmd {
 	m.mode = modeDiff
-	m.diffTreeFocus = m.diffTreeWidth() > 0
+	m.review.treeFocus = m.diffTreeWidth() > 0
 	return m.refreshDiff()
 }
 
@@ -628,86 +616,178 @@ func (m *Model) refreshDiff() tea.Cmd {
 	if s == nil {
 		return nil
 	}
-	// The caches describe a diff as it was; a refresh exists because that may
-	// have changed underneath them.
-	m.diffCache = map[string]string{}
-	m.diffHunkCache = map[string][]gitx.Hunk{}
-	m.diffHunks, m.diffHunkRows = nil, nil
+	// The cache describes the worktree as it was; a refresh exists because that
+	// may have changed underneath it. The path list goes with it: a file the
+	// agent has just written is one you want the finder to offer.
+	m.review.cache = map[string]string{}
+	m.review.paths = nil
 	m.setDiffContent("")
-	files := changedFilesCmd(s, m.diffMode)
-	return tea.Batch(files, m.showSelectedFile())
+	return tea.Batch(
+		changedFilesCmd(s, m.review.mode),
+		worktreeFilesCmd(s),
+		m.showTreeSelection(),
+	)
 }
 
 // diffOpts is how the diff pane wants its content rendered.
 func (m Model) diffOpts() gitx.DiffOpts {
-	return gitx.DiffOpts{Width: m.diffPaneWidth(), SideBySide: m.diffSideBySide}
+	return gitx.DiffOpts{Width: m.diffPaneWidth(), SideBySide: m.review.sideBySide}
 }
 
 // diffKey identifies the render the pane should be showing. Everything that
-// changes the output is in it: which session, which range, which row, and which
-// layout.
+// changes the output is in it: which session, which question, which row, and
+// which layout.
+//
+// It doubles as the cache key, which is why it is a string rather than a
+// struct: the two are the same question -- "is what the pane wants what the
+// pane has" -- and a single answer cannot drift out of step with itself.
 func (m Model) diffKey() string {
-	target := m.diffFiles.target()
-	return fmt.Sprintf("%s|%d|%v|%v|%s|%d", m.selectedID, m.diffMode,
-		m.diffSideBySide, target.Untracked, target.Path, m.diffPaneWidth())
+	if m.review.source == sourceFile {
+		// A file's contents do not depend on the range or the columns, but they
+		// do depend on the pane's width, since that is what they were wrapped
+		// and numbered for.
+		return fmt.Sprintf("%s|file|%s|%d", m.selectedID, m.filePath(), m.diffPaneWidth())
+	}
+	target := m.review.files.target()
+	return fmt.Sprintf("%s|%d|%v|%v|%s|%d", m.selectedID, m.review.mode,
+		m.review.sideBySide, target.Untracked, target.Path, m.diffPaneWidth())
 }
 
-// hunkKey identifies a file's structure. The layout it is rendered in does not
-// change where its changes are, so neither the width nor the columns are in it.
-func (m Model) hunkKey() string {
-	target := m.diffFiles.target()
-	return fmt.Sprintf("%s|%d|%v|%s", m.selectedID, m.diffMode, target.Untracked, target.Path)
+// filePath is the path the pane shows the contents of.
+func (m Model) filePath() string { return m.review.filePath }
+
+// showTreeSelection renders whatever the tree cursor is on.
+//
+// Moving the cursor is a choice of path, so the pane's file goes with it: the
+// tree and the pane must not end up naming two different files. A directory has
+// no contents, so landing on one falls back to its diff rather than leaving the
+// pane asking a question the row cannot answer.
+func (m *Model) showTreeSelection() tea.Cmd {
+	if row, ok := m.review.files.selected(); ok && !row.dir {
+		m.review.filePath = row.path
+	} else {
+		m.review.filePath = ""
+		m.review.source = sourceDiff
+	}
+	return m.showSelectedFile()
 }
 
-// showSelectedFile puts the row under the tree cursor into the diff pane,
+// showSelectedFile puts what the review view is pointed at into the pane,
 // rendering it only if it has not been rendered already.
 func (m *Model) showSelectedFile() tea.Cmd {
 	s := m.selected()
 	if s == nil {
 		return nil
 	}
-
-	var cmds []tea.Cmd
+	// Nothing to read the contents of falls back to the diff rather than
+	// emptying the pane.
+	if m.review.source == sourceFile && m.review.filePath == "" {
+		m.review.source = sourceDiff
+	}
 	key := m.diffKey()
-	if cached, ok := m.diffCache[key]; ok {
+	if cached, ok := m.review.cache[key]; ok {
 		m.setDiffContent(cached)
-	} else {
-		cmds = append(cmds, diffCmd(s, m.diffMode, m.diffFiles.target(), m.diffOpts(), key))
+		return nil
 	}
-
-	// Hunks are per file: a directory's diff spans several, and jumping between
-	// changes in a list of unrelated files is not a thing to want.
-	m.diffHunks, m.diffHunkRows = nil, nil
-	if row, ok := m.diffFiles.selected(); ok && !row.dir {
-		hunkKey := m.hunkKey()
-		if cached, ok := m.diffHunkCache[hunkKey]; ok {
-			m.diffHunks = cached
-			m.syncHunkRows()
-		} else {
-			cmds = append(cmds, hunksCmd(s, m.diffMode, m.diffFiles.target(), hunkKey))
-		}
+	if m.review.source == sourceFile {
+		return fileCmd(s, m.filePath(), m.diffPaneWidth(), key)
 	}
-	return tea.Batch(cmds...)
+	return diffCmd(s, m.review.mode, m.review.files.target(), m.diffOpts(), key)
 }
 
-// setDiffContent puts a rendered diff in the pane, back at the top, and works
-// out where its hunks landed.
-func (m *Model) setDiffContent(content string) {
-	m.diffContent = content
-	m.diffView.SetContent(content)
-	m.diffView.SetYOffset(0)
-	m.syncHunkRows()
+// showFileAt opens one path in the pane and scrolls to a line in it, which is
+// what a grep hit and a picked file both land on. line zero means the top.
+//
+// The tree cursor follows when the tree is showing that path, so the two do not
+// end up naming different files. A path the tree does not hold -- an unchanged
+// file, which is most of the worktree -- leaves the cursor alone; the subtitle
+// names the file either way, so the pane is never unlabelled.
+func (m *Model) showFileAt(path string, line int) tea.Cmd {
+	m.review.files.setCursorByPath(path)
+	m.review.filePath = path
+	m.review.source = sourceFile
+	m.review.pending = pendingScroll{line: line, active: line > 0}
+	// The scroll is not applied here. showSelectedFile either serves the file
+	// from cache -- in which case setDiffContent has already honored it -- or
+	// returns a command, and the document still in the pane is the *previous*
+	// file. Scrolling that one to line 12 would both move the wrong file and
+	// spend the request, leaving the right file at its top when it arrives.
+	return m.showSelectedFile()
 }
 
-// syncHunkRows works out where each hunk landed in the diff now on screen. The
-// content and the hunks arrive from two separate git calls, so this runs after
-// either of them and does nothing until both are in.
-func (m *Model) syncHunkRows() {
-	if len(m.diffHunks) == 0 {
-		m.diffHunkRows = nil
+// applyPendingScroll puts the pane on the line a search asked for.
+//
+// It is a two-step because the render is asynchronous: the line is named when
+// the hit is picked and can only be honored once there is content to find it
+// in. Every route to new content runs it, and it is consumed whether or not the
+// line was there -- a request left armed would fire at the next unrelated file.
+func (m *Model) applyPendingScroll() {
+	if !m.review.pending.active || m.review.doc == nil {
 		return
 	}
-	m.diffHunkRows = hunkRows(m.diffContent, m.diffHunks)
+	if row, ok := m.review.doc.RowForLine(m.review.pending.line); ok {
+		m.review.view.SetYOffset(row)
+	}
+	m.review.pending = pendingScroll{}
+}
+
+// setDiffContent puts a rendered diff in the pane, back at the top.
+//
+// Reading the content into a document is what the pane's structure now comes
+// from: one pass over the rows it was already going to draw, rather than a
+// second git process and a search through the rendered text for something to
+// recognize.
+func (m *Model) setDiffContent(content string) {
+	m.review.doc = render.Parse(content, m.diffLayout())
+	m.review.view.SetYOffset(0)
+	// The hits belong to the rows of the document that has just been replaced,
+	// so they are re-found rather than carried over. The query survives: it is
+	// what the user asked, and asking it again of the new content is what
+	// stepping to the next file during a search has to mean.
+	m.review.find.run(m.review.doc)
+	m.drawPane()
+	// Last, so it overrides the reset to the top: a file opened at a grep hit
+	// has to arrive showing the hit.
+	m.applyPendingScroll()
+}
+
+// drawPane hands the document to the viewport, with the search hits drawn in.
+//
+// Highlighting is applied here rather than baked into the content, so the cache
+// holds what was rendered and not what happened to be searched for at the time.
+func (m *Model) drawPane() {
+	if m.review.doc == nil {
+		m.review.view.SetContentLines(nil)
+		return
+	}
+	f := m.review.find
+	if len(f.matches) == 0 {
+		m.review.view.SetContentLines(m.review.doc.Lines())
+		return
+	}
+	m.review.view.SetContentLines(
+		m.review.doc.Highlight(f.matches, f.current, m.styles.MatchHit, m.styles.MatchCurrent))
+}
+
+// diffLayout is how the content in the pane was laid out, which is what it
+// takes to read a row's margin back.
+func (m Model) diffLayout() render.Layout {
+	// A file is rendered here rather than by delta, and always in one column.
+	if m.review.source == sourceFile {
+		return render.Unified
+	}
+	if m.review.sideBySide && gitx.HasDelta() {
+		return render.SideBySide
+	}
+	return render.Unified
+}
+
+// diffHunks is the changes in the pane, or none when nothing is loaded.
+func (m Model) diffHunks() []render.Hunk {
+	if m.review.doc == nil {
+		return nil
+	}
+	return m.review.doc.Hunks
 }
 
 // --- hooks and probing ---
@@ -1134,6 +1214,10 @@ func (m Model) activeCursor() *tea.Cursor {
 	switch {
 	case m.mode == modePrompt:
 		return m.prompt.input.Cursor()
+	case m.mode == modeDiff && m.review.picker.open():
+		return m.review.picker.input.Cursor()
+	case m.mode == modeDiff && m.review.find.active:
+		return m.review.find.input.Cursor()
 	case m.mode == modeBoard && m.focus == focusInput:
 		return m.input.Cursor()
 	}
@@ -1264,6 +1348,15 @@ func (m Model) statusBar() string {
 	if m.mode == modePrompt {
 		line := st.KeyHint.Render(m.prompt.label+":") + " " + m.prompt.input.View() +
 			st.KeyDesc.Render("   enter · esc")
+		return lipgloss.NewStyle().Width(w).Render(truncate(line, w))
+	}
+	// The find field borrows the footer the same way a prompt does, rather than
+	// taking a row off the pane it is searching. The pane is the thing you are
+	// reading while you type into it, and shortening it would scroll the answer
+	// out from under the question.
+	if m.mode == modeDiff && m.review.find.active {
+		line := st.KeyHint.Render("/") + m.review.find.input.View() +
+			st.KeyDesc.Render("   ↑↓ step · enter keep · esc clear")
 		return lipgloss.NewStyle().Width(w).Render(truncate(line, w))
 	}
 	line := m.hintLine(m.hints())

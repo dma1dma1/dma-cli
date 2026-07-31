@@ -12,6 +12,33 @@ import (
 // blank on a row that exists in only one of the files.
 var marginPattern = regexp.MustCompile(`^ *(\d*) ⋮ *(\d*) │ (.*)$`)
 
+// samplePatch is `git diff` output as git actually writes it -- two hunks in one
+// file, the second of which only deletes. Copied from a real repo rather than
+// written by hand: a patch's line counts have to agree with its lines, and the
+// parser is the thing that notices when they do not.
+const samplePatch = `diff --git a/panel.go b/panel.go
+index d8e5452..6465bb5 100644
+--- a/panel.go
++++ b/panel.go
+@@ -4,6 +4,8 @@ func (m Model) chips() string {
+ 	line1
+ 	line2
+ 	line3
++	added line
++	another added line
+ 	line4
+ 	line5
+ 	line6
+@@ -20,7 +22,6 @@ func (m Model) chips() string {
+ 	line17
+ 	line18
+ 	line19
+-	line20
+ 	line21
+ 	line22
+ 	line23
+`
+
 // row is one rendered row of a diff as a reader sees it: without the escapes, and
 // with the margin read rather than counted.
 type row struct {
@@ -20,8 +47,8 @@ type row struct {
 	numbered bool
 }
 
-func render(patch string) []row {
-	lines := strings.Split(ansiSeq.ReplaceAllString(numberLines(patch), ""), "\n")
+func renderRows(patch string) []row {
+	lines := strings.Split(ansiSeq.ReplaceAllString(numberLines(patch, MarginWidth(patch)), ""), "\n")
 	out := make([]row, len(lines))
 	for i, line := range lines {
 		if m := marginPattern.FindStringSubmatch(line); m != nil {
@@ -43,7 +70,7 @@ func (r row) String() string {
 // Every row of a hunk names its line in each file, and the two sides walk out of
 // step at the first change -- which is the whole reason to print both.
 func TestNumberLinesNumbersEveryRow(t *testing.T) {
-	rows := render(samplePatch)
+	rows := renderRows(samplePatch)
 
 	// The first hunk starts at line 4 of both files and adds two lines.
 	want := map[int]row{
@@ -77,7 +104,7 @@ func TestNumberLinesNumbersEveryRow(t *testing.T) {
 // them would be numbering nothing.
 func TestNumberLinesLeavesTheHeaderAlone(t *testing.T) {
 	stat := " panel.go | 3 ++-\n 1 file changed, 2 insertions(+), 1 deletion(-)\n\n"
-	rows := render(stat + samplePatch)
+	rows := renderRows(stat + samplePatch)
 	for i, want := range strings.Split(stat+samplePatch, "\n")[:7] {
 		if rows[i].numbered || rows[i].text != want {
 			t.Errorf("header row %d = %s, want it untouched: %q", i, rows[i], want)
@@ -88,11 +115,11 @@ func TestNumberLinesLeavesTheHeaderAlone(t *testing.T) {
 // The @@ header becomes a rule carrying the enclosing function: the line
 // arithmetic in it is what the margin now answers, on every row.
 func TestNumberLinesReplacesHunkHeaders(t *testing.T) {
-	if out := numberLines(samplePatch); strings.Contains(out, "@@") {
+	if out := numberLines(samplePatch, MarginWidth(samplePatch)); strings.Contains(out, "@@") {
 		t.Errorf("a hunk header survived:\n%s", out)
 	}
 	rules := 0
-	for _, r := range render(samplePatch) {
+	for _, r := range renderRows(samplePatch) {
 		if !strings.HasPrefix(r.text, HunkRule) {
 			continue
 		}
@@ -117,10 +144,10 @@ func TestNumberLinesSeesThroughColor(t *testing.T) {
 		"\x1b[32m+\tadded line\x1b[m\n" +
 		" \tline5\x1b[m"
 
-	if out := numberLines(colored); !strings.Contains(out, "\x1b[32m+\tadded line\x1b[m") {
+	if out := numberLines(colored, MarginWidth(colored)); !strings.Contains(out, "\x1b[32m+\tadded line\x1b[m") {
 		t.Errorf("git's own coloring was lost:\n%q", out)
 	}
-	rows := render(colored)
+	rows := renderRows(colored)
 	if got := rows[2]; !got.numbered || got.old != "4" || got.new != "4" {
 		t.Errorf("context row = %s, want 4 ⋮ 4", got)
 	}
@@ -135,7 +162,7 @@ func TestNumberLinesSizesTheMarginForTheWholeFile(t *testing.T) {
 	patch := "diff --git a/big.go b/big.go\n" +
 		"@@ -1,2 +1,2 @@\n context\n-old\n+new\n" +
 		"@@ -1198,2 +1198,2 @@\n context\n+late\n"
-	rows := render(patch)
+	rows := renderRows(patch)
 
 	if got := rows[2]; got.old != "1" || got.new != "1" {
 		t.Errorf("first row = %s, want 1 ⋮ 1", got)
@@ -146,7 +173,7 @@ func TestNumberLinesSizesTheMarginForTheWholeFile(t *testing.T) {
 
 	// One width top to bottom, so the text starts in the same column throughout.
 	starts := map[int]bool{}
-	for _, line := range strings.Split(ansiSeq.ReplaceAllString(numberLines(patch), ""), "\n") {
+	for _, line := range strings.Split(ansiSeq.ReplaceAllString(numberLines(patch, MarginWidth(patch)), ""), "\n") {
 		if m := marginPattern.FindStringSubmatch(line); m != nil {
 			starts[len([]rune(line))-len([]rune(m[3]))] = true
 		}
@@ -159,7 +186,7 @@ func TestNumberLinesSizesTheMarginForTheWholeFile(t *testing.T) {
 // "\ No newline at end of file" is a note about the row above it. Numbering it
 // would claim a line neither file has.
 func TestNumberLinesSkipsTheNoNewlineNote(t *testing.T) {
-	rows := render("diff --git a/x.txt b/x.txt\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n")
+	rows := renderRows("diff --git a/x.txt b/x.txt\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n")
 
 	if got := rows[3]; !got.numbered || got.old != "" || got.new != "" {
 		t.Errorf("note row = %s, want a blank margin", got)
@@ -172,7 +199,7 @@ func TestNumberLinesSkipsTheNoNewlineNote(t *testing.T) {
 // A whole-tree diff is several patches in a row, and each file's --- and +++ rows
 // open with the markers a hunk's lines use.
 func TestNumberLinesRestartsAtEachFile(t *testing.T) {
-	rows := render("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -7 +7 @@\n-old\n+new\n" +
+	rows := renderRows("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -7 +7 @@\n-old\n+new\n" +
 		"diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-one\n+two\n")
 
 	for _, i := range []int{1, 2, 7, 8} {
@@ -194,7 +221,7 @@ func TestNumberLinesRestartsAtEachFile(t *testing.T) {
 func TestNumberLinesLeavesCombinedDiffsAlone(t *testing.T) {
 	combined := "diff --cc conflict.go\nindex 1111111,2222222..0000000\n--- a/conflict.go\n" +
 		"+++ b/conflict.go\n@@@ -1,2 -1,2 +1,3 @@@\n  context\n++<<<<<<< HEAD\n"
-	rows := render(combined + "diff --git a/after.go b/after.go\n@@ -9 +9 @@\n-old\n+new\n")
+	rows := renderRows(combined + "diff --git a/after.go b/after.go\n@@ -9 +9 @@\n-old\n+new\n")
 
 	for i, r := range rows[:7] {
 		if r.numbered {
@@ -207,7 +234,7 @@ func TestNumberLinesLeavesCombinedDiffsAlone(t *testing.T) {
 }
 
 func TestNumberLinesEmptyPatch(t *testing.T) {
-	if got := numberLines(""); got != "" {
+	if got := numberLines("", MarginWidth("")); got != "" {
 		t.Errorf("numberLines of nothing = %q, want nothing", got)
 	}
 }

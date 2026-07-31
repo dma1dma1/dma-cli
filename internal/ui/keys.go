@@ -54,12 +54,25 @@ func (m Model) hints() []hint {
 
 	switch m.mode {
 	case modeDiff:
+		if m.review.picker.open() {
+			return []hint{{"↑↓", "choose"}, {"enter", "open"}, {"esc", "cancel"}}
+		}
+		// While a search has hits on screen it owns n and N, so the bar has to
+		// say so -- otherwise the two keys silently mean something other than
+		// what the row above claims.
+		if len(m.review.find.matches) > 0 {
+			return []hint{
+				{"n/N", "next/prev match"}, {"/", "search again"}, {"esc", "clear search"},
+				{"c", "diff/file"}, {"f", "find file"}, {"g", "grep"},
+			}
+		}
 		return []hint{
-			{"j/k", "move"}, {"h/l", "tree/diff"}, {"n/p", "next/prev file"},
-			{"}/{", "next/prev change"}, {"t", "point the agent here"},
+			{"j/k", "move"}, {"h/l", "tree/pane"}, {"n/p", "next/prev file"},
+			{"}/{", "next/prev change"}, {"c", "diff/file"},
+			{"/", "find here"}, {"f", "find file"}, {"g", "grep"},
+			{"t", "point the agent here"},
 			{"tab", "diff mode"}, {"v", "side by side"}, {"[/]", "prev/next session"},
-			{"e", "hide tree"}, {"a", "attach"}, {"s", "ship"}, {"m", "merge"},
-			{"esc", "board"},
+			{"e", "hide tree"}, {"a", "attach"}, {"esc", "board"},
 		}
 	case modeRepos:
 		return []hint{
@@ -134,19 +147,28 @@ var helpText = [][3]string{
 	{"", "+ new project…", "the last row of any project list — type a name"},
 	{"", "x", "remove the highlighted project (must hold no sessions)"},
 
-	{"Diff", "", ""},
-	{"", "j k", "move in the focused pane: tree rows, or diff lines"},
-	{"", "h l", "focus the file tree / the diff"},
+	{"Review", "", ""},
+	{"", "j k", "move in the focused pane: tree rows, or content lines"},
+	{"", "h l", "focus the file tree / the pane"},
 	{"", "n p", "next/previous file, skipping directories"},
 	{"", "} {", "next/previous change within the file"},
+	{"", "c", "read the file's contents instead of its diff, and back"},
 	{"", "t", "type \"look at <file>:<lines>\" to the agent, unsent"},
-	{"", "enter", "open or close a directory; on a file, focus the diff"},
-	{"", "e", "hide the file tree and give the diff the whole width"},
+	{"", "enter", "open or close a directory; on a file, focus the pane"},
+	{"", "e", "hide the file tree and give the pane the whole width"},
 	{"", "tab", "toggle working tree / branch diff"},
 	{"", "v", "toggle side-by-side columns (needs delta)"},
 	{"", "[ ]", "previous/next session"},
-	{"", "← →", "scroll a wide diff sideways"},
+	{"", "← →", "scroll a wide line sideways — content is never wrapped"},
 	{"", "esc / d / q", "back to the board"},
+
+	{"Searching", "", ""},
+	{"", "/", "find in what the pane is showing"},
+	{"", "n N", "next/previous match, while a search has hits"},
+	{"", "esc", "put the search down — n goes back to meaning next file"},
+	{"", "f", "find a file anywhere in the worktree, by fuzzy name"},
+	{"", "g", "search the worktree for a string (ripgrep, or git grep)"},
+	{"", "", "both open the file in the pane; a grep hit opens it at the line"},
 
 	{"Repositories", "", ""},
 	{"", "enter", "use this repo for new sessions"},

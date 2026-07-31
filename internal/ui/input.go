@@ -683,16 +683,68 @@ func (m Model) keyDropdown(key string) (tea.Model, tea.Cmd) {
 // muscle memory the file tree costs. It is unavoidable: j/k in a pane of rows
 // cannot also mean "a different agent's work".
 func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
+	// The two overlays own the keyboard outright while they are up, before every
+	// binding below: what they are is a text field, and a field that reserved
+	// half the alphabet for the view behind it would not be one.
+	if m.review.picker.open() {
+		return m.keyPicker(msg, key)
+	}
+	if m.review.find.active {
+		return m.keyFind(msg, key)
+	}
+
 	switch key {
 	case "esc", "d", "q":
+		// A finished search is still a mode: its hits are on the screen and n
+		// still steps them, so escape puts that down before it leaves the view.
+		if key == "esc" && m.review.find.query != "" {
+			m.review.find.clear()
+			m.drawPane()
+			return m, nil
+		}
 		m.mode = modeBoard
 		return m, nil
 
+	case "/":
+		cmd := m.review.find.open(m.diffPaneWidth() - 8)
+		return m, cmd
+
+	case "f":
+		cmd := m.review.picker.start(pickerFiles, m.pickerWidth())
+		m.rankPaths()
+		return m, cmd
+
+	case "g":
+		cmd := m.review.picker.start(pickerGrep, m.pickerWidth())
+		return m, cmd
+
+	case "c":
+		// The same file, asked the other question.
+		//
+		// Going back to the diff is always the tree's diff, since a diff is
+		// inherently about what changed. Going to the contents prefers the row
+		// under the cursor, falling back to whatever a search left open -- that
+		// is the case where the file is not in the tree at all.
+		if m.review.source == sourceFile {
+			m.review.source = sourceDiff
+			cmd := m.showSelectedFile()
+			return m, cmd
+		}
+		if row, ok := m.review.files.selected(); ok && !row.dir {
+			m.review.filePath = row.path
+		}
+		if m.review.filePath == "" {
+			return m, errStatus(fmt.Errorf("%s is a directory — pick a file to read it", rootLabel))
+		}
+		m.review.source = sourceFile
+		cmd := m.showSelectedFile()
+		return m, cmd
+
 	case "tab":
-		if m.diffMode == gitx.DiffUncommitted {
-			m.diffMode = gitx.DiffBranch
+		if m.review.mode == gitx.DiffUncommitted {
+			m.review.mode = gitx.DiffBranch
 		} else {
-			m.diffMode = gitx.DiffUncommitted
+			m.review.mode = gitx.DiffUncommitted
 		}
 		cmd := m.refreshDiff()
 		return m, cmd
@@ -703,15 +755,15 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if m.diffTreeWidth() == 0 {
 			return m, nil
 		}
-		m.diffTreeFocus = key == "h"
+		m.review.treeFocus = key == "h"
 		return m, nil
 
 	case "e":
 		// Hiding the tree changes the diff pane's width, which is part of how the
 		// diff was rendered, so the pane has to be asked for again.
-		m.diffTreeHidden = !m.diffTreeHidden
+		m.review.treeHidden = !m.review.treeHidden
 		if m.diffTreeWidth() == 0 {
-			m.diffTreeFocus = false
+			m.review.treeFocus = false
 		}
 		m.layoutSizes()
 		cmd := m.showSelectedFile()
@@ -725,12 +777,15 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if key == "{" {
 			dir = -1
 		}
-		row, ok := nextHunkRow(m.diffHunkRows, m.diffView.YOffset(), dir)
+		if m.review.doc == nil {
+			return m, nil
+		}
+		row, ok := m.review.doc.NextHunkRow(m.review.view.YOffset(), dir)
 		if !ok {
 			return m, nil
 		}
-		m.diffView.SetYOffset(row)
-		m.diffTreeFocus = false
+		m.review.view.SetYOffset(row)
+		m.review.treeFocus = false
 		return m, nil
 
 	case "t":
@@ -743,7 +798,7 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if !gitx.HasDelta() {
 			return m, errStatus(fmt.Errorf("side-by-side needs delta on PATH"))
 		}
-		m.diffSideBySide = !m.diffSideBySide
+		m.review.sideBySide = !m.review.sideBySide
 		cmd := m.showSelectedFile()
 		return m, cmd
 
@@ -759,37 +814,54 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "n", "p":
-		dir := 1
-		if key == "p" {
-			dir = -1
+	case "n", "N":
+		// While a search has hits on screen, n and N step them -- the pager
+		// bargain, and the reason escape is advertised as the way to put the
+		// search down. With no search running, n is the next file it has always
+		// been.
+		if len(m.review.find.matches) > 0 {
+			dir := 1
+			if key == "N" {
+				dir = -1
+			}
+			return m.stepFind(dir)
 		}
-		if !m.diffFiles.moveFile(dir) {
+		if key == "N" {
 			return m, nil
 		}
-		cmd := m.showSelectedFile()
+		if !m.review.files.moveFile(1) {
+			return m, nil
+		}
+		cmd := m.showTreeSelection()
+		return m, cmd
+
+	case "p":
+		if !m.review.files.moveFile(-1) {
+			return m, nil
+		}
+		cmd := m.showTreeSelection()
 		return m, cmd
 
 	case "enter", " ":
 		// On a directory this opens or closes it; on a file there is nothing to
 		// open, so it hands focus to the diff that is already beside it.
-		if m.diffFiles.toggle() {
-			cmd := m.showSelectedFile()
+		if m.review.files.toggle() {
+			cmd := m.showTreeSelection()
 			return m, cmd
 		}
-		m.diffTreeFocus = false
+		m.review.treeFocus = false
 		return m, nil
 
 	case "j", "down", "k", "up":
-		if !m.diffTreeFocus {
+		if !m.review.treeFocus {
 			break // the viewport scrolls the diff
 		}
 		dir := 1
 		if key == "k" || key == "up" {
 			dir = -1
 		}
-		m.diffFiles.move(dir)
-		cmd := m.showSelectedFile()
+		m.review.files.move(dir)
+		cmd := m.showTreeSelection()
 		return m, cmd
 
 	case "a":
@@ -804,7 +876,7 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		return mm, cmd
 	}
 	var cmd tea.Cmd
-	m.diffView, cmd = m.diffView.Update(msg)
+	m.review.view, cmd = m.review.view.Update(msg)
 	return m, cmd
 }
 
@@ -817,7 +889,7 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 // reference is left unsent so the sentence is still yours to finish.
 func (m Model) tellAgentAboutHunk() (tea.Model, tea.Cmd) {
 	s := m.selected()
-	row, ok := m.diffFiles.selected()
+	row, ok := m.review.files.selected()
 	if s == nil || !ok || row.dir {
 		return m, nil
 	}
@@ -825,11 +897,12 @@ func (m Model) tellAgentAboutHunk() (tea.Model, tea.Cmd) {
 		return m, errStatus(fmt.Errorf("terminal for %s is not running", s.Title))
 	}
 
-	// The whole file when its structure has not arrived, or has none to speak of:
-	// a path on its own is still a better handle than nothing.
+	// The whole file when the pane holds nothing with a line number in it -- a
+	// binary file, a rendering this could not read: a path on its own is still a
+	// better handle than nothing.
 	ref := row.path
-	if len(m.diffHunks) > 0 {
-		ref = m.diffHunks[currentHunk(m.diffHunkRows, m.diffView.YOffset())].Ref(row.path)
+	if hunks := m.diffHunks(); len(hunks) > 0 {
+		ref = hunks[m.review.doc.HunkAt(m.review.view.YOffset())].Ref(row.path)
 	}
 
 	// Back to the board with the agent focused, since what follows is typing to
@@ -928,6 +1001,17 @@ func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // otherwise. Like the board's wheel, scrolling the tree does not move its
 // cursor: looking around must not change which file is rendered.
 func (m Model) diffWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// The wheel moves the search's cursor while it is open, rather than
+	// scrolling the pane out from under a list floating on top of it.
+	if m.review.picker.open() {
+		switch msg.Mouse().Button {
+		case tea.MouseWheelUp:
+			m.review.picker.move(-1)
+		case tea.MouseWheelDown:
+			m.review.picker.move(1)
+		}
+		return m, nil
+	}
 	if z := zone.Get(zoneDiffTree); z != nil && z.InBounds(msg) {
 		mouse := msg.Mouse()
 		// The tree has only a vertical axis. Let horizontal wheel events pass
@@ -938,16 +1022,16 @@ func (m Model) diffWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if !mouse.Mod.Contains(tea.ModShift) {
 			switch mouse.Button {
 			case tea.MouseWheelUp:
-				m.diffFiles.scroll(-1, m.diffPaneHeight())
+				m.review.files.scroll(-1, m.diffPaneHeight())
 				return m, nil
 			case tea.MouseWheelDown:
-				m.diffFiles.scroll(1, m.diffPaneHeight())
+				m.review.files.scroll(1, m.diffPaneHeight())
 				return m, nil
 			}
 		}
 	}
 	var cmd tea.Cmd
-	m.diffView, cmd = m.diffView.Update(msg)
+	m.review.view, cmd = m.review.view.Update(msg)
 	return m, cmd
 }
 
@@ -955,14 +1039,34 @@ func (m Model) diffWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // tree row is a much bigger target than a card, and picking one only renders a
 // diff.
 func (m Model) diffClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	for i := range m.diffFiles.rows {
+	// An open search owns the clicks inside its box, and a click outside it
+	// dismisses it -- the same bargain the board's dropdown makes.
+	if m.review.picker.open() {
+		for i := range m.review.picker.results {
+			z := zone.Get(zonePickerRow(i))
+			if z == nil || !z.InBounds(msg) {
+				continue
+			}
+			m.review.picker.cursor = i
+			r := m.review.picker.results[i]
+			m.review.picker.close()
+			cmd := m.showFileAt(r.path, r.line)
+			return m, cmd
+		}
+		if z := zone.Get(zonePicker); z == nil || !z.InBounds(msg) {
+			m.review.picker.close()
+		}
+		return m, nil
+	}
+
+	for i := range m.review.files.rows {
 		z := zone.Get(zoneDiffRow(i))
 		if z == nil || !z.InBounds(msg) {
 			continue
 		}
-		m.diffFiles.cursor = i
-		m.diffTreeFocus = true
-		cmd := m.showSelectedFile()
+		m.review.files.cursor = i
+		m.review.treeFocus = true
+		cmd := m.showTreeSelection()
 		return m, cmd
 	}
 	return m, nil
