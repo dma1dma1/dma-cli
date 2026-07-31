@@ -41,7 +41,7 @@ func (m Model) hints() []hint {
 	case focusInput:
 		return []hint{
 			{"ctrl-v", "paste image/text"}, {"enter", "start agent"},
-			{"tab", "selectors"}, {"esc", "board"},
+			{"shift-enter", "newline"}, {"tab", "selectors"}, {"esc", "board"},
 		}
 	case focusAgent, focusRepo, focusProject:
 		return []hint{{"←→", "change"}, {"enter", "open list"}, {"tab", "next"}, {"esc", "board"}}
@@ -116,6 +116,7 @@ var helpText = [][3]string{
 	{"", "ctrl-v", "add a clipboard image, or paste clipboard text"},
 	{"", "backspace", "at the start, remove the last image"},
 	{"", "enter", "start an agent with the chosen agent/repo/project"},
+	{"", "shift-enter", "newline — alt-enter or ctrl-j where the terminal eats it"},
 	{"", "esc", "return to the board"},
 
 	{"Selectors", "", ""},

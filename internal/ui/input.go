@@ -469,6 +469,19 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		m.focus = focusBoard
 		return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req))
 
+	case "shift+enter", "alt+enter", "ctrl+j":
+		// Enter is spent on starting the agent, so a task written over several
+		// lines needs a second key that means newline. The field's own binding is
+		// enter, which never reaches it, so the newline is inserted here.
+		//
+		// Three spellings for one key: shift+enter is the one people reach for, but
+		// a terminal only reports it as its own keypress when it speaks the kitty
+		// keyboard protocol or modifyOtherKeys -- everywhere else it arrives as a
+		// plain enter and starts the agent. alt+enter and ctrl+j are the fallbacks
+		// that survive a terminal without either.
+		m.input.InsertRune('\n')
+		return m, nil
+
 	case "ctrl+v":
 		return m, readClipboardCmd()
 
