@@ -33,6 +33,13 @@ func clickAt(x, y int) tea.MouseMsg {
 	return tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft}
 }
 
+// clickModel is clickAt through handleClick, for the tests that care about the
+// model the click leaves behind rather than the command it returns.
+func clickModel(m Model, x, y int) Model {
+	next, _ := m.handleClick(clickAt(x, y))
+	return next.(Model)
+}
+
 // A card's click target is the whole card. Marking each of its lines separately
 // collapses the zone onto the last line, which leaves cards that look clickable
 // but only respond on the few cells that line's text happens to cover.
