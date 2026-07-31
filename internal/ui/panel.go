@@ -555,11 +555,7 @@ func (m *Model) openDropdown(area focusArea) {
 	case focusAgent:
 		for _, p := range m.cfg.AgentProfiles {
 			d.options = append(d.options, p.Name)
-			state := "state via pane activity"
-			if p.Hooks {
-				state = "state via hooks"
-			}
-			d.labels = append(d.labels, fmt.Sprintf("%-10s %s   %s", p.Name, p.Command, state))
+			d.labels = append(d.labels, fmt.Sprintf("%-10s %s", p.Name, p.Command))
 		}
 		d.cursor = indexOf(d.options, m.agentChoice)
 	case focusRepo:
