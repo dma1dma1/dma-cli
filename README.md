@@ -116,6 +116,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `x` | prune the worktree and its branch |
 | `D` | kill the agent, keep the worktree |
 | `R` | refresh PR and session state now |
+| `A` | pick the agent new sessions start with |
 | `r` | repositories: switch, add, unregister |
 | `p` | pick a project to filter the board |
 | `f` | filter to the active repo, or clear |
@@ -124,7 +125,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 
 **Task input** — `enter` starts an agent using the agent/repo/project shown in the selectors. `esc` returns to the board.
 
-**Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too.
+**Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too. From the board, `A` and `p` jump straight to the agent and project lists.
 
 **Diff** — `tab` toggles working tree / branch diff, `j` `k` step between sessions, `esc` returns.
 

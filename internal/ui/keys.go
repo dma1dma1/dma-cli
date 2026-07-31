@@ -71,8 +71,9 @@ func (m Model) hints() []hint {
 		{"o/y", "PR open/copy"},
 		{"m", "merge"},
 		{"x", "prune"},
-		{"r", "repos"},
-		{"p", "project"},
+		// One entry for the three selectors, in chip order: three separate hints
+		// would cost more of the bar than the pair of PR keys already does.
+		{"A/r/p", "agent/repo/project"},
 	}
 	if m.cfg.MultiRepo() {
 		h = append(h, hint{"f", "repo filter"})
@@ -99,6 +100,7 @@ var helpText = [][3]string{
 	{"", "x", "prune the worktree and branch"},
 	{"", "D", "kill the agent, keep the worktree"},
 	{"", "R", "refresh PR and session state now"},
+	{"", "A", "pick the agent new sessions start with"},
 	{"", "r", "repositories: switch, add, unregister"},
 	{"", "p", "pick the project: filters the board, and new sessions join it"},
 	{"", "f", "filter to the active repo, or clear"},
@@ -112,7 +114,7 @@ var helpText = [][3]string{
 	{"Selectors", "", ""},
 	{"", "← →", "change the value in place"},
 	{"", "enter", "open the full list"},
-	{"", "p", "jump straight to the project selector"},
+	{"", "A / p", "jump straight to the agent / project selector"},
 
 	{"Projects", "", ""},
 	{"", "", "sessions start in no project; pick one and new sessions join it"},
