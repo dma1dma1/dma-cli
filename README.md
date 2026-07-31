@@ -109,7 +109,51 @@ Verify the installation:
 command -v dma
 command -v claude || command -v codex
 dma doctor
+dma version
 ```
+
+## Update
+
+`dma` is not released under version tags, so an upgrade means taking whatever
+is currently on `main`. Re-run the command you installed with:
+
+```sh
+go install github.com/dma1dma1/dma-cli/cmd/dma@latest
+```
+
+Or, from a clone:
+
+```sh
+git pull && go build -o "$HOME/bin/dma" ./cmd/dma
+```
+
+`dma version` names the commit the binary was built from, which is how you
+confirm the upgrade landed:
+
+```text
+dma v0.0.0-20260731073902-3d57053a8f79
+```
+
+Because there are no tags, `@latest` means the newest commit on `main`, and the
+Go module proxy caches that answer for a few minutes. If `dma version` still
+reports the build you already had, ask for the commit directly instead of
+waiting:
+
+```sh
+GOPROXY=direct go install github.com/dma1dma1/dma-cli/cmd/dma@latest
+```
+
+Upgrading does not disturb sessions that are already running: agents live in
+their own tmux sessions, so quit the board with `q`, install, and start it
+again.
+
+Your configuration is carried forward rather than replaced. A newer `dma` adds
+built-in agent profiles that `~/.dma/config.json` has never heard of, and moves
+a built-in profile onto a new default command only when you never edited it. An
+edited command, a wrapper script, or a different binary is a deliberate choice
+and is left alone. Existing worktrees keep the Claude hook configuration written
+when they were created, so a change to the hooks reaches a session only when you
+start a new one.
 
 ## Start your first session
 
@@ -395,6 +439,7 @@ dma repo remove <id>   Unregister a repository
 dma ls                 List sessions without opening the board
 dma hooks print        Print the Claude hook configuration
 dma doctor             Check runtime tools and GitHub authentication
+dma version            Print the commit this binary was built from
 ```
 
 Unregistering a repository never modifies the repository itself. A repository

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -36,6 +37,7 @@ usage:
   dma ls                    list sessions without opening the TUI
   dma hooks print           print the hook config the board installs
   dma doctor                check required external tools
+  dma version               print the commit this binary was built from
 
 Most of the time you need none of these: cd into a repo and run dma.
 Repos can also be added from inside the board by pressing r.
@@ -67,10 +69,53 @@ func run(args []string) error {
 		fmt.Print(usage)
 		return nil
 	case "-v", "--version", "version":
-		fmt.Println("dma dev")
+		fmt.Println(version())
 		return nil
 	}
 	return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
+}
+
+// version names the commit this binary was built from. The module carries no
+// semver tags, so upgrading means re-running go install and getting whatever
+// is on main -- which leaves the commit as the only way to answer "did my
+// upgrade take". go install and a go build inside a checkout both stamp it
+// into the module's pseudo-version, and the VCS settings cover what is left:
+// builds Go could not date, such as one made inside a linked git worktree,
+// where it reports no version at all.
+func version() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dma unknown"
+	}
+	v := info.Main.Version
+	if v == "" || v == "(devel)" {
+		v = "devel"
+	}
+	var revision string
+	var dirty bool
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			dirty = setting.Value == "true"
+		}
+	}
+	// Go marks a build made over edited files by suffixing the version rather
+	// than by the setting alone, so fold the two spellings together before
+	// saying it once in words.
+	if strings.HasSuffix(v, "+dirty") {
+		v, dirty = strings.TrimSuffix(v, "+dirty"), true
+	}
+	// A pseudo-version already ends in the commit, so naming it again would
+	// only be noise.
+	if len(revision) >= 12 && !strings.Contains(v, revision[:12]) {
+		v += " (" + revision[:12] + ")"
+	}
+	if dirty {
+		v += " with uncommitted changes"
+	}
+	return "dma " + v
 }
 
 // --- board ---
