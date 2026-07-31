@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
@@ -220,6 +222,40 @@ func TestClickOnPreviewFocusesIt(t *testing.T) {
 	next, _ := m.handleClick(clickAt((z.StartX+z.EndX)/2, (z.StartY+z.EndY)/2))
 	if got := next.(Model).focus; got != focusPreview {
 		t.Errorf("clicking the agent's output left focus at %d", got)
+	}
+}
+
+// panelBottomEdge is the panel's closing frame line: all frame and no title, so
+// two focus states can be compared on how the box is drawn rather than on the
+// words in its top edge.
+func panelBottomEdge(m Model, f focusArea) string {
+	m.focus = f
+	lines := strings.Split(m.viewPanel(minPanelHeight), "\n")
+	return lines[len(lines)-1]
+}
+
+// Clicking the agent's output has to look like it did something. The frame is the
+// only part of the panel that can say so -- the body belongs to the agent -- and
+// thickening it does not carry the weight alone: the board thickens the selected
+// card's column too, so a heavy frame reads as "current", not "typing here".
+func TestPreviewFocusColorsThePanelFrame(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.preview = "● Working on it…"
+
+	focused := panelBottomEdge(m, focusPreview)
+	// The edge is drawn as one styled run, so what identifies its color is the
+	// sequence opening the line, not a styled glyph somewhere inside it.
+	open, _, _ := strings.Cut(lipgloss.NewStyle().Foreground(m.styles.P.Focus).Bold(true).Render("┗"), "┗")
+	if !strings.HasPrefix(focused, open+"┗") {
+		t.Errorf("the panel frame is not in the focus color while the agent has the keyboard: %q", focused)
+	}
+
+	// The chip case is the one worth pinning: it thickens this same frame, and a
+	// state that swallows every keystroke must not look like one that does not.
+	for _, other := range []focusArea{focusBoard, focusAgent} {
+		if got := panelBottomEdge(m, other); got == focused {
+			t.Errorf("focus %d draws the same panel frame as the live agent does: %q", other, got)
+		}
 	}
 }
 

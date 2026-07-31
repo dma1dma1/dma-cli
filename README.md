@@ -316,10 +316,12 @@ opening prompt.
 | `q` | Quit; agents continue running |
 
 When typing directly into the session panel or an attached tmux session, every
-key—including `esc`—goes to the agent. Press `ctrl-q` to return control to the
-board. While attached, the mouse wheel scrolls through the agent's history.
-Hold `shift`—or `option` in some macOS terminals—to select text. `dma` restores
-your tmux mouse setting when you detach.
+key—including `esc`—goes to the agent. The panel's frame lights up in the focus
+color while it has the keyboard, and its title bar says which key gets you out.
+Press `ctrl-q` to return control to the board. While attached, the mouse wheel
+scrolls through the agent's history. Hold `shift`—or `option` in some macOS
+terminals—to select text. `dma` restores your tmux mouse setting when you
+detach.
 
 If the agent's composer is modal—Codex with `tui.vim_mode_default`, which returns
 to normal mode after every message it sends—`dma` puts it back into insert mode
