@@ -666,16 +666,41 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.(type) {
 	case tea.MouseWheelMsg:
-		// Scroll routes by zone: the diff when it is open, otherwise nothing --
-		// the columns are not scrollable yet.
+		// Scroll routes by zone: the diff when it is open, otherwise the column
+		// under the pointer.
 		if m.mode == modeDiff {
 			var cmd tea.Cmd
 			m.diffView, cmd = m.diffView.Update(msg)
 			return m, cmd
 		}
-		return m, nil
+		return m.handleWheel(msg)
 	case tea.MouseClickMsg:
 		return m.handleClick(msg)
+	}
+	return m, nil
+}
+
+// handleWheel scrolls the column the pointer is over, a card at a time.
+//
+// Scrolling deliberately leaves the selection alone: the panel below is a live
+// agent terminal, and a gesture for looking around the board must not swap out
+// what is running in it. The cursor comes back into view the moment a key moves
+// it.
+func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	delta := 0
+	switch msg.Mouse().Button {
+	case tea.MouseWheelUp:
+		delta = -1
+	case tea.MouseWheelDown:
+		delta = 1
+	default:
+		return m, nil
+	}
+	for i := range core.Columns {
+		if z := zone.Get(zoneColumn(i)); z != nil && z.InBounds(msg) {
+			m.scrollColumn(i, delta)
+			return m, nil
+		}
 	}
 	return m, nil
 }
