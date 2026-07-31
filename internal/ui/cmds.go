@@ -18,6 +18,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/link"
 	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/probe"
+	"github.com/dma1dma1/dma-cli/internal/summarize"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
@@ -68,7 +69,19 @@ type adoptedMsg struct {
 
 type createdMsg struct {
 	res *ops.CreateResult
-	err error
+	// task is the whole text the session was started on, which the session
+	// record does not keep: its title is only the first line of it. Naming the
+	// card wants all of it -- the line that matters is as often in the stack
+	// trace below the first one as in the first one.
+	task string
+	err  error
+}
+
+// titledMsg carries a summary of the task back to the card that is currently
+// showing the task itself.
+type titledMsg struct {
+	id    string
+	title string
 }
 
 type shippedMsg struct {
@@ -404,7 +417,23 @@ func createCmd(cfg *core.Config, req ops.CreateRequest) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		res, err := ops.Create(ctx, cfg, req)
-		return createdMsg{res: res, err: err}
+		return createdMsg{res: res, task: req.InitialPrompt, err: err}
+	}
+}
+
+// titleCmd names a session from the task it was started with.
+//
+// It runs after the card is already on the board rather than before, because
+// the answer costs the better part of ten seconds and none of the rest of a
+// session start depends on it. The card carries the opening of the task until
+// this lands, which is worse than a summary and much better than nothing on
+// screen while a model thinks.
+func titleCmd(s *core.Session, task string) tea.Cmd {
+	id := s.ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*summarize.Timeout)
+		defer cancel()
+		return titledMsg{id: id, title: summarize.Title(ctx, task)}
 	}
 }
 

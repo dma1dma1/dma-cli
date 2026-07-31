@@ -422,6 +422,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case createdMsg:
 		return m.handleCreated(msg)
 
+	case titledMsg:
+		return m.handleTitled(msg)
+
 	case shippedMsg:
 		return m.handleShipped(msg)
 
@@ -729,7 +732,48 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	}
 	cols, rows := m.previewDims()
 	return m, tea.Batch(note, observeCmd(m.sessions), previewCmd(s),
-		resizeSessionsCmd([]*core.Session{s}, cols, rows))
+		resizeSessionsCmd([]*core.Session{s}, cols, rows),
+		// The card starts out titled with the first line of the task; naming it
+		// properly happens off to the side, now that there is something on
+		// screen.
+		titleCmd(s, summaryInput(msg, s)))
+}
+
+// summaryInput is the text a card's name is written from.
+//
+// It is the whole task, which only the create message still carries: the session
+// record keeps just the first line of it, and the line that says what the work is
+// is as often below the first one as in it. A caller that carried no task at all
+// falls back to the title, which is the best text there is in that case.
+func summaryInput(msg createdMsg, s *core.Session) string {
+	if task := strings.TrimSpace(msg.task); task != "" {
+		return task
+	}
+	return s.Title
+}
+
+// handleTitled renames a card once a summary of its task arrives.
+//
+// The rename is silent and unannounced. It lands a few seconds after the card
+// does, and by then the eye is on the board rather than on the one card, so a
+// status line about it would be noise about something already visible.
+func (m Model) handleTitled(msg titledMsg) (tea.Model, tea.Cmd) {
+	s := core.FindByID(m.sessions, msg.id)
+	// Summarizing takes seconds and pruning takes one key, so the session this
+	// title belongs to may be gone by now.
+	if s == nil {
+		return m, nil
+	}
+	title := strings.TrimSpace(msg.title)
+	// An unchanged title is the common case for work described in a few words,
+	// and an empty one means no model could be reached. Both leave the card as
+	// it is; the board is never worse off for having asked.
+	if title == "" || title == s.Title {
+		return m, nil
+	}
+	s.Title = title
+	m.save()
+	return m, nil
 }
 
 func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {

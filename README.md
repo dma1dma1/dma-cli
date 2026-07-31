@@ -117,9 +117,14 @@ In the board:
 In the task input, `ctrl-v` attaches a clipboard image or pastes ordinary text.
 Press `backspace` at the start of the input to remove the last attached image.
 
+Describe the task in as much detail as the agent needs. The whole description is
+sent to the agent. The card shows that text at first and renames itself to a
+short summary of it a few seconds later.
+
 `dma` fetches the configured base branch, creates a detached worktree under
 `~/.dma/worktrees`, prepares it, starts a tmux session, and launches the agent
-with your task.
+with your task. The worktree is named from the opening of the description, and
+keeps that name after the card is renamed.
 
 The agent is responsible for creating and naming its branch. Until it does, the
 card displays `no branch` and `s` cannot push or open a pull request.
@@ -267,6 +272,13 @@ scroll instead, so a busy column never crowds out the session panel below. A
 column with cards off screen counts them at that end. Moving the cursor scrolls
 its column to follow, and the mouse wheel scrolls whichever column the pointer is
 over without changing which session the panel shows.
+
+A card is titled with a few-word summary of the task rather than the description
+it was started from, since a card is around thirty characters wide and the
+opening of a paragraph is the least distinguishing part of it. The summary is
+written by a one-shot `claude -p` call on the cheapest model, made after the card
+reaches the board so that nothing waits on it. A description short enough to be a
+title is left as it is, and so is one that no model could be reached to summarize.
 
 Projects are optional labels for grouping and filtering sessions. Selecting a
 project filters the board and makes new sessions join that project. A project
