@@ -75,7 +75,7 @@ func (m Model) inputDetached() bool {
 }
 
 // splitHeights divides the screen between the columns, the panel and the task
-// input's own box, above the one status row.
+// input's own box, above the footer.
 //
 // The board takes only the rows its cards need and the panel takes the rest.
 // Sizing the two by a fixed ratio instead looks right on a laptop and wrong on
@@ -83,19 +83,30 @@ func (m Model) inputDetached() bool {
 // agent's output stays in the same short window it had at 30 rows.
 func (m Model) splitHeights() (boardH, panelH, inputH int) {
 	boardH, panelH = m.baseHeights()
-	if !m.inputDetached() {
-		return boardH, panelH, 0
+	if m.inputDetached() {
+		// The panel gives up the row the input bar was using, and the two the new
+		// frame adds are borrowed.
+		inputH = inputBoxHeight
+		panelH--
+		boardH, panelH = borrowRows(boardH, panelH, inputBoxHeight-1)
 	}
-
-	// The panel gives up the row the input bar was using, and the two the new
-	// frame adds come off the board where there are rows to spare.
-	inputH = inputBoxHeight
-	panelH--
-	frame := inputBoxHeight - 1
-	fromBoard := min(frame, max(boardH-minBoardRows, 0))
-	boardH -= fromBoard
-	panelH -= frame - fromBoard
+	if m.noticeActive() {
+		boardH, panelH = borrowRows(boardH, panelH, 1)
+	}
 	return boardH, panelH, inputH
+}
+
+// borrowRows takes n rows off the board where it has them to spare, and off the
+// panel where it does not.
+//
+// The board is asked first because its rows are the cheap ones: a column short
+// of a card scrolls, while the panel losing rows is the agent's output getting
+// shorter. baseHeights, and so the size the agents are rendered at, deliberately
+// does not see any of this -- an agent reflowed every time a notice appears and
+// again ten seconds later would be a worse cost than the row.
+func borrowRows(boardH, panelH, n int) (int, int) {
+	fromBoard := min(n, max(boardH-minBoardRows, 0))
+	return boardH - fromBoard, panelH - (n - fromBoard)
 }
 
 // baseHeights is the board/panel split with the task input inside the panel,
@@ -514,8 +525,8 @@ func (m *Model) applyDropdown() tea.Cmd {
 	}
 	choice := d.options[d.cursor]
 
-	// None of these confirm themselves in the footer: the selector the user just
-	// closed is sitting above the board showing the choice they made.
+	// None of these confirm themselves: the selector the user just closed is
+	// sitting above the board showing the choice they made.
 	switch d.area {
 	case focusAgent:
 		m.agentChoice = choice

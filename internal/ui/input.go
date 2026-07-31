@@ -119,9 +119,8 @@ func indexOfFocus(f focusArea) int {
 func (m Model) keyPreview(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	if key == detachKeypress {
 		m.focus = focusBoard
-		// No status message: the footer switching back to the board's keymap already
-		// says where keystrokes go, and a line saying it in words only covers the
-		// keys it is describing.
+		// Nothing is posted: the footer switching back to the board's keymap already
+		// says where keystrokes go.
 		return m, nil
 	}
 	s := m.selected()
@@ -292,7 +291,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 
 	case "R":
 		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
-			probeCmd(m.prober, m.cfg, m.sessions, m.typedAt), status("refreshing…"))
+			probeCmd(m.prober, m.cfg, m.sessions, m.typedAt))
 	}
 
 	return m.sessionAction(key)
@@ -379,7 +378,7 @@ func (m Model) prLink(s *core.Session, action linkAction) tea.Cmd {
 	case url != "":
 		return linkCmd(url, action)
 	}
-	return tea.Batch(prLinkCmd(remote, s.ID, s.PRNumber, action), status("finding PR link…"))
+	return prLinkCmd(remote, s.ID, s.PRNumber, action)
 }
 
 // prLinkTarget says what to act on: the address the session already knows, or
@@ -442,8 +441,7 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		m.pendingImages = nil
 		m.layoutSizes()
 		m.focus = focusBoard
-		return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req),
-			status("starting "+req.Profile+" in "+req.RepoID+"…"))
+		return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req))
 
 	case "ctrl+v":
 		return m, readClipboardCmd()
@@ -529,11 +527,10 @@ func (m Model) handleClipboard(msg clipboardMsg) (tea.Model, tea.Cmd) {
 		return m, errStatus(msg.err)
 	}
 	if msg.content.Image != nil {
+		// Nothing is posted: the input row's own image summary is the receipt.
 		m.pendingImages = append(m.pendingImages, *msg.content.Image)
 		m.layoutSizes()
-		image := msg.content.Image
-		return m, status(fmt.Sprintf("added image %d · %d×%d",
-			len(m.pendingImages), image.Width, image.Height))
+		return m, nil
 	}
 	if msg.content.Text != "" {
 		var cmd tea.Cmd

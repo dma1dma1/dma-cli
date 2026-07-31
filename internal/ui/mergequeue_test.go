@@ -36,25 +36,27 @@ func TestMergeQueuedKeepsTheCardOpen(t *testing.T) {
 	}
 }
 
-// Pressing m on a PR the queue already holds must say so rather than look like
-// nothing happened -- gh treats it as success and exits zero.
-func TestMergeAlreadyQueuedAnnouncesItself(t *testing.T) {
+// Pressing m on a PR the queue already holds must not look like nothing
+// happened -- gh treats it as success and exits zero. The card is what says so:
+// it stays in the PR column and picks up the queue label.
+func TestMergeAlreadyQueuedShowsOnTheCard(t *testing.T) {
 	s := queuedSess("a")
+	s.PRCI = core.CIPass
 	m := testModel(nil, s)
 
 	_, cmd := m.handleMerged(mergedMsg{id: s.ID, outcome: ghx.MergeAlreadyQueued})
-	if cmd == nil {
-		t.Fatal("nothing was reported for an already-queued PR")
-	}
-	msg, ok := cmd().(statusMsg)
-	if !ok {
-		t.Fatalf("expected a status message, got %T", cmd())
-	}
-	if msg.isErr || !strings.Contains(msg.text, "already in the merge queue") {
-		t.Errorf("status = %q (isErr=%v), want the queue explained", msg.text, msg.isErr)
+
+	if _, ok := drainNotice(t, cmd); ok {
+		t.Error("an already-queued PR posted a notice as well as labelling the card")
 	}
 	if !s.PRQueued {
 		t.Error("an already-queued PR was not marked as queued")
+	}
+	if s.Lifecycle != core.LifecyclePROpen {
+		t.Errorf("card moved to %q, want it left in the PR column", s.Lifecycle)
+	}
+	if got := m.branchOrPR(s); !strings.Contains(got, "queued") {
+		t.Errorf("card label = %q, want the queue named", got)
 	}
 }
 

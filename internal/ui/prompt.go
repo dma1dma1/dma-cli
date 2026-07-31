@@ -82,13 +82,13 @@ func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 			if val == "" {
 				val = s.Title
 			}
-			return m, tea.Batch(shipCmd(m.cfg, s, val), status("pushing and opening PR…"))
+			return m, shipCmd(m.cfg, s, val)
 
 		case promptAddRepo:
 			if val == "" {
 				return m, nil
 			}
-			return m, tea.Batch(adoptCmd(m.cfg, val), status("registering "+val+"…"))
+			return m, adoptCmd(m.cfg, val)
 		}
 		return m, nil
 	}

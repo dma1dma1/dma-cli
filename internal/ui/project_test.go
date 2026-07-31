@@ -394,9 +394,8 @@ func TestRemovingAProjectInUseIsRefused(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("refusal said nothing")
 	}
-	msg, ok := cmd().(statusMsg)
-	if !ok || !msg.isErr {
-		t.Fatalf("refusal message = %#v, want an error status", cmd())
+	if _, ok := cmd().(noticeMsg); !ok {
+		t.Fatalf("refusal message = %#v, want a notice", cmd())
 	}
 }
 
