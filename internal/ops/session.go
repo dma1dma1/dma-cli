@@ -2,8 +2,10 @@
 package ops
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,7 @@ type CreateRequest struct {
 	Profile       string
 	BaseBranch    string
 	InitialPrompt string
+	InitialImages []ImageAttachment
 	// HookURL points at the running board's hook listener. Empty disables hook
 	// installation, leaving the session on liveness-only state reporting.
 	HookURL string
@@ -31,6 +34,11 @@ type CreateRequest struct {
 	// board will render it into: a detached tmux session otherwise defaults to
 	// 80x24 and the agent draws its UI into a narrow strip.
 	Cols, Rows int
+}
+
+// ImageAttachment is PNG data captured before a session worktree exists.
+type ImageAttachment struct {
+	PNG []byte
 }
 
 // CreateResult carries the new session plus any non-fatal bootstrap warnings.
@@ -94,6 +102,12 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 
 	warnings = append(warnings, Bootstrap(ctx, repo, worktree)...)
 
+	imagePaths, err := stageImages(ctx, worktree, req.InitialImages)
+	if err != nil {
+		_ = gitx.RemoveWorktree(ctx, repo.Path, worktree, true)
+		return nil, fmt.Errorf("stage initial images: %w", err)
+	}
+
 	// Hooks are installed into the worktree before the agent starts, so the
 	// very first SessionStart already reports to the board.
 	if req.HookURL != "" {
@@ -117,7 +131,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// on it -- nothing is typed into its UI afterwards. SendLiteral, not SendKeys:
 	// the line now carries user text, and only the literal path keeps tmux from
 	// reading a trailing semicolon as its own command separator.
-	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.LaunchCommand(req.InitialPrompt)); err != nil {
+	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.LaunchCommand(req.InitialPrompt, imagePaths...)); err != nil {
 		return nil, fmt.Errorf("launch agent: %w", err)
 	}
 
@@ -142,6 +156,48 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 		TmuxAlive:       true,
 	}
 	return &CreateResult{Session: s, Warnings: warnings}, nil
+}
+
+const attachmentExclude = ".dma/attachments-*/"
+
+// stageImages puts initial images inside the worktree so every agent can read
+// them, while excluding the session-owned directory from git status and normal
+// commits. The directory leaves with the worktree during teardown.
+func stageImages(ctx context.Context, worktree string, images []ImageAttachment) (paths []string, err error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	root := filepath.Join(worktree, ".dma")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp(root, "attachments-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
+	if err = gitx.AddLocalExclude(ctx, worktree, attachmentExclude); err != nil {
+		return nil, fmt.Errorf("exclude attachment directory: %w", err)
+	}
+	for i, image := range images {
+		if len(image.PNG) == 0 {
+			return nil, fmt.Errorf("image %d is empty", i+1)
+		}
+		if _, decodeErr := png.DecodeConfig(bytes.NewReader(image.PNG)); decodeErr != nil {
+			return nil, fmt.Errorf("image %d is not valid PNG: %w", i+1, decodeErr)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("image-%d.png", i+1))
+		if writeErr := os.WriteFile(path, image.PNG, 0o600); writeErr != nil {
+			return nil, writeErr
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
 }
 
 // uniqueWorktreeDir picks a free directory under root for a session's slug.

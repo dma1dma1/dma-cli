@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	zone "github.com/lrstanley/bubblezone/v2"
 
+	"github.com/dma1dma1/dma-cli/internal/clip"
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
@@ -62,11 +63,14 @@ type Model struct {
 	activeRepo  string
 	agentChoice string
 
-	input    textinput.Model
-	dropdown dropdown
-	prompt   prompt
-	confirm  confirmState
-	repos    repoPicker
+	input textinput.Model
+	// pendingImages belong to the new-session composer. Their bytes stay in
+	// memory until ops.Create has a worktree in which to stage them.
+	pendingImages []clip.Image
+	dropdown      dropdown
+	prompt        prompt
+	confirm       confirmState
+	repos         repoPicker
 
 	// preview is the selected session's recent terminal output, refreshed on a
 	// timer. Display only.
@@ -230,7 +234,7 @@ func (m *Model) rebuild() {
 }
 
 func (m *Model) layoutSizes() {
-	m.input.SetWidth(max(m.contentWidth()-10, 20))
+	m.input.SetWidth(max(m.contentWidth()-10-lipgloss.Width(m.imageSummary()), 20))
 	m.diffView.SetWidth(max(m.contentWidth()-4, 20))
 	m.diffView.SetHeight(max(m.height-6, 5))
 }
@@ -257,6 +261,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		return m.handlePaste(msg)
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
@@ -421,6 +428,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.statusText, m.statusErr, m.statusAt = msg.text, msg.isErr, time.Now()
 		return m, nil
+
+	case clipboardMsg:
+		return m.handleClipboard(msg)
 
 	case attachDoneMsg:
 		if msg.err != nil {

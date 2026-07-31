@@ -249,6 +249,39 @@ func TestSendKeyDeliversDistinctBytes(t *testing.T) {
 	}
 }
 
+func TestSendPastePreservesMultilineBracketedText(t *testing.T) {
+	if !Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	name := "dma-send-paste"
+	if err := NewSession(ctx, name, os.TempDir(), 200, 30); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+	// Request bracketed paste explicitly before replacing the shell with cat.
+	if err := SendLiteral(ctx, name, `printf '\033[?2004h'; exec cat -v`); err != nil {
+		t.Fatalf("start bracket-aware cat: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	if err := SendPaste(ctx, name, "first line\nsecond line;"); err != nil {
+		t.Fatalf("SendPaste: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	pane, err := CapturePane(ctx, name, 0)
+	if err != nil {
+		t.Fatalf("CapturePane: %v", err)
+	}
+	for _, want := range []string{"^[[200~first line", "second line;^[[201~"} {
+		if !strings.Contains(pane.Content, want) {
+			t.Errorf("paste missing %q; pane holds:\n%s", want, pane.Content)
+		}
+	}
+}
+
 // TestCapturePaneReportsCursor covers what capture-pane alone cannot answer.
 //
 // The panel renders captured cells, and cells carry no cursor: an agent that

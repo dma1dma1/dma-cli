@@ -43,6 +43,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.keyPreview(msg, key)
 	}
 
+	// Image paste is useful as a one-shot action on the selected live session:
+	// it should not require entering panel focus first. The agent still owns the
+	// actual clipboard interpretation, exactly as it does while attached.
+	if m.focus == focusBoard && key == "ctrl+v" {
+		return m.keyPreview(msg, key)
+	}
+
 	// ctrl+c always quits, wherever focus is; sessions keep running.
 	if key == "ctrl+c" {
 		m.quitting = true
@@ -432,9 +439,21 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 			return m, errStatus(err)
 		}
 		m.input.SetValue("")
+		m.pendingImages = nil
+		m.layoutSizes()
 		m.focus = focusBoard
 		return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req),
 			status("starting "+req.Profile+" in "+req.RepoID+"…"))
+
+	case "ctrl+v":
+		return m, readClipboardCmd()
+
+	case "backspace":
+		if len(m.pendingImages) > 0 && m.input.Position() == 0 {
+			m.pendingImages = m.pendingImages[:len(m.pendingImages)-1]
+			m.layoutSizes()
+			return m, nil
+		}
 	}
 
 	var cmd tea.Cmd
@@ -453,6 +472,10 @@ func (m Model) newSessionRequest(task string) (ops.CreateRequest, error) {
 		base = r.BaseBranch
 	}
 	cols, rows := m.previewDims()
+	images := make([]ops.ImageAttachment, len(m.pendingImages))
+	for i, image := range m.pendingImages {
+		images[i] = ops.ImageAttachment{PNG: append([]byte(nil), image.PNG...)}
+	}
 	return ops.CreateRequest{
 		Title:  task,
 		RepoID: repo,
@@ -465,8 +488,59 @@ func (m Model) newSessionRequest(task string) (ops.CreateRequest, error) {
 		Profile:       m.agentChoice,
 		BaseBranch:    base,
 		InitialPrompt: task,
+		InitialImages: images,
 		HookURL:       m.hookURL,
 	}, nil
+}
+
+// handlePaste routes terminal-owned bracketed paste. Bubble Tea v2 reports it
+// separately from keypresses, so it must be handed to the focused component
+// explicitly.
+func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modePrompt {
+		var cmd tea.Cmd
+		m.prompt.input, cmd = m.prompt.input.Update(msg)
+		return m, cmd
+	}
+	if m.mode != modeBoard {
+		return m, nil
+	}
+	switch m.focus {
+	case focusInput:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	case focusBoard, focusPreview:
+		s := m.selected()
+		if s == nil || !s.TmuxAlive {
+			if m.focus == focusPreview {
+				m.focus = focusBoard
+			}
+			return m, errStatus(fmt.Errorf("terminal for this session is not running"))
+		}
+		m.typedAt[s.ID] = now()
+		return m, tea.Batch(sendPasteCmd(s, msg.Content), m.startEcho())
+	}
+	return m, nil
+}
+
+func (m Model) handleClipboard(msg clipboardMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m, errStatus(msg.err)
+	}
+	if msg.content.Image != nil {
+		m.pendingImages = append(m.pendingImages, *msg.content.Image)
+		m.layoutSizes()
+		image := msg.content.Image
+		return m, status(fmt.Sprintf("added image %d · %d×%d",
+			len(m.pendingImages), image.Width, image.Height))
+	}
+	if msg.content.Text != "" {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(tea.PasteMsg{Content: msg.content.Text})
+		return m, cmd
+	}
+	return m, nil
 }
 
 // --- chip focus ---

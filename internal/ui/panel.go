@@ -344,8 +344,10 @@ const newSessionGlyph = "+ "
 func (m Model) inputRow(width int) string {
 	st := m.styles
 	glyph := st.Prompt.Render(newSessionGlyph)
+	summary := m.imageSummary()
 	if m.focus == focusInput {
-		return zone.Mark(zoneInput, pad(glyph+m.input.View(), width))
+		image := st.RepoTag.Render(summary)
+		return zone.Mark(zoneInput, pad(glyph+image+m.input.View(), width))
 	}
 	// Naming the session as new is what keeps the row from being mistaken for
 	// the agent's own input; the keystroke alone would not say where it goes.
@@ -353,9 +355,22 @@ func (m Model) inputRow(width int) string {
 	if v := m.input.Value(); v != "" {
 		hint = v
 	}
+	hint = summary + hint
 	body := len(newSessionGlyph)
 	// Padded so the whole row is clickable, not just the width of the hint text.
 	return zone.Mark(zoneInput, pad(glyph+st.Faint.Render(truncate(hint, max(width-body, 4))), width))
+}
+
+func (m Model) imageSummary() string {
+	switch len(m.pendingImages) {
+	case 0:
+		return ""
+	case 1:
+		image := m.pendingImages[0]
+		return fmt.Sprintf("[image %d×%d] ", image.Width, image.Height)
+	default:
+		return fmt.Sprintf("[images ×%d] ", len(m.pendingImages))
+	}
 }
 
 // --- dropdowns ---

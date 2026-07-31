@@ -1,7 +1,11 @@
 package ops
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +17,17 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
+
+func imagePNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	img.Set(0, 0, color.RGBA{G: 0xff, A: 0xff})
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
 
 // newTestRepo builds a real git repo with one commit, since the whole point of
 // these paths is their interaction with git.
@@ -104,6 +119,55 @@ func TestBootstrapWarnsButDoesNotFailOnMissingPaths(t *testing.T) {
 	warns := Bootstrap(context.Background(), repo, wt)
 	if len(warns) != 2 {
 		t.Fatalf("got %d warnings, want 2", len(warns))
+	}
+}
+
+func TestStageImagesWritesIgnoredPNGFiles(t *testing.T) {
+	repoPath := newTestRepo(t, "images")
+	first := imagePNG(t, 2, 3)
+	second := imagePNG(t, 4, 5)
+
+	paths, err := stageImages(context.Background(), repoPath, []ImageAttachment{
+		{PNG: first},
+		{PNG: second},
+	})
+	if err != nil {
+		t.Fatalf("stageImages: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %v, want two", paths)
+	}
+	for i, path := range paths {
+		if !strings.HasPrefix(path, filepath.Join(repoPath, ".dma", "attachments-")) {
+			t.Errorf("path %q is not in the session attachment directory", path)
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Errorf("read image %d: %v", i+1, readErr)
+			continue
+		}
+		want := [][]byte{first, second}[i]
+		if !bytes.Equal(data, want) {
+			t.Errorf("image %d data changed while staging", i+1)
+		}
+	}
+	if dirty, err := gitx.IsDirty(context.Background(), repoPath); err != nil || dirty {
+		t.Errorf("staged attachments made the worktree dirty: dirty=%v err=%v", dirty, err)
+	}
+}
+
+func TestStageImagesRejectsInvalidPNG(t *testing.T) {
+	repoPath := newTestRepo(t, "bad-image")
+	if _, err := stageImages(context.Background(), repoPath,
+		[]ImageAttachment{{PNG: []byte("not png")}}); err == nil {
+		t.Fatal("invalid image was staged")
+	}
+	matches, err := filepath.Glob(filepath.Join(repoPath, ".dma", "attachments-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("failed staging left attachment directories behind: %v", matches)
 	}
 }
 
@@ -665,5 +729,66 @@ func TestCreateHandsTheAgentThePromptAsOneArgument(t *testing.T) {
 	want := "--flag\n" + prompt + "\n"
 	if got != want {
 		t.Errorf("agent argv:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestCreatePassesStagedImagesToTheAgent(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "image-prompt")
+	out := filepath.Join(t.TempDir(), "argv")
+	agent := filepath.Join(t.TempDir(), "agent.sh")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\n"
+	if err := os.WriteFile(agent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "testrepo", Path: repoPath, BaseBranch: "main",
+			WorktreeRoot: filepath.Join(t.TempDir(), "worktrees"),
+		}},
+		DefaultRepo: "testrepo",
+		AgentProfiles: []core.AgentProfile{{
+			Name: "recorder", Command: agent + " --flag", ImageArgument: "--image {path}",
+		}},
+		DefaultProfile: "recorder",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := Create(ctx, cfg, CreateRequest{
+		Title:         "See Screenshot",
+		InitialPrompt: "inspect it",
+		InitialImages: []ImageAttachment{{PNG: imagePNG(t, 7, 9)}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), res.Session.TmuxSession) })
+
+	var args []string
+	for range 100 {
+		if b, readErr := os.ReadFile(out); readErr == nil {
+			args = strings.Split(strings.TrimSpace(string(b)), "\n")
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(args) != 4 {
+		t.Fatalf("agent args = %q, want flag, image flag, path, prompt", args)
+	}
+	if args[0] != "--flag" || args[1] != "--image" || args[3] != "inspect it" {
+		t.Errorf("agent args = %q", args)
+	}
+	if !strings.HasPrefix(args[2], filepath.Join(res.Session.WorktreePath, ".dma", "attachments-")) {
+		t.Errorf("image path %q is outside the session worktree", args[2])
+	}
+	if _, err := os.Stat(args[2]); err != nil {
+		t.Errorf("staged image is unavailable to the agent: %v", err)
+	}
+	if dirty, err := gitx.IsDirty(ctx, res.Session.WorktreePath); err != nil || dirty {
+		t.Errorf("created image session starts dirty: dirty=%v err=%v", dirty, err)
 	}
 }

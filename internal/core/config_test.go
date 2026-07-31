@@ -34,6 +34,9 @@ func TestNormalizeKeepsCustomizedBuiltinProfiles(t *testing.T) {
 	if names := c.ProfileNames(); names[0] != "codex" {
 		t.Errorf("existing profiles should keep their order, got %v", names)
 	}
+	if got.ImageArgument != "" {
+		t.Errorf("customized codex image argument = %q, want path-in-prompt fallback", got.ImageArgument)
+	}
 }
 
 // Claude Code launches in auto mode: a board of parallel agents only pays off if
@@ -46,6 +49,16 @@ func TestDefaultProfilesStartClaudeInAutoMode(t *testing.T) {
 	}
 	if p.Command != "claude --permission-mode auto" {
 		t.Errorf("claude command = %q, want it to request auto mode", p.Command)
+	}
+}
+
+func TestNormalizeUpgradesUntouchedCodexForInitialImages(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{Name: "codex", Command: "codex"}}}
+	c.normalize()
+
+	got, _ := c.Profile("codex")
+	if got.ImageArgument != "--image {path}" {
+		t.Errorf("codex image argument = %q, want the current default", got.ImageArgument)
 	}
 }
 
@@ -145,6 +158,7 @@ func TestLaunchCommandPassesThePromptAsOneArgument(t *testing.T) {
 		name    string
 		profile AgentProfile
 		prompt  string
+		images  []string
 		want    string
 	}{
 		{
@@ -189,10 +203,31 @@ func TestLaunchCommandPassesThePromptAsOneArgument(t *testing.T) {
 			prompt:  "",
 			want:    "aider --message ",
 		},
+		{
+			name:    "image argument repeats before the prompt",
+			profile: AgentProfile{Command: "codex", ImageArgument: "--image {path}"},
+			prompt:  "inspect these",
+			images:  []string{"/tmp/first image.png", "/tmp/don't.png"},
+			want:    `codex --image '/tmp/first image.png' --image '/tmp/don'\''t.png' 'inspect these'`,
+		},
+		{
+			name:    "images placeholder controls argument placement",
+			profile: AgentProfile{Command: "agent {images} --message {prompt}", ImageArgument: "-i {path}"},
+			prompt:  "inspect",
+			images:  []string{"/tmp/image.png"},
+			want:    "agent -i '/tmp/image.png' --message 'inspect'",
+		},
+		{
+			name:    "profile without image flag receives paths in prompt",
+			profile: AgentProfile{Command: "claude"},
+			prompt:  "inspect",
+			images:  []string{"/tmp/image.png"},
+			want:    "claude 'inspect\n\nImages for this task:\n- /tmp/image.png'",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.profile.LaunchCommand(tc.prompt); got != tc.want {
+			if got := tc.profile.LaunchCommand(tc.prompt, tc.images...); got != tc.want {
 				t.Errorf("LaunchCommand(%q) = %q, want %q", tc.prompt, got, tc.want)
 			}
 		})

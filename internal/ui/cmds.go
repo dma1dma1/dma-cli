@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dma1dma1/dma-cli/internal/clip"
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
@@ -143,6 +144,11 @@ type statusMsg struct {
 
 type attachDoneMsg struct{ err error }
 
+type clipboardMsg struct {
+	content clip.Content
+	err     error
+}
+
 // --- commands ---
 
 func tickCmd() tea.Cmd {
@@ -251,6 +257,28 @@ func sendKeyCmd(s *core.Session, fk forwardedKey) tea.Cmd {
 			return statusMsg{text: fmt.Sprintf("send to %s: %v", sess.Title, err), isErr: true}
 		}
 		return nil
+	}
+}
+
+func sendPasteCmd(s *core.Session, text string) tea.Cmd {
+	if s == nil || text == "" {
+		return nil
+	}
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, text); err != nil {
+			return statusMsg{text: fmt.Sprintf("paste to %s: %v", sess.Title, err), isErr: true}
+		}
+		return nil
+	}
+}
+
+func readClipboardCmd() tea.Cmd {
+	return func() tea.Msg {
+		content, err := clip.Read()
+		return clipboardMsg{content: content, err: err}
 	}
 }
 
