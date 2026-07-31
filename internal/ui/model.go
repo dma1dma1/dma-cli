@@ -633,7 +633,8 @@ func (m Model) shepherdCmdFor(s *core.Session) tea.Cmd {
 	if line == "" || !s.TmuxAlive {
 		return nil
 	}
-	return shepherdCmd(s, line, s.PRNumber)
+	prof, _ := m.cfg.Profile(s.AgentProfile)
+	return shepherdCmd(s, line, prof.ComposePrefix, s.PRNumber)
 }
 
 // handleShepherded records that a session's on-PR-open line was delivered.

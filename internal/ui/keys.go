@@ -26,8 +26,11 @@ type hint struct{ key, desc string }
 // actually do something right now, not the union of every mode.
 func (m Model) hints() []hint {
 	if m.dropdown.open {
-		if m.dropdown.area == focusProject {
+		switch m.dropdown.area {
+		case focusProject:
 			return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"x", "remove"}, {"esc", "cancel"}}
+		case focusAgent:
+			return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"o", "on-PR-open line"}, {"esc", "cancel"}}
 		}
 		return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
 	}
@@ -56,8 +59,8 @@ func (m Model) hints() []hint {
 		}
 	case modeRepos:
 		return []hint{
-			{"j/k", "move"}, {"enter", "use for new sessions"},
-			{"a", "add repo"}, {"x", "unregister"}, {"esc", "back"},
+			{"j/k", "move"}, {"enter", "use for new sessions"}, {"a", "add repo"},
+			{"o/O", "on-PR-open line / inherit"}, {"x", "unregister"}, {"esc", "back"},
 		}
 	}
 
@@ -138,7 +141,15 @@ var helpText = [][3]string{
 	{"Repositories", "", ""},
 	{"", "enter", "use this repo for new sessions"},
 	{"", "a", "add a repo by path (dependencies detected automatically)"},
+	{"", "o", "set this repo's on-PR-open line — submit it empty to shepherd nothing here"},
+	{"", "O", "clear the override, so the repo follows its agent's line again"},
 	{"", "x", "unregister (the repo on disk is untouched)"},
+
+	{"On PR open", "", ""},
+	{"", "", "a line sent to the agent the first time a PR appears for its session"},
+	{"", "", "{pr} and {url} are filled in; sent once per PR, and only once it lands"},
+	{"", "o", "in the agent list: the default for that agent, in every repo"},
+	{"", "o", "in the repo list: this repo instead, or nothing here"},
 
 	{"Session panel", "", ""},
 	{"", "t / click", "aim the keyboard at the agent in the panel"},

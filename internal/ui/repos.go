@@ -76,7 +76,8 @@ func (m Model) viewRepos() string {
 
 		b.WriteString("  " + marker + name + "\n")
 		b.WriteString("      " + st.Meta.Render(truncate(strings.Join(meta, "  ·  "), max(m.contentWidth()-8, 20))) + "\n")
-		b.WriteString("      " + st.Meta.Render(truncate(ops.SummarizeBootstrap(r.Bootstrap), max(m.contentWidth()-8, 20))) + "\n\n")
+		b.WriteString("      " + st.Meta.Render(truncate(ops.SummarizeBootstrap(r.Bootstrap), max(m.contentWidth()-8, 20))) + "\n")
+		b.WriteString("      " + st.Meta.Render(truncate(m.shepherdSummary(r), max(m.contentWidth()-8, 20))) + "\n\n")
 	}
 	return b.String()
 }
@@ -115,6 +116,22 @@ func (m Model) keyRepos(key string) (tea.Model, tea.Cmd) {
 		m.mode = modeBoard
 		// The repo selector on the board already reads back the active repo.
 		return m, nil
+
+	case "o":
+		if n == 0 {
+			return m, nil
+		}
+		m.startRepoShepherdPrompt(m.cfg.Repos[m.repos.cursor])
+		return m, nil
+
+	case "O":
+		// Separate from o rather than something o infers from an empty field: a
+		// repo refusing its agent's line and a repo that has not been configured
+		// are different settings, and one key cannot commit to both.
+		if n == 0 {
+			return m, nil
+		}
+		return m, m.setRepoShepherd(m.cfg.Repos[m.repos.cursor].ID, nil)
 
 	case "x":
 		if n == 0 {

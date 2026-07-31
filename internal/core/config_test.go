@@ -446,3 +446,90 @@ func TestPROpenLineOverrideRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+// Codex reads its composer through a vim keymap when one is configured, so a
+// line typed straight in loses its leading characters. The default profile has
+// to carry the keys that put it in insert mode first.
+func TestDefaultCodexProfileCarriesAComposePrefix(t *testing.T) {
+	c := DefaultConfig()
+	got, _ := c.Profile("codex")
+	if len(got.ComposePrefix) != 2 || got.ComposePrefix[0] != "Escape" || got.ComposePrefix[1] != "i" {
+		t.Errorf("codex compose prefix = %v, want [Escape i]", got.ComposePrefix)
+	}
+	// Escape interrupts Claude Code rather than changing a mode, so sending one
+	// would cancel the turn the line is trying to start.
+	claude, _ := c.Profile("claude")
+	if len(claude.ComposePrefix) != 0 {
+		t.Errorf("claude compose prefix = %v, want none", claude.ComposePrefix)
+	}
+}
+
+// A config written before the prefix existed would otherwise keep mangling every
+// line typed into codex, so this is backfilled rather than only defaulted.
+func TestNormalizeBackfillsTheComposePrefix(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{Name: "codex", Command: "codex"}}}
+	c.normalize()
+
+	got, _ := c.Profile("codex")
+	if len(got.ComposePrefix) != 2 {
+		t.Errorf("codex compose prefix = %v, want it backfilled", got.ComposePrefix)
+	}
+}
+
+// An explicit empty list is a deliberate "send nothing first" -- someone who
+// turned vim mode off -- and must survive normalize.
+func TestNormalizeKeepsAnExplicitlyEmptyComposePrefix(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{
+		{Name: "codex", Command: "codex", ComposePrefix: []string{}},
+	}}
+	c.normalize()
+
+	got, _ := c.Profile("codex")
+	if got.ComposePrefix == nil || len(got.ComposePrefix) != 0 {
+		t.Errorf("codex compose prefix = %v, want it left empty", got.ComposePrefix)
+	}
+}
+
+// The distinction only holds if it survives the file, and omitempty drops both
+// nil and an empty slice -- so an explicit opt-out has to be checked end to end.
+func TestComposePrefixOptOutRoundTrips(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	if err := os.WriteFile(ConfigPath(), []byte(`{
+	  "agent_profiles": [{"name": "codex", "command": "codex", "compose_prefix": []}],
+	  "default_profile": "codex"
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := cfg.Profile("codex")
+	if len(got.ComposePrefix) != 0 {
+		t.Errorf("codex compose prefix = %v, want the opt-out preserved", got.ComposePrefix)
+	}
+}
+
+// The opt-out has to survive the config being written back, which is what the
+// TUI does every time a line is edited. omitempty drops an empty slice as
+// readily as a nil one, so this is the case that catches it.
+func TestComposePrefixOptOutSurvivesASave(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	cfg := DefaultConfig()
+	for i := range cfg.AgentProfiles {
+		if cfg.AgentProfiles[i].Name == "codex" {
+			cfg.AgentProfiles[i].ComposePrefix = []string{}
+		}
+	}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prof, _ := got.Profile("codex")
+	if len(prof.ComposePrefix) != 0 {
+		t.Errorf("codex compose prefix = %v after a save/load, want the opt-out preserved", prof.ComposePrefix)
+	}
+}

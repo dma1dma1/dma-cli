@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -201,4 +202,148 @@ func TestShepherdRepoCanOptInAlone(t *testing.T) {
 	if m.shepherdCmdFor(off) != nil {
 		t.Error("a repo with no override inherited a line the profile never set")
 	}
+}
+
+// --- editing the line in the app ---
+
+// The agent list is where the default is set, so o there has to reach config and
+// be saved: a line that only lived in memory would be gone next launch.
+func TestEditProfileLineFromTheAgentList(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	s := shepherdSess("a", 412)
+	m := testModel(shepherdCfg(""), s)
+
+	if m.shepherdCmdFor(s) != nil {
+		t.Fatal("shepherding was on before anything was configured")
+	}
+
+	m.openDropdown(focusAgent)
+	m.dropdown.cursor = indexOf(m.dropdown.options, "claude")
+	mm, _ := m.keyDropdown("o")
+	m = mm.(Model)
+	if m.mode != modePrompt || m.prompt.kind != promptProfileShepherd {
+		t.Fatalf("o in the agent list did not open the editor: mode=%v kind=%v", m.mode, m.prompt.kind)
+	}
+	if m.prompt.target != "claude" {
+		t.Errorf("prompt target = %q, want claude", m.prompt.target)
+	}
+
+	m.prompt.input.SetValue("/pr-shepherd {pr}")
+	mm, _ = m.keyPrompt(tea.KeyPressMsg{}, "enter")
+	m = mm.(Model)
+
+	if got, _ := m.cfg.Profile("claude"); got.OnPROpen != "/pr-shepherd {pr}" {
+		t.Errorf("profile line = %q, want the edited line", got.OnPROpen)
+	}
+	if m.shepherdCmdFor(s) == nil {
+		t.Error("the session was not armed by the edit")
+	}
+	saved, err := core.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := saved.Profile("claude"); got.OnPROpen != "/pr-shepherd {pr}" {
+		t.Errorf("saved profile line = %q, want the edited line", got.OnPROpen)
+	}
+}
+
+// o in the repo list writes the override, and submitting it empty is a setting
+// rather than a cancellation -- that is the repo refusing its agent's line.
+func TestEditRepoLineFromTheRepoList(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	s := shepherdSess("a", 412)
+	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", nil), s)
+	m.mode, m.repos.cursor = modeRepos, indexOfRepo(m.cfg, "r1")
+
+	mm, _ := m.keyRepos("o")
+	m = mm.(Model)
+	if m.prompt.kind != promptRepoShepherd || m.prompt.target != "r1" {
+		t.Fatalf("o in the repo list did not open the editor: kind=%v target=%q", m.prompt.kind, m.prompt.target)
+	}
+	// Seeded with the line in force, so editing an inherited one starts from it.
+	if got := m.prompt.input.Value(); got != "/pr-shepherd {pr}" {
+		t.Errorf("prompt seeded with %q, want the inherited line", got)
+	}
+
+	m.prompt.input.SetValue("")
+	mm, _ = m.keyPrompt(tea.KeyPressMsg{}, "enter")
+	m = mm.(Model)
+
+	r, _ := m.cfg.Repo("r1")
+	if r.OnPROpen == nil || *r.OnPROpen != "" {
+		t.Fatalf("repo override = %v, want a set-but-empty override", r.OnPROpen)
+	}
+	if m.shepherdCmdFor(s) != nil {
+		t.Error("a repo that was turned off was still armed")
+	}
+}
+
+// O is the only way back to inheriting, so it has to actually clear the field
+// rather than write an empty one.
+func TestClearRepoOverrideFromTheRepoList(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	off := ""
+	s := shepherdSess("a", 412)
+	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", &off), s)
+	m.mode, m.repos.cursor = modeRepos, indexOfRepo(m.cfg, "r1")
+
+	mm, _ := m.keyRepos("O")
+	m = mm.(Model)
+
+	r, _ := m.cfg.Repo("r1")
+	if r.OnPROpen != nil {
+		t.Fatalf("repo override = %q, want it cleared", *r.OnPROpen)
+	}
+	if m.shepherdCmdFor(s) == nil {
+		t.Error("clearing the override did not restore the agent's line")
+	}
+}
+
+// The count reported when a line is switched on has to come from the same
+// question the poll asks, or it will describe something other than what happens.
+func TestPendingShepherdsCountsWhatWouldFire(t *testing.T) {
+	armed := shepherdSess("a", 412)
+	already := shepherdSess("b", 413)
+	already.ShepherdedPR = 413
+	dead := shepherdSess("c", 414)
+	dead.TmuxAlive = false
+	m := testModel(shepherdCfg("/pr-shepherd {pr}"), armed, already, dead)
+
+	if got := m.pendingShepherds(); got != 1 {
+		t.Errorf("pendingShepherds = %d, want 1", got)
+	}
+}
+
+// The repo row has to distinguish all three states, since that is the only place
+// the difference between "off here" and "inherited" is visible.
+func TestShepherdSummaryNamesTheSource(t *testing.T) {
+	line, off := "/deploy-watch {pr}", ""
+	cfg := shepherdCfg("/pr-shepherd {pr}")
+	cfg.Repos = []core.Repo{
+		{ID: "custom", OnPROpen: &line},
+		{ID: "off", OnPROpen: &off},
+		{ID: "inherit"},
+	}
+	m := testModel(cfg)
+
+	for _, tc := range []struct{ repo, want string }{
+		{"custom", "/deploy-watch {pr}"},
+		{"off", "off for this repo"},
+		{"inherit", "from claude"},
+	} {
+		r, _ := m.cfg.Repo(tc.repo)
+		if got := m.shepherdSummary(r); !strings.Contains(got, tc.want) {
+			t.Errorf("summary for %s = %q, want it to mention %q", tc.repo, got, tc.want)
+		}
+	}
+}
+
+// indexOfRepo finds a repo's position in the config for the picker's cursor.
+func indexOfRepo(cfg *core.Config, id string) int {
+	for i, r := range cfg.Repos {
+		if r.ID == id {
+			return i
+		}
+	}
+	return 0
 }

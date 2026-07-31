@@ -465,11 +465,18 @@ func shipCmd(cfg *core.Config, s *core.Session, title string) tea.Cmd {
 // should answer for its pull request, with the conversation that produced it
 // still in hand. An agent mid-turn queues the line and picks it up when the
 // turn ends, so nothing here waits for it to go idle.
-func shepherdCmd(s *core.Session, line string, pr int) tea.Cmd {
+func shepherdCmd(s *core.Session, line string, prefix []string, pr int) tea.Cmd {
 	id, tmux := s.ID, s.TmuxSession
 	return func() tea.Msg {
 		ctx, cancel := contextWithTimeout()
 		defer cancel()
+		// The prefix goes first and as individual keys: it exists to change the
+		// composer's mode, which is exactly what a literal send must not do.
+		for _, k := range prefix {
+			if err := tmuxx.SendKey(ctx, tmux, k); err != nil {
+				return shepherdedMsg{id: id, pr: pr, err: err}
+			}
+		}
 		return shepherdedMsg{id: id, pr: pr, err: tmuxx.SendLiteral(ctx, tmux, line)}
 	}
 }

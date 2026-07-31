@@ -119,7 +119,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `D` | kill the agent, keep the worktree |
 | `R` | refresh PR and session state now |
 | `A` | pick the agent new sessions start with |
-| `r` | repositories: switch, add, unregister |
+| `r` | repositories: switch, add, unregister, set the on-PR-open line |
 | `p` | pick a project to filter the board |
 | `f` | filter to the active repo, or clear |
 | `?` | help |
@@ -127,7 +127,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 
 **Task input** — `ctrl-v` adds a clipboard image (or pastes text), and `backspace` at the start removes the last image. `enter` starts an agent using the agent/repo/project shown in the selectors. `esc` returns to the board.
 
-**Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too. From the board, `A` and `p` jump straight to the agent and project lists.
+**Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too. From the board, `A` and `p` jump straight to the agent and project lists. In the agent list, `o` sets that agent's [on-PR-open line](#on-pr-open).
 
 **Diff** — `tab` toggles working tree / branch diff, `j` `k` step between sessions, `esc` returns.
 
@@ -219,7 +219,8 @@ Set `DMA_HOME` to relocate both.
       "name": "codex",
       "command": "codex",
       "image_argument": "--image {path}",
-      "hooks": false
+      "hooks": false,
+      "compose_prefix": ["Escape", "i"]     // keys sent before a typed line
     }
   ],
   "default_profile": "claude",
@@ -246,25 +247,36 @@ Set `DMA_HOME` to relocate both.
 
 It can be set in two places, and the more specific one wins:
 
-| Where | Means |
-|---|---|
-| `agent_profiles[].on_pr_open` | the default for that agent, in every repo |
-| `repos[].on_pr_open` | this repo instead — **absent** inherits the profile, **`""`** disables shepherding here |
+| Where | Set it with | Means |
+|---|---|---|
+| `agent_profiles[].on_pr_open` | `o` in the agent selector's list | the default for that agent, in every repo |
+| `repos[].on_pr_open` | `o` in the repo list (`r`) | this repo instead — **absent** inherits the profile, **`""`** disables shepherding here |
 
-So the profile is how you say "always", and the repo is how you say "except here". A repo needing its own line sets one; a repo with nothing worth shepherding sets `""`; a repo that says nothing follows the agent.
+So the profile is how you say "always", and the repo is how you say "except here". A repo needing its own line sets one; a repo with nothing worth shepherding submits an empty one; `O` in the repo list clears the override so the repo follows its agent again.
+
+Every repo's row shows the line in force and where it came from, so "off here" is never mistaken for "not configured". Switching a line on says how many open PRs it is about to pick up — turning it on with work already in flight starts a turn on each of them, which is worth knowing before it happens rather than after.
+
+The same two fields are plain JSON in `~/.dma/config.json`, and `dma repo add` takes the repo one for scripting:
 
 ```sh
 dma repo add --on-pr-open '/deploy-watch {pr}' ~/code/service   # this repo's own line
 dma repo add --on-pr-open '' ~/code/scratch                     # never shepherd here
 ```
 
-Both are plain fields in `~/.dma/config.json` and can be edited there directly.
-
 It fires on the pull request existing, not on anything the agent was told at launch. Asking for shepherding in the opening prompt only works when you remember to ask and the agent is still holding the instruction an hour later; a PR appearing is a durable fact the board already computes, so it covers the sessions you forgot to ask. Both ways one can appear — pressing `s`, and the poll finding a PR the agent opened itself — go through the same path.
 
 Sent once per pull request number, recorded in `state.json`, so restarting the board does not start a second turn, and a PR closed and reopened under a new number is picked up again. A send is only recorded once it lands: a session whose terminal is gone stays armed and is served when the agent comes back.
 
-The line is typed into the agent's composer, so it inherits that composer's quirks — notably the vim-keymap mangling described under `LaunchCommand`, which is why the built-in `codex` profile leaves it unset.
+This works for any agent, Codex included — PR polling is `git` and `gh`, and knows nothing about which agent produced the branch. What differs is the line itself: `/pr-shepherd 412` is a Claude Code command, so a Codex profile wants plain instructions or a command Codex knows.
+
+`compose_prefix` is what makes typing into Codex reliable. Codex reads its composer through a vim keymap when one is configured — `vim_mode_default = true` is a real setting — and a line typed straight in loses its leading characters to normal-mode commands: `shepherd PR 412 until CI is green` arrives as `l CI is green`. The built-in `codex` profile therefore sends `Escape` then `i` first, and the line lands verbatim.
+
+```jsonc
+{ "name": "codex", "command": "codex", "hooks": false,
+  "compose_prefix": ["Escape", "i"] }   // [] to send nothing first
+```
+
+It defaults to nothing for every other agent and must: `Escape` interrupts Claude Code rather than changing a mode, so sending one would cancel the turn the line is trying to start. A config written before the field existed has it backfilled, since a missing prefix mangles every line rather than merely looking dated — `[]` is how you say "send nothing first" and keep it.
 
 The card stays in **pr open** while the line runs. Its badge goes to `● working`, but PR-driven columns are never given up to agent activity.
 

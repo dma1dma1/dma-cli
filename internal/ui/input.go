@@ -590,6 +590,24 @@ func (m Model) keyDropdown(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.removeProject()
+
+	case "o":
+		// The agent list is where an on-PR-open default belongs: the line is
+		// written in one agent's vocabulary, and this list is where the agents
+		// are. A repo's exception is set in the repo screen instead.
+		if m.dropdown.area != focusAgent || m.dropdown.cursor < 0 || m.dropdown.cursor >= n {
+			return m, nil
+		}
+		name := m.dropdown.options[m.dropdown.cursor]
+		prof, ok := m.cfg.Profile(name)
+		if !ok {
+			return m, nil
+		}
+		m.dropdown = dropdown{}
+		m.focus = focusBoard
+		m.startPrompt(promptProfileShepherd, "on PR open for "+name, prof.OnPROpen, name)
+		m.mode = modePrompt
+		return m, nil
 	}
 	return m, nil
 }

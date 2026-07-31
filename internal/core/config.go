@@ -83,6 +83,27 @@ type AgentProfile struct {
 	// appears for its session -- a slash command, or plain instructions. Empty,
 	// the default, sends nothing. Repo.OnPROpen overrides it per repo.
 	OnPROpen string `json:"on_pr_open,omitempty"`
+	// ComposePrefix are tmux key names sent before a typed line, to put the
+	// agent's composer where literal text arrives intact.
+	//
+	// Codex reads its composer through a vim keymap when one is configured, and
+	// `vim_mode_default = true` is a setting people have: typed straight in,
+	// "shepherd PR 412 until CI is green" arrives as "l CI is green", its leading
+	// characters eaten as normal-mode commands. Escape then i enters insert mode
+	// first and the line lands verbatim.
+	//
+	// It has to stay empty by default, and it is not a stand-in for "this agent
+	// is fussy": Escape interrupts Claude Code rather than changing a mode, so
+	// sending one would cancel the turn this line is trying to start.
+	//
+	// nil and [] are different. nil means never configured, and a built-in
+	// profile written by an older dma adopts the current default; [] is a
+	// deliberate "send nothing first" and is left alone.
+	//
+	// Deliberately without omitempty, which drops an empty slice as readily as a
+	// nil one: writing the config back would erase the opt-out and the next load
+	// would backfill over it.
+	ComposePrefix []string `json:"compose_prefix"`
 }
 
 // LaunchCommand is the shell line that starts this agent on a prompt.
@@ -213,7 +234,8 @@ const (
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
 		{Name: "claude", Command: "claude --permission-mode auto", Hooks: true},
-		{Name: "codex", Command: "codex", ImageArgument: "--image {path}", Hooks: false},
+		{Name: "codex", Command: "codex", ImageArgument: "--image {path}", Hooks: false,
+			ComposePrefix: []string{"Escape", "i"}},
 	}
 }
 
@@ -332,13 +354,20 @@ var bareCommands = map[string]string{"claude": "claude"}
 // choice and is left alone, the same rule the backfill above follows.
 func (c *Config) adoptDefaultFlags() {
 	for _, p := range DefaultProfiles() {
-		bare, ok := bareCommands[p.Name]
-		if !ok || bare == p.Command {
-			continue
-		}
 		for i := range c.AgentProfiles {
-			if c.AgentProfiles[i].Name == p.Name && c.AgentProfiles[i].Command == bare {
+			if c.AgentProfiles[i].Name != p.Name {
+				continue
+			}
+			if bare, ok := bareCommands[p.Name]; ok && bare != p.Command &&
+				c.AgentProfiles[i].Command == bare {
 				c.AgentProfiles[i].Command = p.Command
+			}
+			// A compose prefix is a correctness fix rather than a preference: a
+			// config written before it existed would otherwise keep mangling every
+			// line typed into that agent. Only nil is backfilled, so an explicit
+			// [] still means "send nothing first".
+			if c.AgentProfiles[i].ComposePrefix == nil {
+				c.AgentProfiles[i].ComposePrefix = p.ComposePrefix
 			}
 		}
 	}

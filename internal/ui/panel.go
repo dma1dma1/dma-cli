@@ -399,7 +399,8 @@ func (m *Model) openDropdown(area focusArea) {
 			if p.Hooks {
 				state = "state via hooks"
 			}
-			d.labels = append(d.labels, fmt.Sprintf("%-10s %s   %s", p.Name, p.Command, state))
+			d.labels = append(d.labels, fmt.Sprintf("%-10s %s   %s   %s",
+				p.Name, p.Command, state, m.shepherdLabel(p)))
 		}
 		d.cursor = indexOf(d.options, m.agentChoice)
 	case focusRepo:
@@ -494,8 +495,11 @@ func (m Model) viewDropdown(rows, width int) []string {
 	}
 	if len(out) < rows {
 		hint := "  ↑↓ choose · enter select · esc cancel"
-		if m.dropdown.area == focusProject {
+		switch m.dropdown.area {
+		case focusProject:
 			hint = "  ↑↓ choose · enter select · x remove · esc cancel"
+		case focusAgent:
+			hint = "  ↑↓ choose · enter select · o on-PR-open line · esc cancel"
 		}
 		out = append(out, st.Faint.Render(hint))
 	}

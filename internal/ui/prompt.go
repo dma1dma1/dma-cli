@@ -19,13 +19,22 @@ const (
 	promptNewProject
 	promptPRTitle
 	promptAddRepo
+	// promptProfileShepherd and promptRepoShepherd edit an on-PR-open line. The
+	// two are separate kinds rather than one with a flag because they mean
+	// different things when submitted empty: an agent with no line simply has
+	// none, while a repo with an empty override is refusing the one its agent
+	// sets.
+	promptProfileShepherd
+	promptRepoShepherd
 )
 
 type prompt struct {
-	kind   promptKind
-	label  string
-	input  textinput.Model
-	target string // session id the prompt applies to
+	kind  promptKind
+	label string
+	input textinput.Model
+	// target is what the prompt applies to -- a session id, a repo id or a
+	// profile name, according to kind.
+	target string
 }
 
 func (m *Model) startPrompt(kind promptKind, label, initial, target string) {
@@ -89,6 +98,14 @@ func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Batch(adoptCmd(m.cfg, val), status("registering "+val+"…"))
+
+		case promptProfileShepherd:
+			return m, m.setProfileShepherd(p.target, val)
+
+		case promptRepoShepherd:
+			// Submitted empty this is "nothing here", not a cancellation: esc is how
+			// you back out, and O is how a repo goes back to inheriting.
+			return m, m.setRepoShepherd(p.target, &val)
 		}
 		return m, nil
 	}
