@@ -254,8 +254,9 @@ type Cursor struct {
 // position describes a cell of a particular frame, and pairing it with a later
 // capture would draw a caret in the wrong place.
 type Pane struct {
-	Content string
-	Cursor  Cursor
+	Content  string
+	Cursor   Cursor
+	MouseSGR bool
 }
 
 // CapturePane returns pane content, which is how the board shows agent output
@@ -277,8 +278,40 @@ func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
 	}
 	// Best effort: a pane whose cursor cannot be read still renders, just
 	// without a caret, which beats failing the whole capture over decoration.
-	cur, _ := PaneCursor(ctx, name)
-	return Pane{Content: content, Cursor: cur}, nil
+	cur, mouseSGR, _ := paneState(ctx, name)
+	return Pane{Content: content, Cursor: cur, MouseSGR: mouseSGR}, nil
+}
+
+// SendMouseWheel forwards one SGR mouse-wheel event when the application in
+// the pane has requested that protocol. The bool says whether anything was
+// sent, so a caller can distinguish an application-owned wheel from a pane
+// that did not request mouse input.
+//
+// x and y are zero-based pane coordinates. SGR mouse positions are one-based,
+// and clamping them to the pane keeps a slightly stale board layout from
+// producing a position outside an agent that has just resized.
+func SendMouseWheel(ctx context.Context, name string, up bool, x, y int) (bool, error) {
+	out, err := run(ctx, "list-panes", "-t", windowTarget(name),
+		"-F", "#{mouse_sgr_flag} #{pane_width} #{pane_height}")
+	if err != nil {
+		return false, err
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	var mouseSGR, width, height int
+	if _, err := fmt.Sscanf(line, "%d %d %d", &mouseSGR, &width, &height); err != nil {
+		return false, fmt.Errorf("tmux pane mouse state %q: %w", line, err)
+	}
+	if mouseSGR == 0 {
+		return false, nil
+	}
+
+	x = min(max(x+1, 1), max(width, 1))
+	y = min(max(y+1, 1), max(height, 1))
+	button := 65 // wheel down in the SGR protocol
+	if up {
+		button = 64
+	}
+	return true, sendLiteral(ctx, name, fmt.Sprintf("\x1b[<%d;%d;%dM", button, x, y))
 }
 
 // CapturePaneAt returns the pane viewport scroll lines above its live position.
@@ -334,19 +367,29 @@ func CapturePaneAt(ctx context.Context, name string, scroll int) (Pane, int, err
 // list-panes accepts the "=" exact-match target; display-message answers a
 // "=name" target with empty format fields instead of an error.
 func PaneCursor(ctx context.Context, name string) (Cursor, error) {
+	cur, _, err := paneState(ctx, name)
+	return cur, err
+}
+
+// paneState reads terminal state that belongs to the same pane frame. Keeping
+// it in one query avoids adding a tmux process to every preview capture when
+// the panel needs both the cursor and the application's mouse mode.
+func paneState(ctx context.Context, name string) (Cursor, bool, error) {
 	out, err := run(ctx, "list-panes", "-t", windowTarget(name),
-		"-F", "#{cursor_x} #{cursor_y} #{cursor_flag}")
+		"-F", "#{cursor_x} #{cursor_y} #{cursor_flag} #{mouse_sgr_flag}")
 	if err != nil {
-		return Cursor{}, err
+		return Cursor{}, false, err
 	}
 	// One line per pane; sessions the board starts have exactly one, and the
 	// first is the one capture-pane read.
 	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 	var x, y, flag int
 	if _, err := fmt.Sscanf(line, "%d %d %d", &x, &y, &flag); err != nil {
-		return Cursor{}, fmt.Errorf("tmux cursor %q: %w", line, err)
+		return Cursor{}, false, fmt.Errorf("tmux pane state %q: %w", line, err)
 	}
-	return Cursor{X: x, Y: y, Visible: flag == 1}, nil
+	fields := strings.Fields(line)
+	mouseSGR := len(fields) >= 4 && fields[3] == "1"
+	return Cursor{X: x, Y: y, Visible: flag == 1}, mouseSGR, nil
 }
 
 // AttachCmd builds the command that hands the terminal to tmux. When the TUI is

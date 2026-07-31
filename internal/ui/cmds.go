@@ -35,6 +35,7 @@ type previewMsg struct {
 	id              string
 	content         string
 	cursor          tmuxx.Cursor
+	mouseSGR        bool
 	requestedScroll int
 	actualScroll    int
 }
@@ -245,9 +246,28 @@ func previewCmdAt(s *core.Session, requestedScroll int) tea.Cmd {
 		defer cancel()
 		pane, actual, _ := tmuxx.CapturePaneAt(ctx, sess.TmuxSession, requestedScroll)
 		return previewMsg{
-			id: sess.ID, content: pane.Content, cursor: pane.Cursor,
+			id: sess.ID, content: pane.Content, cursor: pane.Cursor, mouseSGR: pane.MouseSGR,
 			requestedScroll: requestedScroll, actualScroll: actual,
 		}
+	}
+}
+
+// sendWheelCmd forwards a wheel event to a full-screen application that asked
+// the terminal for SGR mouse input. Capability is checked again at send time:
+// dialogs can change terminal modes between the preview capture and the event.
+func sendWheelCmd(s *core.Session, up bool, x, y int) tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := tmuxx.SendMouseWheel(ctx, sess.TmuxSession, up, x, y)
+		if err != nil {
+			return noticeMsg{text: fmt.Sprintf("scroll %s: %v", sess.Title, err)}
+		}
+		return nil
 	}
 }
 

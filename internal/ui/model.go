@@ -92,6 +92,10 @@ type Model struct {
 	// captured view, and scrolling it must not change how the real pane receives
 	// the next forwarded key.
 	previewScroll int
+	// previewMouseSGR says the selected application asked for SGR mouse events.
+	// Full-screen agents such as Claude own their scroll position and have no
+	// tmux history, so their wheel events must go back to the application.
+	previewMouseSGR bool
 
 	// echoUntil is how long the panel keeps re-reading the pane at echoInterval
 	// after a forwarded keystroke; echoing says whether that ticker is running,
@@ -223,7 +227,7 @@ func (m Model) selected() *core.Session {
 func (m *Model) selectSession(s *core.Session) {
 	m.selectedID, m.deselected = s.ID, false
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
-	m.previewScroll = 0
+	m.previewScroll, m.previewMouseSGR = 0, false
 	m.unpinScroll()
 }
 
@@ -231,7 +235,7 @@ func (m *Model) selectSession(s *core.Session) {
 func (m *Model) clearSelection() {
 	m.selectedID, m.deselected = "", true
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
-	m.previewScroll = 0
+	m.previewScroll, m.previewMouseSGR = 0, false
 }
 
 // dropSelectionIfHidden empties the panel when a filter has just taken the
@@ -431,6 +435,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// event must not pull the preview back to an older position.
 		if msg.id == m.selectedID && msg.requestedScroll == m.previewScroll {
 			m.preview, m.previewCursor = msg.content, msg.cursor
+			m.previewMouseSGR = msg.mouseSGR
 			m.previewScroll = msg.actualScroll
 		}
 		return m, nil
