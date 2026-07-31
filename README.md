@@ -235,6 +235,11 @@ Detection also covers common monorepo directories such as `packages/*`,
 `apps/*`, and `services/*`. Tracked files are not bootstrapped because git
 already places them in every worktree.
 
+Tracked `.envrc` files are authorized before the agent starts when the file is
+byte-for-byte identical to the registered checkout's `.envrc` and that checkout
+is already trusted by direnv. A changed or untrusted `.envrc` stays blocked so
+newly fetched shell code is never approved automatically.
+
 The registration notice summarizes what was detected:
 
 ```text
