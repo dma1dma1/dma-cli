@@ -21,8 +21,8 @@ var sgrPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // hunkRows is the row each hunk starts on in content, one entry per hunk.
 //
-// Two rules, tried in order. Git's own output and delta's raw hunk headers keep
-// the "@@" marker, and counting those is exact. Delta's default header is its own
+// Two rules, tried in order. A diff git rendered has one of our own rules where
+// each hunk header was, and counting those is exact. Delta's header is its own
 // invention, so the fallback looks for the first line the hunk changed -- which
 // survives every rendering, because it is the content itself.
 func hunkRows(content string, hunks []gitx.Hunk) []int {
@@ -37,7 +37,7 @@ func hunkRows(content string, hunks []gitx.Hunk) []int {
 
 	var headers []int
 	for i, row := range flat {
-		if strings.HasPrefix(row, "@@") {
+		if strings.HasPrefix(row, gitx.HunkRule) {
 			headers = append(headers, i)
 		}
 	}

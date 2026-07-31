@@ -692,7 +692,9 @@ func renderDiff(ctx context.Context, args []string, opts DiffOpts) (string, erro
 	if err := git.Run(); err != nil && stdout.Len() == 0 {
 		return "", &Error{Args: args, Stderr: stderr.String(), Err: err}
 	}
-	return stdout.String(), nil
+	// Git puts the line numbers in the hunk header and nowhere else, so the margin
+	// is added here -- the one thing delta does for the diff that git cannot.
+	return numberLines(stdout.String()), nil
 }
 
 // HasDelta reports whether delta is installed. Side-by-side is the one thing the
@@ -713,6 +715,10 @@ func deltaArgs(opts DiffOpts) []string {
 	if opts.Width > 0 {
 		args = append(args, fmt.Sprintf("-w=%d", opts.Width))
 	}
+	// Numbers down the side, and a hunk header with nothing in it but the enclosing
+	// function: where a change sits in the file is a question the margin now answers
+	// on every row, so the header repeating it for the first row is noise.
+	args = append(args, "--line-numbers", "--hunk-header-style=syntax")
 	// Delta's defaults clip a long line before the pane ever gets the chance to
 	// scroll it. Let it wrap instead, so the whole line stays reachable.
 	args = append(args, "--max-line-length=0", "--wrap-max-lines=unlimited")

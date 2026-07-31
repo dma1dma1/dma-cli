@@ -357,6 +357,11 @@ holds nothing but one directory is collapsed onto a single row. The top row,
 and diffed against `/dev/null`, so a brand new file — a coding agent's most
 common output — is reviewable like any other.
 
+Every row of the diff carries its line number in each file — the old file, then
+the new one — the way an editor does, so a change can be found in the file
+without counting from a hunk header. Each hunk opens with a rule carrying the
+enclosing function instead.
+
 The header counts the changes in the file (`change 2 of 5`) and follows the
 scroll, so `}` and `t` always refer to what is on screen. In a window narrower
 than 100 columns the tree gives way to the diff automatically.

@@ -304,12 +304,6 @@ func TestDumpDiffView(t *testing.T) {
 	}
 	m := diffModel(t, someFiles()...)
 	m.diffFiles.setCursorByPath("internal/ui/panel.go")
-	m.diffView.SetContent(strings.Join([]string{
-		"diff --git a/internal/ui/panel.go b/internal/ui/panel.go",
-		"@@ -328,6 +328,7 @@ func (m Model) chips() string {",
-		" 	chip(\"repo\", m.activeRepoID(), focusRepo, zoneRepoChip),",
-		"+	chip(\"files\", m.diffFiles.selectedPath(), focusDiff, zoneDiffTree),",
-		"-	chip(\"old\", nil, focusNone, \"\"),",
-	}, "\n"))
+	m.diffView.SetContent(plainRender)
 	t.Log("\n" + zoneMarker.ReplaceAllString(m.viewDiff(), ""))
 }
