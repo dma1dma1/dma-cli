@@ -370,8 +370,15 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 			func(mm *Model) tea.Cmd { return mergeCmd(mm.cfg, s) })
 
 	case "x":
-		return m.askConfirm(fmt.Sprintf("Prune worktree and branch for %q?", s.Title),
-			func(mm *Model) tea.Cmd { return teardownCmd(mm.cfg, s, false) })
+		// Pruning a session with a live pull request closes it too, and that
+		// half of the action reaches other people's review queues -- so the
+		// confirm names the PR rather than letting it go quietly.
+		prompt := fmt.Sprintf("Prune worktree and branch for %q?", s.Title)
+		if s.HasOpenPR() {
+			prompt = fmt.Sprintf("Close PR #%d and prune worktree and branch for %q?", s.PRNumber, s.Title)
+		}
+		return m.askConfirm(prompt,
+			func(mm *Model) tea.Cmd { return teardownCmd(mm.cfg, s, ops.TeardownOptions{}) })
 
 	case "D":
 		return m.askConfirm(fmt.Sprintf("Kill the agent for %q? (worktree kept)", s.Title),

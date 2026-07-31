@@ -519,6 +519,38 @@ func queueMerge(ctx context.Context, remote string, number int) (MergeOutcome, e
 	return mergeOutcome(stderr, MergeQueued), nil
 }
 
+// ClosePR closes an open pull request, leaving its remote branch alone.
+//
+// The branch stays on purpose. Closing happens as part of pruning a session,
+// which has just deleted the local branch, so the pushed one is the last copy
+// of the work -- and a closed pull request can be reopened for as long as its
+// head branch exists.
+//
+// A pull request GitHub already considers closed or merged is not a failure.
+// The board's view of PR state is up to a poll interval stale, and the caller
+// only ever wants the pull request not-open.
+func ClosePR(ctx context.Context, remote string, number int) error {
+	if remote == "" {
+		return &Error{Kind: ErrNoRepo, Msg: "repo has no remote, so its PR cannot be closed"}
+	}
+	_, stderr, err := runOutErr(ctx, "", "pr", "close", "-R", remote, fmt.Sprint(number))
+	if err != nil && !alreadyNotOpen(stderr, err) {
+		return err
+	}
+	return nil
+}
+
+// alreadyNotOpen recognizes gh refusing to close a pull request because it is
+// already closed or merged. gh reports the merged case as a failure with an
+// empty error of its own, so the reason is only in what it printed.
+func alreadyNotOpen(stderr string, err error) bool {
+	s := strings.ToLower(stderr)
+	if e, ok := err.(*Error); ok {
+		s += "\n" + strings.ToLower(e.Msg)
+	}
+	return strings.Contains(s, "already closed") || strings.Contains(s, "already merged")
+}
+
 // mergeOutcome reads what gh says it did, since gh reports a pull request that
 // was already queued as a warning on a successful run.
 func mergeOutcome(stderr string, dflt MergeOutcome) MergeOutcome {

@@ -851,7 +851,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
-					return teardownCmd(mm.cfg, s, true)
+					return teardownCmd(mm.cfg, s, ops.TeardownOptions{Force: true})
 				})
 		case *ops.UnnamedCommitsError:
 			return m.askConfirm(fmt.Sprintf("%s has commits on no branch. Discard and prune?", nameOf(s)),
@@ -859,7 +859,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
-					return teardownCmd(mm.cfg, s, true)
+					return teardownCmd(mm.cfg, s, ops.TeardownOptions{Force: true})
 				})
 		case *ops.BranchNotMergedError:
 			return m.askConfirm(fmt.Sprintf("Branch %s is not fully merged. Delete anyway?", e.Branch),
@@ -867,7 +867,19 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
-					return teardownCmd(mm.cfg, s, true)
+					return teardownCmd(mm.cfg, s, ops.TeardownOptions{Force: true})
+				})
+		// The pull request is still open and nothing has been removed yet. The
+		// answer is the user's: leaving the PR open is a real choice offline, and
+		// the alternative -- keeping the session until GitHub is reachable -- is
+		// what declining does.
+		case *ops.PRCloseError:
+			return m.askConfirm(fmt.Sprintf("Could not close PR #%d (%v). Prune anyway and leave it open?", e.Number, e.Err),
+				func(mm *Model) tea.Cmd {
+					if s == nil {
+						return nil
+					}
+					return teardownCmd(mm.cfg, s, ops.TeardownOptions{KeepPR: true})
 				})
 		}
 		return m, errStatus(msg.err)

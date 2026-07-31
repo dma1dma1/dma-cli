@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
+	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
 	"github.com/dma1dma1/dma-cli/internal/summarize"
@@ -245,9 +246,18 @@ type TeardownOptions struct {
 	// Force removes the worktree and branch even when work would be lost. It is
 	// only ever set after an explicit user confirmation.
 	Force bool
+	// KeepPR leaves an open pull request open. It is only ever set after the
+	// close has been tried, failed, and the user chose to prune regardless.
+	KeepPR bool
 }
 
-// Teardown removes a session's tmux session, worktree, branch and record.
+// closePR is the pull request half of teardown, indirected so tests can drive
+// the ordering and the failure path without a GitHub round trip.
+var closePR = ghx.ClosePR
+
+// Teardown removes a session's tmux session, worktree, branch and record, and
+// closes its pull request first if that PR is still open.
+//
 // It refuses to destroy uncommitted work unless Force is set.
 func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt TeardownOptions) error {
 	repo, ok := cfg.Repo(s.RepoID)
@@ -265,6 +275,26 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 		// which is a quieter way to lose work than an unmerged branch.
 		if s.Branch == "" && gitx.HasCommits(ctx, s.WorktreePath, s.BaseBranch) {
 			return &UnnamedCommitsError{Path: s.WorktreePath}
+		}
+	}
+
+	// Pruning a session with an open pull request means abandoning that work, so
+	// the pull request has to go with it: the worktree it came from and the
+	// branch it can be updated from are about to stop existing, and a PR nobody
+	// can push to sits in the review queue forever.
+	//
+	// It goes before any local removal, and a close that cannot happen -- gh
+	// logged out, or no network -- stops the teardown rather than being reported
+	// past it. Otherwise the failure notice arrives just as the card carrying
+	// the PR number leaves the board. Nothing here has been destroyed yet, so
+	// the retry is a keystroke.
+	//
+	// The checks above run first for a reason: their recovery is to confirm and
+	// retry with Force, and that retry has to still have the pull request to
+	// close.
+	if !opt.KeepPR && s.HasOpenPR() {
+		if err := closePR(ctx, repo.Remote, s.PRNumber); err != nil {
+			return &PRCloseError{Number: s.PRNumber, Err: err}
 		}
 	}
 
@@ -295,6 +325,19 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 	}
 	return nil
 }
+
+// PRCloseError reports that a session's open pull request could not be closed.
+// Nothing was torn down: the session is still whole, and still on the board.
+type PRCloseError struct {
+	Number int
+	Err    error
+}
+
+func (e *PRCloseError) Error() string {
+	return fmt.Sprintf("close PR #%d: %v", e.Number, e.Err)
+}
+
+func (e *PRCloseError) Unwrap() error { return e.Err }
 
 // DirtyError reports that a worktree has uncommitted changes.
 type DirtyError struct{ Path string }

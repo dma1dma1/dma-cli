@@ -252,6 +252,13 @@ func (s *Session) HasPR() bool {
 	return s.PRNumber > 0 && s.PRState != PRNone
 }
 
+// HasOpenPR reports whether the session's pull request is still open on GitHub,
+// which is what makes it something teardown has to close. A draft counts: it is
+// open as far as GitHub and everyone reviewing the repo is concerned.
+func (s *Session) HasOpenPR() bool {
+	return s.HasPR() && (s.PRState == PROpen || s.PRState == PRDraft)
+}
+
 // PRReadyToMerge reports whether an open pull request has nothing left standing
 // between it and a merge: no conflicts, no failing or unfinished checks, and no
 // reviewer asking for changes.
