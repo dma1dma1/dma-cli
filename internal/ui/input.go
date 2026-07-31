@@ -892,19 +892,33 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// previewWheel moves through tmux history while the panel has the keyboard.
-// Three lines makes a wheel notch useful without making short prompts easy to
-// skip over. The capture itself clamps at the oldest history line.
+// previewWheel gives a full-screen application the wheel when it requested SGR
+// mouse input; otherwise it moves through tmux history. Claude owns an
+// alternate-screen viewport and takes the first path, while Codex renders its
+// transcript inline and takes the second.
 func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	const linesPerNotch = 3
 	delta := 0
+	up := false
 	switch msg.Mouse().Button {
 	case tea.MouseWheelUp:
 		delta = linesPerNotch
+		up = true
 	case tea.MouseWheelDown:
 		delta = -linesPerNotch
 	default:
 		return m, nil
+	}
+	if m.previewMouseSGR {
+		s := m.selected()
+		if s == nil || !s.TmuxAlive {
+			return m, nil
+		}
+		z := zone.Get(zonePreview)
+		x, y := msg.Mouse().X-z.StartX, msg.Mouse().Y-z.StartY
+		m.previewScroll = 0
+		m.typedAt[s.ID] = now()
+		return m, tea.Batch(sendWheelCmd(s, up, x, y), m.startEcho())
 	}
 	m.previewScroll = max(m.previewScroll+delta, 0)
 	return m, previewCmdAt(m.selected(), m.previewScroll)

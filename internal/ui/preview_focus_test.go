@@ -255,6 +255,34 @@ func TestWheelScrollsFocusedPreviewHistory(t *testing.T) {
 	}
 }
 
+// Full-screen agents keep their own viewport on the alternate screen instead
+// of contributing lines to tmux history. Once a capture reports SGR mouse mode,
+// the wheel must be forwarded without inventing a history offset.
+func TestWheelGoesToFocusedMouseAwarePreview(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.preview = "Claude full-screen output"
+	m.previewMouseSGR = true
+	m.focus = focusPreview
+	m.layoutSizes()
+	rendered(t, m, zonePreview)
+
+	z := zone.Get(zonePreview)
+	next, cmd := m.handleMouse(tea.MouseWheelMsg{
+		X: (z.StartX + z.EndX) / 2, Y: (z.StartY + z.EndY) / 2,
+		Button: tea.MouseWheelUp,
+	})
+	m = next.(Model)
+	if m.previewScroll != 0 {
+		t.Errorf("application wheel left tmux history offset at %d, want 0", m.previewScroll)
+	}
+	if cmd == nil {
+		t.Fatal("application wheel scheduled no forwarded event")
+	}
+	if m.typedAt["a"].IsZero() {
+		t.Error("application wheel was not recorded as user input")
+	}
+}
+
 func TestTypingInScrolledPreviewReturnsToLivePane(t *testing.T) {
 	m := testModel(nil, liveSess("a"))
 	m.focus = focusPreview

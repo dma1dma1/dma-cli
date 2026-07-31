@@ -249,6 +249,59 @@ func TestSendKeyDeliversDistinctBytes(t *testing.T) {
 	}
 }
 
+// A full-screen TUI owns its scrollback and asks the terminal for mouse input.
+// The focused board panel is not a tmux client, so it recreates the SGR event
+// from the Bubble Tea mouse message and sends those bytes directly.
+func TestSendMouseWheelDeliversSGREvent(t *testing.T) {
+	if !Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	name := "dma-send-wheel"
+	if err := NewSession(ctx, name, os.TempDir(), 80, 20); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+	// Enable basic tracking plus SGR coordinates, as Claude Code does, then
+	// render received control bytes so the capture can assert on them.
+	if err := SendLiteral(ctx, name, "printf '\\033[?1000h\\033[?1006h'; exec cat -v"); err != nil {
+		t.Fatalf("start mouse-aware reader: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	sent, err := SendMouseWheel(ctx, name, true, 5, 7)
+	if err != nil {
+		t.Fatalf("SendMouseWheel: %v", err)
+	}
+	if !sent {
+		t.Fatal("SendMouseWheel did not recognize the pane's SGR mouse mode")
+	}
+	sent, err = SendMouseWheel(ctx, name, false, -3, 99)
+	if err != nil {
+		t.Fatalf("SendMouseWheel(down): %v", err)
+	}
+	if !sent {
+		t.Fatal("SendMouseWheel(down) did not recognize the pane's SGR mouse mode")
+	}
+	if err := SendKey(ctx, name, "Enter"); err != nil {
+		t.Fatalf("finish input line: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	pane, err := CapturePane(ctx, name, 0)
+	if err != nil {
+		t.Fatalf("CapturePane: %v", err)
+	}
+	if !strings.Contains(pane.Content, "^[[<64;6;8M") {
+		t.Errorf("wheel-up event did not arrive with one-based coordinates:\n%s", pane.Content)
+	}
+	if !strings.Contains(pane.Content, "^[[<65;1;20M") {
+		t.Errorf("wheel-down event was not clamped to the pane:\n%s", pane.Content)
+	}
+}
+
 func TestSendPastePreservesMultilineBracketedText(t *testing.T) {
 	if !Available() {
 		t.Skip("tmux not installed")
