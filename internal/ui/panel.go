@@ -408,8 +408,9 @@ const newSessionGlyph = "+ "
 // pressing enter, and enter is the key that spends a worktree and an agent on it.
 //
 // Enter still starts the agent: keyInput takes that key before the field ever
-// sees it, so the rows here come from wrapping (or from a pasted task that
-// arrived with its own line breaks), never from a keystroke.
+// sees it, so the rows here come from wrapping, from a pasted task that arrived
+// with its own line breaks, or from the newline keys keyInput handles in enter's
+// place.
 func newTaskInput(st Styles) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = "what should the agent do?"
