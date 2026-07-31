@@ -43,6 +43,195 @@ func TestNewSessionsJoinTheSelectedProject(t *testing.T) {
 	}
 }
 
+// twoRepos is the config the repo-following tests need: a project is only worth
+// binding to a repo when there is more than one to be in.
+func twoRepos() *core.Config {
+	cfg := core.DefaultConfig()
+	cfg.Repos = []core.Repo{
+		{ID: "api", BaseBranch: "main"},
+		{ID: "web", BaseBranch: "main"},
+	}
+	cfg.DefaultRepo = "api"
+	return cfg
+}
+
+// The whole point of a project's repo: switching to the project switches the
+// repo with it, so starting a session takes one choice rather than two.
+func TestSelectingAProjectSwitchesTheRepo(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "web")
+	m := testModel(cfg)
+
+	m.selectProject("frontend")
+
+	if got := m.activeRepoID(); got != "web" {
+		t.Errorf("repo chip = %q, want web", got)
+	}
+	req, err := m.newSessionRequest("do a thing")
+	if err != nil {
+		t.Fatalf("newSessionRequest: %v", err)
+	}
+	if req.RepoID != "web" {
+		t.Errorf("new session repo = %q, want web", req.RepoID)
+	}
+}
+
+// The repo filter is set from the chip, so it has to travel with it. A filter
+// left pointing at the repo you just switched away from shows an empty board,
+// which reads as sessions having vanished rather than as a stale filter.
+func TestTheRepoFilterFollowsTheProject(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "web")
+	m := testModel(cfg, sess("a", "frontend", core.LifecycleIdle, core.AgentIdle, "web"))
+	m.repoFilter = "api"
+	m.activeRepo = "api"
+
+	m.selectProject("frontend")
+
+	if m.repoFilter != "web" {
+		t.Errorf("repo filter = %q, want it to follow to web", m.repoFilter)
+	}
+	if len(m.visible()) != 1 {
+		t.Errorf("board shows %d sessions, want the project's one", len(m.visible()))
+	}
+}
+
+// A filter aimed somewhere other than the chip was set deliberately and is left
+// where the user put it.
+func TestAnIndependentRepoFilterIsLeftAlone(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "web")
+	m := testModel(cfg)
+	m.activeRepo = "api"
+	m.repoFilter = "web"
+
+	m.setActiveRepo("api")
+
+	if m.repoFilter != "web" {
+		t.Errorf("repo filter = %q, want it left on web", m.repoFilter)
+	}
+}
+
+// A project with no repo of its own must not clear the chip: the repo you were
+// last in is a better default than none, and projects predating the binding all
+// start unbound.
+func TestSelectingAnUnboundProjectLeavesTheRepoAlone(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "")
+	m := testModel(cfg)
+	m.activeRepo = "web"
+
+	m.selectProject("frontend")
+
+	if got := m.activeRepoID(); got != "web" {
+		t.Errorf("repo chip = %q, want it left on web", got)
+	}
+}
+
+// Changing the repo while a project is selected says where that project's work
+// happens now. Without it a binding is set once at creation and can never be
+// corrected.
+func TestChangingTheRepoRebindsTheSelectedProject(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "api")
+	m := testModel(cfg)
+	m.selectProject("frontend")
+
+	m.openDropdown(focusRepo)
+	m.dropdown.cursor = indexOf(m.dropdown.options, "web")
+	m.applyDropdown()
+
+	if got := m.cfg.ProjectRepo("frontend"); got != "web" {
+		t.Errorf("project repo = %q, want web", got)
+	}
+	// And it sticks: reselecting the project comes back to the same repo.
+	m.selectProject("")
+	m.activeRepo = "api"
+	m.selectProject("frontend")
+	if got := m.activeRepoID(); got != "web" {
+		t.Errorf("repo chip after reselecting = %q, want web", got)
+	}
+}
+
+// With no project selected the repo chip is just the repo chip -- there is
+// nothing for it to teach.
+func TestChangingTheRepoWithNoProjectBindsNothing(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "api")
+	m := testModel(cfg)
+
+	m.setActiveRepo("web")
+
+	if got := m.cfg.ProjectRepo("frontend"); got != "api" {
+		t.Errorf("project repo = %q, want api left untouched", got)
+	}
+}
+
+// A project named from the chip is born in the repo the chip names, so the next
+// time it is selected the repo comes back with it.
+func TestCreatingAProjectBindsItToTheActiveRepo(t *testing.T) {
+	m := testModel(twoRepos())
+	m.activeRepo = "web"
+
+	m.openDropdown(focusProject)
+	m.dropdown.cursor = indexOf(m.dropdown.options, projectNew)
+	m.applyDropdown()
+	m.prompt.input.SetValue("frontend")
+	next, _ := m.keyPrompt(keyOf('\r'), "enter")
+	m = next.(Model)
+
+	if got := m.cfg.ProjectRepo("frontend"); got != "web" {
+		t.Errorf("new project repo = %q, want web", got)
+	}
+}
+
+// Named from a card instead, the session's own repo is the only evidence about
+// where the project's work happens.
+func TestCreatingAProjectFromACardBindsItToThatSessionsRepo(t *testing.T) {
+	s := sess("a", "", core.LifecycleIdle, core.AgentIdle, "web")
+	m := testModel(twoRepos(), s)
+
+	m.openMoveProject(s)
+	m.dropdown.cursor = indexOf(m.dropdown.options, projectNew)
+	m.applyDropdown()
+	m.prompt.input.SetValue("frontend")
+	next, _ := m.keyPrompt(keyOf('\r'), "enter")
+	m = next.(Model)
+
+	if got := m.cfg.ProjectRepo("frontend"); got != "web" {
+		t.Errorf("new project repo = %q, want the card's repo web", got)
+	}
+}
+
+// Unregistering a repo leaves projects that named it pointing at nothing, which
+// has to read as unbound rather than as a repo that will be found later.
+func TestUnregisteringARepoUnbindsProjects(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "web")
+	m := testModel(cfg)
+
+	m.removeRepo("web")
+
+	if got := m.cfg.ProjectRepo("frontend"); got != "" {
+		t.Errorf("project repo = %q, want none once the repo is gone", got)
+	}
+}
+
+// The picker has to say what selecting a row will do to the repo chip, since
+// one selector quietly changing another is only acceptable if it is announced
+// before the fact.
+func TestProjectPickerNamesEachProjectsRepo(t *testing.T) {
+	cfg := twoRepos()
+	cfg.AddProject("frontend", "web")
+	m := testModel(cfg)
+	m.openDropdown(focusProject)
+
+	label := m.dropdown.labels[indexOf(m.dropdown.options, "frontend")]
+	if !strings.Contains(label, "web") {
+		t.Errorf("project row reads %q, want it to name the repo", label)
+	}
+}
+
 // A board with no sessions has no projects to derive, so without a row that
 // creates one the picker is a dead end: the only entry is the unfiltered board.
 func TestProjectPickerOffersToCreateOne(t *testing.T) {
@@ -76,8 +265,8 @@ func TestCreatingAProjectFromTheChipSelectsIt(t *testing.T) {
 	if m.projectFilter != "auth" {
 		t.Errorf("project filter = %q, want auth", m.projectFilter)
 	}
-	if !contains(m.cfg.Groups, "auth") {
-		t.Errorf("config groups = %q, want auth registered", m.cfg.Groups)
+	if !hasProject(m.cfg, "auth") {
+		t.Errorf("config projects = %v, want auth registered", projectNames(m.cfg))
 	}
 }
 
@@ -85,7 +274,7 @@ func TestCreatingAProjectFromTheChipSelectsIt(t *testing.T) {
 // hand before starting work would not survive the picker being reopened.
 func TestEmptyProjectsStayInThePicker(t *testing.T) {
 	cfg := core.DefaultConfig()
-	cfg.Groups = []string{"auth"}
+	cfg.Groups = []core.Project{{Name: "auth"}}
 	m := testModel(cfg)
 	m.openDropdown(focusProject)
 
@@ -98,7 +287,7 @@ func TestEmptyProjectsStayInThePicker(t *testing.T) {
 // "Auth" as two projects is what free text produces.
 func TestMoveSessionToExistingProject(t *testing.T) {
 	cfg := core.DefaultConfig()
-	cfg.Groups = []string{"auth"}
+	cfg.Groups = []core.Project{{Name: "auth"}}
 	s := sess("a", "", core.LifecycleIdle, core.AgentIdle, "r")
 	m := testModel(cfg, s)
 
@@ -145,8 +334,8 @@ func TestMoveSessionToANewProject(t *testing.T) {
 	if s.Group != "infra" {
 		t.Errorf("session project = %q, want infra", s.Group)
 	}
-	if !contains(m.cfg.Groups, "infra") {
-		t.Errorf("config groups = %q, want infra registered", m.cfg.Groups)
+	if !hasProject(m.cfg, "infra") {
+		t.Errorf("config projects = %v, want infra registered", projectNames(m.cfg))
 	}
 }
 
@@ -167,7 +356,7 @@ func TestGOpensTheProjectPickerForTheCard(t *testing.T) {
 // picker itself there is no way to be rid of it.
 func TestRemovingAnEmptyProject(t *testing.T) {
 	cfg := core.DefaultConfig()
-	cfg.Groups = []string{"typpo"}
+	cfg.Groups = []core.Project{{Name: "typpo"}}
 	m := testModel(cfg)
 	m.openDropdown(focusProject)
 	m.dropdown.cursor = indexOf(m.dropdown.options, "typpo")
@@ -175,8 +364,8 @@ func TestRemovingAnEmptyProject(t *testing.T) {
 	next, _ := m.keyDropdown("x")
 	m = next.(Model)
 
-	if contains(m.cfg.Groups, "typpo") {
-		t.Errorf("config groups = %q, want the project gone", m.cfg.Groups)
+	if hasProject(m.cfg, "typpo") {
+		t.Errorf("config projects = %v, want the project gone", projectNames(m.cfg))
 	}
 	if contains(projectOptions(m), "typpo") {
 		t.Errorf("picker still offers %q", "typpo")
@@ -187,7 +376,7 @@ func TestRemovingAnEmptyProject(t *testing.T) {
 // it is refused and says why.
 func TestRemovingAProjectInUseIsRefused(t *testing.T) {
 	cfg := core.DefaultConfig()
-	cfg.Groups = []string{"auth"}
+	cfg.Groups = []core.Project{{Name: "auth"}}
 	s := sess("a", "auth", core.LifecycleIdle, core.AgentIdle, "r")
 	m := testModel(cfg, s)
 	m.openDropdown(focusProject)
@@ -196,8 +385,8 @@ func TestRemovingAProjectInUseIsRefused(t *testing.T) {
 	next, cmd := m.keyDropdown("x")
 	m = next.(Model)
 
-	if !contains(m.cfg.Groups, "auth") {
-		t.Errorf("config groups = %q, want auth kept", m.cfg.Groups)
+	if !hasProject(m.cfg, "auth") {
+		t.Errorf("config projects = %v, want auth kept", projectNames(m.cfg))
 	}
 	if s.Group != "auth" {
 		t.Errorf("session project = %q, want it untouched", s.Group)
@@ -216,7 +405,7 @@ func TestRemovingAProjectInUseIsRefused(t *testing.T) {
 // happened to sort next to.
 func TestRemovingIsAnoopOnTheRowsThatAreNotProjects(t *testing.T) {
 	cfg := core.DefaultConfig()
-	cfg.Groups = []string{"auth"}
+	cfg.Groups = []core.Project{{Name: "auth"}}
 	m := testModel(cfg)
 	m.openDropdown(focusProject)
 
@@ -224,10 +413,23 @@ func TestRemovingIsAnoopOnTheRowsThatAreNotProjects(t *testing.T) {
 		m.dropdown.cursor = cursor
 		next, _ := m.keyDropdown("x")
 		m = next.(Model)
-		if !contains(m.cfg.Groups, "auth") {
-			t.Fatalf("x on row %d removed a project: groups = %q", cursor, m.cfg.Groups)
+		if !hasProject(m.cfg, "auth") {
+			t.Fatalf("x on row %d removed a project: projects = %v", cursor, projectNames(m.cfg))
 		}
 	}
+}
+
+func hasProject(cfg *core.Config, name string) bool {
+	_, ok := cfg.Project(name)
+	return ok
+}
+
+func projectNames(cfg *core.Config) []string {
+	out := make([]string, 0, len(cfg.Groups))
+	for _, p := range cfg.Groups {
+		out = append(out, p.Name)
+	}
+	return out
 }
 
 func contains(list []string, want string) bool {

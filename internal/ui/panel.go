@@ -401,7 +401,7 @@ func (m *Model) openDropdown(area focusArea) {
 		// The empty option is the unfiltered board, and it comes first because
 		// it is the state you return to.
 		d.options = append(d.options, "")
-		d.labels = append(d.labels, projectLabel("all projects", len(m.sessions)))
+		d.labels = append(d.labels, projectLabel("all projects", "", len(m.sessions)))
 		m.appendProjects(&d)
 		d.cursor = indexOf(d.options, m.projectFilter)
 	}
@@ -421,7 +421,7 @@ func (m *Model) openMoveProject(s *core.Session) {
 	// way of clearing one -- moving a card back out of a project is as ordinary
 	// as moving it in.
 	d.options = append(d.options, "")
-	d.labels = append(d.labels, projectLabel("no project", m.projectSize("")))
+	d.labels = append(d.labels, projectLabel("no project", "", m.projectSize("")))
 	m.appendProjects(&d)
 	d.cursor = indexOf(d.options, s.Group)
 	m.dropdown = d
@@ -430,10 +430,18 @@ func (m *Model) openMoveProject(s *core.Session) {
 // appendProjects adds a row per known project and then the row that creates
 // one. The labels come from config as well as from sessions, so a project added
 // by hand is selectable before anything is running in it.
+//
+// Each row names the repo the project works in, because choosing a project now
+// chooses a repo too -- a selector that silently changes another one has to say
+// so before it is used, not after.
 func (m Model) appendProjects(d *dropdown) {
 	for _, g := range m.projects() {
+		repo := m.cfg.ProjectRepo(g)
+		if repo == "" {
+			repo = "any repo"
+		}
 		d.options = append(d.options, g)
-		d.labels = append(d.labels, projectLabel(g, m.projectSize(g)))
+		d.labels = append(d.labels, projectLabel(g, repo, m.projectSize(g)))
 	}
 	d.options = append(d.options, projectNew)
 	d.labels = append(d.labels, newProjectLabel)
@@ -449,8 +457,8 @@ func (m Model) projectSize(name string) int {
 	return n
 }
 
-func projectLabel(name string, n int) string {
-	return fmt.Sprintf("%-16s %d session(s)", name, n)
+func projectLabel(name, repo string, n int) string {
+	return fmt.Sprintf("%-16s %-16s %d session(s)", name, repo, n)
 }
 
 func (m Model) viewDropdown(rows, width int) []string {
@@ -499,7 +507,7 @@ func (m *Model) applyDropdown() tea.Cmd {
 		m.cfg.DefaultProfile = choice
 		_ = core.SaveConfig(m.cfg)
 	case focusRepo:
-		m.activeRepo = choice
+		m.setActiveRepo(choice)
 	case focusProject:
 		if choice == projectNew {
 			// The label has to be typed. The prompt carries the session the list
@@ -523,6 +531,15 @@ func (m *Model) applyDropdown() tea.Cmd {
 // board, and new sessions in no project.
 func (m *Model) selectProject(name string) {
 	m.projectFilter = name
+	// The repo comes along. Switching project is switching what you are working
+	// on, and the repo that work happens in is part of that -- having to change
+	// it separately is the step this binding exists to remove.
+	//
+	// A project with no repo leaves the chip where it is rather than clearing
+	// it: the last repo used is a better guess than none at all.
+	if repo := m.cfg.ProjectRepo(name); repo != "" {
+		m.aimRepo(repo)
+	}
 	if m.selected() == nil {
 		if f := m.firstSession(); f != nil {
 			m.selectedID = f.ID
@@ -530,14 +547,45 @@ func (m *Model) selectProject(name string) {
 	}
 }
 
-// setSessionProject refiles one session, registering the label if it is new.
+// setActiveRepo aims new sessions at a repo, and takes it as the answer for the
+// selected project too.
+//
+// A binding nothing can teach is a binding that goes stale: projects that
+// predate the feature have none, and work does move between repos. Changing the
+// repo while a project is selected is the plainest way to say where that
+// project's work happens now, and it costs a keystroke that was already spent.
+func (m *Model) setActiveRepo(id string) {
+	m.aimRepo(id)
+	if m.projectFilter == "" {
+		return
+	}
+	if m.cfg.BindProject(m.projectFilter, id) {
+		_ = core.SaveConfig(m.cfg)
+	}
+}
+
+// aimRepo points the chip at a repo, taking an active repo filter along with
+// it. The filter is set from the chip in the first place (f), so leaving it
+// behind on a repo you have just switched away from empties the board and reads
+// as sessions having disappeared.
+func (m *Model) aimRepo(id string) {
+	if m.repoFilter != "" && m.repoFilter == m.activeRepoID() {
+		m.repoFilter = id
+	}
+	m.activeRepo = id
+}
+
+// setSessionProject refiles one session, registering the project if it is new.
+//
+// A project first seen here is bound to the session's repo, which is the only
+// evidence available about where its work happens.
 func (m *Model) setSessionProject(id, name string) {
 	s := core.FindByID(m.sessions, id)
 	if s == nil {
 		return
 	}
 	s.Group = name
-	if m.cfg.AddGroup(name) {
+	if m.cfg.AddProject(name, s.RepoID) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()
@@ -562,7 +610,7 @@ func (m *Model) removeProject() tea.Cmd {
 	if n := m.projectSize(name); n > 0 {
 		return errStatus(fmt.Errorf("%s still holds %d session(s) — move them out first", name, n))
 	}
-	if m.cfg.RemoveGroup(name) {
+	if m.cfg.RemoveProject(name) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	if m.projectFilter == name {
@@ -597,7 +645,7 @@ func (m *Model) cycleChip(area focusArea, dir int) tea.Cmd {
 		for _, r := range m.cfg.Repos {
 			ids = append(ids, r.ID)
 		}
-		m.activeRepo = ids[wrap(indexOf(ids, m.activeRepoID())+dir, len(ids))]
+		m.setActiveRepo(ids[wrap(indexOf(ids, m.activeRepoID())+dir, len(ids))])
 	case focusProject:
 		// Cycling walks the projects that exist; inventing one is a keystroke
 		// with a text field behind it, so it stays in the open list.

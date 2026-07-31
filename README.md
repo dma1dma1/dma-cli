@@ -164,17 +164,21 @@ Entering `needs_you` raises a desktop notification either way. The point of the 
 
 A project is an arbitrary label, chosen with the selector when you start a session or with `G` afterwards. Typing a label that does not exist creates it. The project selector filters the board to one project, and new sessions started while filtered join it.
 
-Projects and repos are orthogonal: a project may span several repos, and one repo's sessions may sit in several projects.
+**A project remembers its repo.** Selecting a project moves the repo selector to that repo, so switching what you are working on is one choice rather than two kept in step by hand. A project takes its repo from wherever it was created — the repo selector if you named it from the chip, the card's own repo if you named it from a session — and the picker names each project's repo beside it.
+
+Changing the repo selector while a project is selected re-points that project at the new repo. That is the only way a binding changes, and it is how a project created before it had one, or work that has moved, gets corrected. With no project selected the repo selector is just the repo selector.
+
+A project that names no repo leaves the selector where it is. Sessions already running keep the repo they were started in whatever their project says later.
 
 ## Multiple repos
 
-Press `r` for the repo list: `j`/`k` to move, `enter` to make one the default for new sessions, `a` to add another by path, `x` to unregister (which never touches the repo on disk). In the compose bar, `tab` to the `repo` field and use `←`/`→` to pick — the base branch follows your choice.
+Press `r` for the repo list: `j`/`k` to move, `enter` to make one the default for new sessions, `a` to add another by path, `x` to unregister (which never touches the repo on disk, and unbinds any project that named it). In the compose bar, `tab` to the `repo` field and use `←`/`→` to pick — the base branch follows your choice, and so does the selected project's binding.
 
 One repo is the common case and stays uncluttered — the repo handle is not rendered on cards, and the compose bar hides the repo field entirely.
 
 With more than one repo registered, both appear, along with the `f` repo filter.
 
-**Groups and repos are orthogonal.** Swimlanes are always groups. A group may span several repos, and one repo's sessions may sit in several groups. A group is free text chosen at creation; typing a label that doesn't exist creates it.
+**Swimlanes are always groups**, never repos. A group's sessions may sit in several repos — the group's own repo is only the default new ones start in, so a group that has worked in two places still shows both in one lane. A group is free text chosen at creation; typing a label that doesn't exist creates it.
 
 The join key between a worktree and its PR is the pair **`(repo_id, branch)`**, never the branch alone — two repos can each have a `feat/auth`. Worktree roots and tmux session names are namespaced per repo for the same reason. A session has no branch until its agent makes one, so PR polling starts from the moment that name is adopted.
 
@@ -210,7 +214,9 @@ Set `DMA_HOME` to relocate both.
     { "name": "codex",  "command": "codex",  "hooks": false }
   ],
   "default_profile": "claude",
-  "groups": ["auth work"],                 // known project labels
+  "groups": [                              // known projects
+    { "name": "auth work", "repo": "my-project" }   // repo: where new sessions go
+  ],
   "poll_interval_secs": 45,
   "hook_port": 8787
 }

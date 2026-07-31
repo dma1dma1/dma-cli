@@ -98,7 +98,7 @@ func ids(in []*Session) []string {
 }
 
 func TestGroupOrderPutsUngroupedLast(t *testing.T) {
-	cfg := &Config{Groups: []string{"auth", "infra"}}
+	cfg := &Config{Groups: []Project{{Name: "auth"}, {Name: "infra"}}}
 	sessions := []*Session{
 		{Group: ""},
 		{Group: "infra"},

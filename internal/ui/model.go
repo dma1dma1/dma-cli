@@ -323,7 +323,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, errStatus(msg.err)
 		}
-		m.activeRepo = msg.repo.ID
+		// Registering a repo makes it the one new sessions use, which is the same
+		// statement the repo chip makes -- so a selected project learns from it
+		// too, and a project added for a repo you were about to register does not
+		// need binding by hand afterwards.
+		m.setActiveRepo(msg.repo.ID)
 		for i, r := range m.cfg.Repos {
 			if r.ID == msg.repo.ID {
 				m.repos.cursor = i
@@ -627,7 +631,7 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	}
 	s := msg.res.Session
 	m.sessions = append(m.sessions, s)
-	if s.Group != "" && m.cfg.AddGroup(s.Group) {
+	if s.Group != "" && m.cfg.AddProject(s.Group, s.RepoID) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()

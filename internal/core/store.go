@@ -125,12 +125,12 @@ func FindByID(sessions []*Session, id string) *Session {
 func GroupOrder(cfg *Config, sessions []*Session) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, g := range cfg.Groups {
-		if g == "" || seen[g] {
+	for _, p := range cfg.Groups {
+		if p.Name == "" || seen[p.Name] {
 			continue
 		}
-		seen[g] = true
-		out = append(out, g)
+		seen[p.Name] = true
+		out = append(out, p.Name)
 	}
 	var extra []string
 	hasUngrouped := false

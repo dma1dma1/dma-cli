@@ -59,15 +59,16 @@ func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 			if val == "" {
 				return m, nil
 			}
-			if m.cfg.AddGroup(val) {
-				_ = core.SaveConfig(m.cfg)
-			}
-			// Opened from a card, the new project takes that session. Opened from
-			// the chip it takes the board: a project you just named is the one you
-			// meant to be working in, so the next session starts there.
+			// Opened from a card, the new project takes that session, and the
+			// repo that session runs in. Opened from the chip it takes the
+			// board: a project you just named is the one you meant to be working
+			// in, so the next session starts there, in the repo the chip names.
 			if p.target != "" {
 				m.setSessionProject(p.target, val)
 				return m, nil
+			}
+			if m.cfg.AddProject(val, m.activeRepoID()) {
+				_ = core.SaveConfig(m.cfg)
 			}
 			m.selectProject(val)
 			m.rebuild()
