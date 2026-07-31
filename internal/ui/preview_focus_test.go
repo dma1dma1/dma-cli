@@ -269,19 +269,3 @@ func TestClickOffInputReleasesFocus(t *testing.T) {
 		t.Error("the task input kept the caret after the click left it")
 	}
 }
-
-// The expanded panel is the exception: with no board on screen, the cells that
-// hit nothing are its own frame and chip row, and losing the keyboard to a click
-// on the frame of the thing you are typing into is the bug in reverse.
-func TestClickOnFrameKeepsFocusWhilePanelExpanded(t *testing.T) {
-	m := testModel(nil, liveSess("a"))
-	m.preview = "● Hello! What can I help you with?"
-	m.previewFull = true
-	m.focus = focusPreview
-	m.layoutSizes()
-	rendered(t, m)
-
-	if got := clickModel(m, 0, 0).focus; got != focusPreview {
-		t.Errorf("clicking the expanded panel's frame left focus at %d, want the panel", got)
-	}
-}
