@@ -107,6 +107,9 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	}
 
 	warnings = append(warnings, Bootstrap(ctx, repo, worktree)...)
+	if err := authorizeMatchingDirenv(ctx, repo.Path, worktree); err != nil {
+		warnings = append(warnings, fmt.Sprintf("authorize direnv: %v", err))
+	}
 
 	imagePaths, err := stageImages(ctx, worktree, req.InitialImages)
 	if err != nil {
