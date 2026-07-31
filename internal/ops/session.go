@@ -14,6 +14,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
+	"github.com/dma1dma1/dma-cli/internal/summarize"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
@@ -95,7 +96,11 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	}
 	start := gitx.StartPoint(ctx, repo.Path, base)
 
-	worktree := uniqueWorktreeDir(repo.WorktreeRoot, core.Slug(title))
+	// The title here is the task as it was typed, which is usually a paragraph
+	// -- its summary does not exist yet and arrives after the session does. So
+	// the directory is named from the opening of that paragraph, cut at a word
+	// rather than wherever forty characters happens to land.
+	worktree := uniqueWorktreeDir(repo.WorktreeRoot, core.Slug(summarize.Shorten(title)))
 	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}

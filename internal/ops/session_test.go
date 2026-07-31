@@ -678,6 +678,51 @@ func paneSize(t *testing.T, session string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// A session is started from a description of the work, which is a paragraph
+// more often than it is a name. The directory has to be named before any
+// summary of that paragraph exists, so it is named from the opening of it --
+// cut at a word, since "the-login-test-flakes-on-ci-about-1-in" is what a raw
+// forty-character truncation looks like.
+func TestCreateNamesTheWorktreeFromTheOpeningOfTheTask(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "opening")
+	wtRoot := filepath.Join(t.TempDir(), "worktrees")
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "testrepo", Path: repoPath, BaseBranch: "main", WorktreeRoot: wtRoot,
+		}},
+		DefaultRepo:    "testrepo",
+		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
+		DefaultProfile: "noop",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	task := "the login test flakes on CI about 1 in 5 runs, look at why and fix it"
+	res, err := Create(ctx, cfg, CreateRequest{Title: task})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	s := res.Session
+	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), s.TmuxSession) })
+
+	// The record keeps the whole task: the board renames the card once it has a
+	// summary, and it can only do that from the text the session started with.
+	if s.Title != task {
+		t.Errorf("title = %q, want the task as typed", s.Title)
+	}
+	dir := filepath.Base(s.WorktreePath)
+	if dir != "the-login-test-flakes-on-ci-about-1" {
+		t.Errorf("worktree directory = %q", dir)
+	}
+	if filepath.Dir(s.WorktreePath) != wtRoot {
+		t.Errorf("worktree %q is not directly under %q", s.WorktreePath, wtRoot)
+	}
+}
+
 // The agent has to receive the prompt as one argument. Typing the prompt into a
 // running agent's UI instead loses characters -- codex reads its composer
 // through a vim keymap, turning the first letters into cursor motions -- so the

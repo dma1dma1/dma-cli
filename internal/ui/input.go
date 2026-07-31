@@ -479,8 +479,10 @@ func (m Model) newSessionRequest(task string) (ops.CreateRequest, error) {
 	}
 	return ops.CreateRequest{
 		// A task that arrived with line breaks in it still names one session: the
-		// first line is the title a card can show and a branch can be slugged from,
-		// and the whole of it is what the agent is started on.
+		// first line is the title a card can show and a branch can be slugged
+		// from, and the whole of it is what the agent is started on. The title is
+		// a placeholder either way -- a summary of the whole task replaces it a
+		// few seconds later, see titleCmd.
 		Title:  firstLine(task),
 		RepoID: repo,
 		Cols:   cols,
