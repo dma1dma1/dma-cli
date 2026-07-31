@@ -143,20 +143,58 @@ func BranchExists(ctx context.Context, repoPath, branch string) bool {
 	return err == nil
 }
 
-// AddWorktree creates a worktree at wtPath on a new branch cut from base.
-func AddWorktree(ctx context.Context, repoPath, wtPath, branch, base string) error {
+// RefExists reports whether a fully qualified ref resolves.
+func RefExists(ctx context.Context, repoPath, ref string) bool {
+	_, err := Run(ctx, repoPath, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+// Fetch updates origin's tracking ref for one branch. Callers treat failure as
+// a warning: a laptop offline in a train still has to be able to start a
+// session, it just starts from whatever was last fetched.
+func Fetch(ctx context.Context, repoPath, branch string) error {
+	_, err := Run(ctx, repoPath, "fetch", "--quiet", "origin", branch)
+	return err
+}
+
+// StartPoint is the ref a new worktree should be cut from: origin/<base> when
+// that tracking ref exists, the local branch otherwise.
+//
+// The local branch is whatever the last pull happened to leave behind, which on
+// a repo used mainly through this tool is nothing at all. Starting sessions
+// there quietly puts every agent a few days behind.
+func StartPoint(ctx context.Context, repoPath, base string) string {
+	if base == "" {
+		return base
+	}
+	if RefExists(ctx, repoPath, "refs/remotes/origin/"+base) {
+		return "origin/" + base
+	}
+	return base
+}
+
+// AddDetachedWorktree creates a worktree at wtPath with HEAD detached at start.
+//
+// No branch is created here. Branch names are the agent's to choose once it
+// knows what the work turned out to be; a name derived from the task title up
+// front is a guess made at the moment of least information. The board adopts
+// whatever branch it later finds in the worktree -- see ops.Observe.
+func AddDetachedWorktree(ctx context.Context, repoPath, wtPath, start string) error {
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return err
 	}
-	args := []string{"worktree", "add", wtPath}
-	if BranchExists(ctx, repoPath, branch) {
-		// Reuse an existing branch rather than failing outright.
-		args = append(args, branch)
-	} else {
-		args = append(args, "-b", branch, base)
-	}
-	_, err := Run(ctx, repoPath, args...)
+	_, err := Run(ctx, repoPath, "worktree", "add", "--detach", wtPath, start)
 	return err
+}
+
+// CurrentBranch returns the branch a worktree is on, or "" when its HEAD is
+// detached or the worktree is unreadable.
+func CurrentBranch(ctx context.Context, wt string) string {
+	out, err := Run(ctx, wt, "symbolic-ref", "--short", "-q", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // RemoveWorktree detaches a worktree from the repo. force is only ever passed
@@ -223,9 +261,27 @@ func UntrackedFiles(ctx context.Context, wt string) ([]string, error) {
 // build directory cannot produce a megabyte of diff.
 const maxUntrackedInDiff = 50
 
+// baseRef resolves the ref a session's work is measured against, preferring
+// origin/<base> over the local branch of the same name.
+//
+// Worktrees are cut from the fetched remote tip, so a local base branch left
+// behind sits *before* the point the session started from. Used as a merge
+// base it would credit the session with every commit the local ref is missing,
+// padding both the diff stat and the has-anything-to-push check.
+func baseRef(ctx context.Context, wt, base string) string {
+	if base == "" || strings.HasPrefix(base, "origin/") {
+		return base
+	}
+	if RefExists(ctx, wt, "refs/remotes/origin/"+base) {
+		return "origin/" + base
+	}
+	return base
+}
+
 // DiffStat sums added/removed lines for base...HEAD plus uncommitted changes,
 // including untracked files.
 func DiffStat(ctx context.Context, wt, base string) (added, removed int, err error) {
+	base = baseRef(ctx, wt, base)
 	ranges := [][]string{
 		{"diff", "--numstat", base + "...HEAD"},
 		{"diff", "--numstat", "HEAD"},
@@ -322,7 +378,7 @@ func diffUntracked(ctx context.Context, wt string) string {
 func diffTracked(ctx context.Context, wt, base string, mode DiffMode) (string, error) {
 	args := []string{"-C", wt, "-c", "color.ui=always", "diff", "--color=always", "--stat-width=200"}
 	if mode == DiffBranch {
-		args = append(args, base+"...HEAD")
+		args = append(args, baseRef(ctx, wt, base)+"...HEAD")
 	}
 	git := exec.CommandContext(ctx, "git", args...)
 	git.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -363,9 +419,9 @@ func diffTracked(ctx context.Context, wt, base string, mode DiffMode) (string, e
 	return stdout.String(), nil
 }
 
-// HasCommits reports whether the branch has any commit beyond base.
+// HasCommits reports whether the worktree has any commit beyond base.
 func HasCommits(ctx context.Context, wt, base string) bool {
-	out, err := Run(ctx, wt, "rev-list", "--count", base+"..HEAD")
+	out, err := Run(ctx, wt, "rev-list", "--count", baseRef(ctx, wt, base)+"..HEAD")
 	if err != nil {
 		return false
 	}

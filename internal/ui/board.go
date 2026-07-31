@@ -12,15 +12,18 @@ import (
 
 const (
 	colGap       = 1
-	minColWidth  = 18
 	minBoardRows = 7
 )
 
 // columnWidths divides the width into four, distributing the remainder so the
-// row always fills the terminal exactly.
+// row always fills the width exactly.
+//
+// There is no minimum: a column narrower than its cards truncates text, but a
+// column that refuses to shrink pushes the fourth column off the screen, and a
+// board you cannot see all of is worse than one you have to read carefully.
 func columnWidths(total int) [4]int {
 	var w [4]int
-	avail := max(total-colGap*3, 4*minColWidth)
+	avail := max(total-colGap*3, 4)
 	base := avail / 4
 	extra := avail % 4
 	for i := range w {
@@ -32,24 +35,34 @@ func columnWidths(total int) [4]int {
 	return w
 }
 
+// boardContentHeight is the number of rows the columns need to show every card
+// in the tallest one, frame included. The board is sized to this rather than to
+// a share of the screen: rows beyond it would draw empty column.
+func (m Model) boardContentHeight() int {
+	widths := columnWidths(m.contentWidth())
+	cols := m.columns()
+	tallest := 2 // the "—" placeholder an empty column shows
+	for i := range cols {
+		rows := 0
+		for _, s := range cols[i] {
+			rows += len(m.cardLines(s, false, widths[i]-4)) + 1 // a blank line ends each card
+		}
+		tallest = max(tallest, rows)
+	}
+	return tallest + 2 // the frame
+}
+
 // viewBoard renders the four columns. Cards live inside the column frames as
 // rows with a colored accent bar rather than nested boxes -- borders inside
 // borders read as noise, and the bar carries the state signal more cheaply.
 func (m Model) viewBoard(height int) string {
-	widths := columnWidths(m.width)
+	widths := columnWidths(m.contentWidth())
 	cols := m.columns()
 	selPos := m.findSelected()
 
 	rendered := make([]string, 4)
 	for i := range core.Columns {
-		var rows []string
-		for j, s := range cols[i] {
-			rows = append(rows, m.renderCard(s, selPos.col == i && selPos.row == j, widths[i]-4)...)
-			rows = append(rows, "")
-		}
-		if len(cols[i]) == 0 {
-			rows = []string{"", m.styles.Faint.Render("  —")}
-		}
+		rows := m.columnRows(cols[i], i, selPos, widths[i], height)
 
 		b := Box{
 			Title:    core.Columns[i].Title(),
@@ -71,59 +84,147 @@ func (m Model) viewBoard(height int) string {
 		rendered[0], gap, rendered[1], gap, rendered[2], gap, rendered[3])
 }
 
+// columnRows stacks one column's cards, keeping only the ones that fit whole
+// and replacing the rest with a count.
+//
+// Cards are dropped rather than clipped mid-card because the box clips by line:
+// a card cut in half loses the end of its click zone, which leaves it visible
+// but unclickable.
+func (m Model) columnRows(col []*core.Session, colIndex int, sel cardPos, width, height int) []string {
+	if len(col) == 0 {
+		return []string{"", m.styles.Faint.Render("  —")}
+	}
+
+	avail := max(height-2, 1) // two rows go to the frame
+	var rows []string
+	hidden := 0
+	for j, s := range col {
+		if hidden > 0 {
+			// Once anything has been dropped the rest go too, so the order on
+			// screen stays the column's order.
+			hidden++
+			continue
+		}
+		card := m.renderCard(s, sel.col == colIndex && sel.row == j, width-4)
+		limit := avail
+		if j < len(col)-1 {
+			limit-- // reserve the row the overflow count would need
+		}
+		// The first card is kept even when it cannot fit: a clipped card beats an
+		// empty column.
+		if len(rows)+len(card) > limit && len(rows) > 0 {
+			hidden++
+			continue
+		}
+		rows = append(rows, card...)
+		rows = append(rows, "")
+	}
+	if hidden > 0 {
+		rows[len(rows)-1] = m.styles.Faint.Render(fmt.Sprintf("  +%d more", hidden))
+	}
+	return rows
+}
+
 // renderCard returns the lines for one card, sized to the column interior.
+//
+// The whole card is one click target: a zone is the rectangle between its two
+// markers, so the block is marked once. Marking each line instead would leave
+// only the last line clickable, and only across the width of its text.
 func (m Model) renderCard(s *core.Session, selected bool, width int) []string {
+	lines := m.cardLines(s, selected, width)
+	return strings.Split(zone.Mark(zoneCard(s.ID), strings.Join(lines, "\n")), "\n")
+}
+
+// cardLines is renderCard without the click zone, so boardContentHeight can
+// count a card's rows without registering a zone for a card it is only
+// measuring.
+//
+// The selected card is marked three ways at once, because one way is not enough
+// in a grid of otherwise identical cards: it is filled edge to edge, its accent
+// bar thickens, and a caret sits on its title. The fill does the work at a
+// glance; the caret and the bar keep the mark legible where a background is easy
+// to miss -- a low-contrast theme, a screenshot, a terminal ignoring colors.
+func (m Model) cardLines(s *core.Session, selected bool, width int) []string {
 	st := m.styles
-	accent := st.agentColor(s.AgentState)
 
-	bar := lipgloss.NewStyle().Foreground(accent).Render("▌")
-	if selected {
-		bar = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("┃")
+	// Every segment of a selected card carries the fill itself. Wrapping the
+	// finished line in one background style would not work: the styles inside end
+	// with a reset, and the fill would stop at the first one.
+	fill := func(style lipgloss.Style) lipgloss.Style {
+		if !selected {
+			return style
+		}
+		return style.Background(st.P.Selection)
 	}
 
-	title := st.CardTitle
+	bar := fill(lipgloss.NewStyle().Foreground(st.agentColor(s.AgentState)).Bold(selected))
+	glyph := bar.Render("▌")
 	if selected {
-		title = st.CardTitleSelected
+		glyph = bar.Render("┃")
 	}
-	textW := max(width-2, 4)
+
+	title := fill(st.CardTitle)
+	if selected {
+		title = fill(st.CardTitleSelected)
+	}
+
+	// Every card reserves the caret's two cells, selected or not. Letting the
+	// caret push the text over instead would shift the title of whichever card the
+	// cursor is on, so moving the cursor would twitch text on two cards at once --
+	// the mark is easier to follow when it is the only thing that moves.
+	blank := fill(lipgloss.NewStyle())
+	gutter := blank.Render("   ")
+	titleGutter := gutter
+	if selected {
+		titleGutter = blank.Render(" ") +
+			fill(lipgloss.NewStyle().Foreground(st.P.Focus).Bold(true)).Render("▸") + blank.Render(" ")
+	}
+	textW := max(width-5, 4)
+
+	// The dim rows step up a shade on the fill. Faint is chosen to sit just above
+	// the background, so against a lighter one it stops being readable at all --
+	// the row the fill is meant to highlight would be the row that disappears.
+	meta, detail := st.Meta, st.Faint
+	if selected {
+		meta = st.Meta.Foreground(st.P.Muted)
+		detail = st.Faint.Foreground(st.P.Subtle)
+	}
 
 	var lines []string
-	push := func(prefix, content string) {
-		lines = append(lines, prefix+" "+content)
+	push := func(content string) {
+		lines = append(lines, glyph+gutter+content)
 	}
 
-	push(bar, title.Render(truncate(s.Title, textW)))
+	lines = append(lines, glyph+titleGutter+title.Render(truncate(s.Title, textW)))
 
 	// The repo handle only earns space once more than one repo is registered.
 	if m.cfg.MultiRepo() {
-		push(bar, st.RepoTag.Render(truncate(s.RepoID, textW)))
+		push(fill(st.RepoTag).Render(truncate(s.RepoID, textW)))
 	}
 	// Likewise the project, and only when the board is not already filtered to
 	// one -- otherwise every card would repeat the same label.
 	if s.Group != "" && m.projectFilter == "" {
-		push(bar, st.ProjectTag.Render(truncate("◆ "+s.Group, textW)))
+		push(fill(st.ProjectTag).Render(truncate("◆ "+s.Group, textW)))
 	}
 
-	push(bar, st.Meta.Render(truncate(m.branchOrPR(s), textW)))
-	push(bar, st.badgeStyle(s).Render(truncate(st.badgeText(s), textW)))
+	push(fill(meta).Render(truncate(m.branchOrPR(s), textW)))
+	push(fill(st.badgeStyle(s)).Render(truncate(st.badgeText(s), textW)))
 
 	if s.AgentState == core.AgentNeedsYou && s.AgentStateDetail != "" {
-		push(bar, st.Faint.Render(truncate(s.AgentStateDetail, textW)))
+		push(fill(detail).Render(truncate(s.AgentStateDetail, textW)))
 	}
 
 	if s.DiffAdded > 0 || s.DiffRemoved > 0 {
-		stat := lipgloss.NewStyle().Foreground(st.P.Success).Render(fmt.Sprintf("+%d", s.DiffAdded)) +
-			" " + lipgloss.NewStyle().Foreground(st.P.Danger).Render(fmt.Sprintf("−%d", s.DiffRemoved))
-		push(bar, stat)
+		stat := fill(lipgloss.NewStyle().Foreground(st.P.Success)).Render(fmt.Sprintf("+%d", s.DiffAdded)) +
+			blank.Render(" ") +
+			fill(lipgloss.NewStyle().Foreground(st.P.Danger)).Render(fmt.Sprintf("−%d", s.DiffRemoved))
+		push(stat)
 	}
 	if !s.TmuxAlive {
-		push(bar, st.Faint.Render(truncate("⚠ not running", textW)))
+		push(fill(detail).Render(truncate("⚠ not running", textW)))
 	}
-
-	// The whole card is one click target, so a mis-aimed click on any of its
-	// lines still selects the right session.
 	for i := range lines {
-		lines[i] = zone.Mark(zoneCard(s.ID), lines[i])
+		lines[i] = padFill(lines[i], width, blank)
 	}
 	return lines
 }
@@ -132,6 +233,11 @@ func (m Model) renderCard(s *core.Session, selected bool, width int) []string {
 // branch name before that.
 func (m Model) branchOrPR(s *core.Session) string {
 	if !s.HasPR() {
+		// Sessions start with no branch at all; the agent names one when it has
+		// something to commit.
+		if s.Branch == "" {
+			return "no branch"
+		}
 		return s.Branch
 	}
 	label := fmt.Sprintf("#%d", s.PRNumber)

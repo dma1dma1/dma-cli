@@ -114,21 +114,30 @@ const (
 	SizeLatest = "latest"
 )
 
+// windowTarget addresses a session's current window.
+//
+// The "=" prefix, which stops a session name from matching by prefix, is only
+// accepted where tmux expects a session. Commands that take a target-window --
+// resize-window, and set-option for a window option like window-size -- reject
+// a bare "=name" with "no such window". The trailing ":" makes it a window
+// target, so the exact-match prefix survives.
+func windowTarget(name string) string { return "=" + name + ":" }
+
 // ResizeWindow pins a detached session's window to an explicit size. tmux sets
 // window-size to manual as a side effect.
 func ResizeWindow(ctx context.Context, name string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
-	_, err := run(ctx, "resize-window", "-t", "="+name,
+	_, err := run(ctx, "resize-window", "-t", windowTarget(name),
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
 	return err
 }
 
 // SetWindowSize switches a session between following clients and holding a
-// fixed size.
+// fixed size. window-size is a window option, so it needs a window target.
 func SetWindowSize(ctx context.Context, name, mode string) error {
-	_, err := run(ctx, "set-option", "-t", "="+name, "window-size", mode)
+	_, err := run(ctx, "set-option", "-t", windowTarget(name), "window-size", mode)
 	return err
 }
 
@@ -138,10 +147,58 @@ func SendKeys(ctx context.Context, name, text string) error {
 	return err
 }
 
+// SendKey sends one tmux key name -- "Enter", "C-c", "Up" -- and nothing else.
+//
+// Unlike SendKeys this appends no Enter: it forwards a single keystroke as the
+// user typed it, which is what driving an agent from the panel needs.
+func SendKey(ctx context.Context, name, key string) error {
+	_, err := run(ctx, "send-keys", "-t", name, key)
+	return err
+}
+
+// SendText types text literally, with no trailing Enter. Used for the printable
+// characters of a forwarded keystroke, where "-l" is what keeps text that
+// happens to spell a tmux key name ("Enter", "C-c") from being read as one.
+func SendText(ctx context.Context, name, text string) error {
+	return sendLiteral(ctx, name, text)
+}
+
+// sendLiteral sends text with no interpretation and no trailing Enter.
+//
+// It exists because "-l" is not quite literal enough. tmux parses its own
+// command line before -l applies, and a semicolon ending an argument is a
+// command separator there: exactly one trailing ";" is swallowed, so "trailing;"
+// arrives as "trailing" and ";" arrives as nothing at all. Leading and
+// mid-string semicolons are safe, which is why this only special-cases the tail.
+//
+// The tail goes through -H, which takes hex bytes and so bypasses the parser
+// entirely. Only the semicolons take that path: hex-encoding everything would
+// triple the size of every prompt for one edge case.
+func sendLiteral(ctx context.Context, name, text string) error {
+	body := strings.TrimRight(text, ";")
+	semis := len(text) - len(body)
+
+	if body != "" {
+		if _, err := run(ctx, "send-keys", "-t", name, "-l", body); err != nil {
+			return err
+		}
+	}
+	if semis == 0 {
+		return nil
+	}
+	args := []string{"send-keys", "-t", name, "-H"}
+	for range semis {
+		args = append(args, "3b") // ';'
+	}
+	_, err := run(ctx, args...)
+	return err
+}
+
 // SendLiteral types text without interpreting it as key names, then Enter.
-// Used for user-supplied prompts, which may contain anything.
+// Used for user-supplied prompts, which may contain anything -- including a
+// trailing semicolon, which is why it goes through sendLiteral.
 func SendLiteral(ctx context.Context, name, text string) error {
-	if _, err := run(ctx, "send-keys", "-t", name, "-l", text); err != nil {
+	if err := sendLiteral(ctx, name, text); err != nil {
 		return err
 	}
 	_, err := run(ctx, "send-keys", "-t", name, "Enter")
@@ -154,6 +211,24 @@ func KillSession(ctx context.Context, name string) error {
 	return err
 }
 
+// Cursor is where a pane's text cursor sits, in cells from the top-left of the
+// visible screen. Visible is the terminal's own show-cursor flag: agents hide
+// the cursor while they are drawing, or while they are not taking input.
+type Cursor struct {
+	X, Y    int
+	Visible bool
+}
+
+// Pane is one snapshot of a pane: what is on screen, and where the cursor is.
+//
+// The two travel together because they are only meaningful together -- a cursor
+// position describes a cell of a particular frame, and pairing it with a later
+// capture would draw a caret in the wrong place.
+type Pane struct {
+	Content string
+	Cursor  Cursor
+}
+
 // CapturePane returns pane content, which is how the board shows agent output
 // without owning a PTY. It is display only -- agent state comes from hooks, or
 // from probing, never from parsing this.
@@ -162,12 +237,44 @@ func KillSession(ctx context.Context, name string) error {
 // full-screen agent UI: those draw on the alternate screen, so their scrollback
 // holds whatever was on the normal screen beforehand and splicing the two
 // together renders stale fragments over the live view.
-func CapturePane(ctx context.Context, name string, history int) (string, error) {
+func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
 	args := []string{"capture-pane", "-p", "-e", "-t", name}
 	if history > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", history))
 	}
-	return run(ctx, args...)
+	content, err := run(ctx, args...)
+	if err != nil {
+		return Pane{}, err
+	}
+	// Best effort: a pane whose cursor cannot be read still renders, just
+	// without a caret, which beats failing the whole capture over decoration.
+	cur, _ := PaneCursor(ctx, name)
+	return Pane{Content: content, Cursor: cur}, nil
+}
+
+// PaneCursor reports the cursor tmux is holding for a pane.
+//
+// It is a separate query because capture-pane returns cells and nothing else:
+// the cursor is terminal state, not screen content, so a captured frame of a
+// full-screen agent has no caret in it anywhere.
+//
+// The numbers come from list-panes rather than display-message because only
+// list-panes accepts the "=" exact-match target; display-message answers a
+// "=name" target with empty format fields instead of an error.
+func PaneCursor(ctx context.Context, name string) (Cursor, error) {
+	out, err := run(ctx, "list-panes", "-t", windowTarget(name),
+		"-F", "#{cursor_x} #{cursor_y} #{cursor_flag}")
+	if err != nil {
+		return Cursor{}, err
+	}
+	// One line per pane; sessions the board starts have exactly one, and the
+	// first is the one capture-pane read.
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	var x, y, flag int
+	if _, err := fmt.Sscanf(line, "%d %d %d", &x, &y, &flag); err != nil {
+		return Cursor{}, fmt.Errorf("tmux cursor %q: %w", line, err)
+	}
+	return Cursor{X: x, Y: y, Visible: flag == 1}, nil
 }
 
 // AttachCmd builds the command that hands the terminal to tmux. When the TUI is

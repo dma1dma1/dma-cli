@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
 )
@@ -29,6 +30,7 @@ const (
 	ErrOffline
 	ErrUnauthenticated
 	ErrNoRepo
+	ErrTimeout
 )
 
 type Error struct {
@@ -48,6 +50,10 @@ func (e *Error) Error() string {
 			return e.Msg
 		}
 		return fmt.Sprintf("no such repo: %s", e.Remote)
+	case ErrTimeout:
+		// GitHub's own timeout prose runs to three sentences, which is more than
+		// a one-line status bar can carry and says nothing the user can act on.
+		return "github timed out"
 	}
 	return e.Msg
 }
@@ -59,6 +65,9 @@ func classify(remote, stderr string) *Error {
 		strings.Contains(s, "network is unreachable"), strings.Contains(s, "i/o timeout"),
 		strings.Contains(s, "connection refused"):
 		return &Error{Kind: ErrOffline, Remote: remote, Msg: firstLine(stderr)}
+	case strings.Contains(s, "http 502"), strings.Contains(s, "http 503"),
+		strings.Contains(s, "http 504"), strings.Contains(s, "context deadline exceeded"):
+		return &Error{Kind: ErrTimeout, Remote: remote, Msg: firstLine(stderr)}
 	case strings.Contains(s, "authentication"), strings.Contains(s, "gh auth login"),
 		strings.Contains(s, "http 401"), strings.Contains(s, "bad credentials"):
 		return &Error{Kind: ErrUnauthenticated, Remote: remote, Msg: firstLine(stderr)}
@@ -122,20 +131,92 @@ type PR struct {
 
 const prFields = "number,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup"
 
-// ListPRs fetches open pull requests for one repo. It is called once per
-// registered repo that has at least one live session -- never once per session,
-// and never for repos with nothing running.
+// Poll is one repo's branch-scoped poll result.
+type Poll struct {
+	// Open holds the open pull request for each branch that has one.
+	Open map[string]PR
+	// Answered lists every branch whose query came back, whether or not it found
+	// a PR. A branch absent from this set failed on this pass; the caller must
+	// leave that session alone rather than read the silence as "the PR closed".
+	Answered map[string]bool
+}
+
+// pollConcurrency bounds the in-flight gh processes for one repo. Each is a
+// process plus an API round trip, and a board tracking dozens of branches
+// should not fork dozens of them at once.
+const pollConcurrency = 6
+
+// PollBranches fetches the open pull request for each of a repo's tracked
+// branches, one query per branch, run concurrently.
 //
-// Only open PRs are listed. Asking for --state all makes GitHub compute the
-// check rollup across the repo's entire PR history, which times out with a 502
-// on large repos; a session whose PR has left the open set is resolved
-// individually with GetPR instead, and there are only ever a handful of those.
-func ListPRs(ctx context.Context, remote string) ([]PR, error) {
+// The obvious implementation -- one `pr list` for the whole repo -- does not
+// survive a busy monorepo. statusCheckRollup is computed per PR, so a page of
+// 100 PRs carrying thirty checks each makes GitHub do thousands of check
+// lookups for one request, and it answers HTTP 504 instead. The page cap is the
+// worse half: a repo with more open PRs than the limit silently omits the ones
+// past it, and a session whose PR fell off the page looks like it closed.
+//
+// Asking per branch makes both problems structural non-issues. The cost scales
+// with the number of sessions on the board, which is small and under the user's
+// control, rather than with the repo's open-PR count, which is neither.
+//
+// An error is returned only when no branch could be reached at all -- one
+// flaky query must not discard the answers that did arrive.
+func PollBranches(ctx context.Context, remote string, branches []string) (Poll, error) {
 	if remote == "" {
-		return nil, &Error{Kind: ErrNoRepo, Remote: remote, Msg: "repo has no remote configured"}
+		return Poll{}, &Error{Kind: ErrNoRepo, Remote: remote, Msg: "repo has no remote configured"}
 	}
-	out, err := run(ctx, "", "pr", "list", "-R", remote,
-		"--state", "open", "--limit", "100", "--json", prFields)
+	p := Poll{Open: map[string]PR{}, Answered: map[string]bool{}}
+	if len(branches) == 0 {
+		return p, nil
+	}
+
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, pollConcurrency)
+	for _, branch := range branches {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			prs, err := headPRs(ctx, remote, branch)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			p.Answered[branch] = true
+			for _, pr := range prs {
+				// A branch can carry more than one open PR when the same head is
+				// proposed against several bases. The newest is the live one.
+				if prev, ok := p.Open[branch]; ok && prev.Number > pr.Number {
+					continue
+				}
+				p.Open[branch] = pr
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(p.Answered) == 0 {
+		return Poll{}, firstErr
+	}
+	return p, nil
+}
+
+// headPRs lists the open PRs whose head is one branch. The limit is generous
+// enough for the multi-base case and small enough to never be the slow query.
+func headPRs(ctx context.Context, remote, branch string) ([]PR, error) {
+	out, err := run(ctx, "", "pr", "list", "-R", remote, "--state", "open",
+		"--head", branch, "--limit", "10", "--json", prFields)
 	if err != nil {
 		if e, ok := err.(*Error); ok {
 			e.Remote = remote
@@ -149,14 +230,7 @@ func ListPRs(ctx context.Context, remote string) ([]PR, error) {
 	}
 	prs := make([]PR, 0, len(raw))
 	for _, r := range raw {
-		prs = append(prs, PR{
-			Number:    r.Number,
-			Branch:    r.HeadRefName,
-			State:     prState(r.State, r.IsDraft),
-			CI:        rollupCI(r.Checks),
-			Review:    reviewState(r.ReviewDecision),
-			Mergeable: mergeable(r.Mergeable),
-		})
+		prs = append(prs, decodePR(r))
 	}
 	return prs, nil
 }
@@ -181,6 +255,10 @@ func GetPR(ctx context.Context, remote string, number int) (PR, error) {
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		return PR{}, &Error{Kind: ErrOther, Remote: remote, Msg: "parse gh output: " + err.Error()}
 	}
+	return decodePR(r), nil
+}
+
+func decodePR(r prJSON) PR {
 	return PR{
 		Number:    r.Number,
 		Branch:    r.HeadRefName,
@@ -188,7 +266,7 @@ func GetPR(ctx context.Context, remote string, number int) (PR, error) {
 		CI:        rollupCI(r.Checks),
 		Review:    reviewState(r.ReviewDecision),
 		Mergeable: mergeable(r.Mergeable),
-	}, nil
+	}
 }
 
 func prState(state string, draft bool) core.PRState {

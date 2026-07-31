@@ -175,7 +175,6 @@ func runRepoAdd(args []string) error {
 	remote := fs.String("remote", "", "owner/name (default: read from origin)")
 	base := fs.String("base", "", "base branch (default: repo default branch)")
 	wtRoot := fs.String("worktree-root", "", "where worktrees live (must differ per repo)")
-	prefix := fs.String("branch-prefix", "", "branch name prefix, e.g. feat/")
 	symlink := fs.String("symlink", "", "comma-separated paths to symlink into each worktree")
 	copyPaths := fs.String("copy", "", "comma-separated paths to copy into each worktree")
 	setDefault := fs.Bool("default", false, "make this the default repo")
@@ -244,7 +243,6 @@ func runRepoAdd(args []string) error {
 		}
 	}
 
-	r.BranchPrefix = *prefix
 	// Explicit flags win; otherwise detect what a fresh worktree will need.
 	if *symlink == "" && *copyPaths == "" {
 		r.Bootstrap = ops.DetectBootstrap(ctx, path)
@@ -365,12 +363,17 @@ func runList() error {
 		if live[s.TmuxSession] {
 			tm = "up"
 		}
+		// A session has no branch until its agent makes one.
+		branch := s.Branch
+		if branch == "" {
+			branch = "-"
+		}
 		if cfg.MultiRepo() {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Title, s.RepoID, s.Lifecycle,
-				s.AgentState, core.FormatDuration(s.TimeInState()), s.Branch, pr, tm)
+				s.AgentState, core.FormatDuration(s.TimeInState()), branch, pr, tm)
 		} else {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Title, s.Lifecycle,
-				s.AgentState, core.FormatDuration(s.TimeInState()), s.Branch, pr, tm)
+				s.AgentState, core.FormatDuration(s.TimeInState()), branch, pr, tm)
 		}
 	}
 	return w.Flush()

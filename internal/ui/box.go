@@ -97,5 +97,16 @@ func pad(s string, n int) string {
 	return truncate(s, n)
 }
 
+// padFill is pad with the padding itself styled, which is what a filled row
+// needs: plain spaces would leave the fill ending at the text and the rest of the
+// row showing through.
+func padFill(s string, n int, style lipgloss.Style) string {
+	wid := lipgloss.Width(s)
+	if wid >= n {
+		return pad(s, n)
+	}
+	return s + style.Render(strings.Repeat(" ", n-wid))
+}
+
 // lipglossWidth is exposed for tests, which need to assert exact cell widths.
 func lipglossWidth(s string) int { return lipgloss.Width(s) }

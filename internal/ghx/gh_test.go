@@ -93,3 +93,37 @@ func TestParsePRNumber(t *testing.T) {
 		t.Fatalf("parsePRNumber = %d, want 0", got)
 	}
 }
+
+// GitHub answers 502/504 when a query is too expensive to finish. That is not
+// the same as being offline or logged out, and its three-sentence apology is
+// not what a one-line status bar should carry.
+func TestClassifyRecognizesGatewayTimeouts(t *testing.T) {
+	for _, stderr := range []string{
+		"HTTP 504: We couldn't respond to your request in time. Sorry about that. (https://api.github.com/graphql)",
+		"HTTP 502: Something went wrong (https://api.github.com/graphql)",
+		"context deadline exceeded",
+	} {
+		e := classify("owner/repo", stderr)
+		if e.Kind != ErrTimeout {
+			t.Errorf("classify(%q) kind = %d, want ErrTimeout", stderr, e.Kind)
+		}
+		if got := e.Error(); got != "github timed out" {
+			t.Errorf("message = %q, want a short one", got)
+		}
+	}
+}
+
+// The narrower classifications must still win over the new one.
+func TestClassifyStillSeparatesOfflineAndAuth(t *testing.T) {
+	cases := map[string]ErrKind{
+		"dial tcp: lookup api.github.com: no such host": ErrOffline,
+		"HTTP 401: Bad credentials":                     ErrUnauthenticated,
+		"HTTP 404: Not Found":                           ErrNoRepo,
+		"something else entirely":                       ErrOther,
+	}
+	for stderr, want := range cases {
+		if got := classify("owner/repo", stderr); got.Kind != want {
+			t.Errorf("classify(%q) kind = %d, want %d", stderr, got.Kind, want)
+		}
+	}
+}

@@ -26,7 +26,6 @@ type Repo struct {
 	Remote       string    `json:"remote"`
 	BaseBranch   string    `json:"base_branch"`
 	WorktreeRoot string    `json:"worktree_root"`
-	BranchPrefix string    `json:"branch_prefix"`
 	Bootstrap    Bootstrap `json:"bootstrap"`
 }
 
@@ -38,6 +37,40 @@ type AgentProfile struct {
 	// liveness plus a pane-change heuristic, which is coarser but never blocks
 	// the feature on universal coverage.
 	Hooks bool `json:"hooks"`
+}
+
+// LaunchCommand is the shell line that starts this agent on a prompt.
+//
+// The prompt rides on argv rather than being typed into the agent's TUI, because
+// typing is not reliable at all. Codex reads its composer through a vim-style
+// keymap when the user has one configured, so "how are you" arrives as the
+// commands h, o, w... -- the leading characters move the cursor and open a line
+// instead of being inserted. Waiting longer before typing does not help: the
+// mangling is the keymap, not a startup race. Both built-in agents take an
+// opening prompt as a positional argument, which the agent parses itself and so
+// cannot misread.
+//
+// An agent needing the prompt somewhere other than the end -- behind a flag, say
+// -- can put {prompt} in its command and have it substituted in place.
+func (p AgentProfile) LaunchCommand(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return strings.ReplaceAll(p.Command, promptPlaceholder, "")
+	}
+	quoted := shellQuote(prompt)
+	if strings.Contains(p.Command, promptPlaceholder) {
+		return strings.ReplaceAll(p.Command, promptPlaceholder, quoted)
+	}
+	return p.Command + " " + quoted
+}
+
+const promptPlaceholder = "{prompt}"
+
+// shellQuote wraps s so a shell hands it to the agent as one argument, whatever
+// it contains. Single quotes protect everything except a single quote itself,
+// which has to leave and re-enter the quoted run.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 type Config struct {
@@ -56,9 +89,20 @@ const (
 )
 
 // DefaultProfiles are the agents dma knows how to launch out of the box.
+//
+// Claude Code starts in auto mode. A board of parallel agents is worth having
+// only if they make progress unattended, and the default permission mode stops
+// at the first command needing approval -- so every session would sit in
+// needs_you until someone opened it, which is the opposite of what the board is
+// for. The mode is a starting point, not a lock: shift+tab still cycles it from
+// the panel or an attached terminal.
+//
+// The flag rides in Command because that string is typed into the pane as a
+// shell line, so profiles carry their own arguments and dma needs no schema for
+// per-agent flags.
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
-		{Name: "claude", Command: "claude", Hooks: true},
+		{Name: "claude", Command: "claude --permission-mode auto", Hooks: true},
 		{Name: "codex", Command: "codex", Hooks: false},
 	}
 }
@@ -118,9 +162,16 @@ func (c *Config) normalize() {
 	if c.HookPort <= 0 {
 		c.HookPort = DefaultHookPort
 	}
-	if len(c.AgentProfiles) == 0 {
-		c.AgentProfiles = DefaultProfiles()
+	// Built-in profiles are backfilled rather than merely defaulted: a config
+	// written before dma learned about an agent would otherwise never offer it,
+	// and the picker reads straight off this list. Existing entries win, so a
+	// user's edited command survives.
+	for _, p := range DefaultProfiles() {
+		if _, ok := c.Profile(p.Name); !ok {
+			c.AgentProfiles = append(c.AgentProfiles, p)
+		}
 	}
+	c.adoptDefaultFlags()
 	if c.DefaultProfile == "" {
 		c.DefaultProfile = c.AgentProfiles[0].Name
 	}
@@ -137,6 +188,36 @@ func (c *Config) normalize() {
 	}
 	if c.DefaultRepo == "" && len(c.Repos) > 0 {
 		c.DefaultRepo = c.Repos[0].ID
+	}
+}
+
+// bareCommands are the commands built-in profiles used to ship with, before the
+// defaults grew flags. A profile still holding one of these has never been
+// edited, so it is safe to move it onto the current default.
+var bareCommands = map[string]string{"claude": "claude"}
+
+// adoptDefaultFlags brings profiles written by an older dma onto the current
+// default command.
+//
+// Backfilling only covers agents a config has never heard of, so without this a
+// config created before the flag existed would keep launching the bare command
+// forever -- the change would apply to new installs and to nobody else.
+//
+// The upgrade is deliberately narrow: it fires only when the stored command is
+// byte-for-byte the old default, which means the user never touched it. Anything
+// else -- an added flag, a wrapper script, a different binary -- is a deliberate
+// choice and is left alone, the same rule the backfill above follows.
+func (c *Config) adoptDefaultFlags() {
+	for _, p := range DefaultProfiles() {
+		bare, ok := bareCommands[p.Name]
+		if !ok || bare == p.Command {
+			continue
+		}
+		for i := range c.AgentProfiles {
+			if c.AgentProfiles[i].Name == p.Name && c.AgentProfiles[i].Command == bare {
+				c.AgentProfiles[i].Command = p.Command
+			}
+		}
 	}
 }
 
@@ -216,6 +297,21 @@ func (c *Config) AddGroup(g string) bool {
 	}
 	c.Groups = append(c.Groups, g)
 	return true
+}
+
+// RemoveGroup forgets a project label.
+//
+// Sessions are deliberately left alone: the caller refuses to remove a label
+// anything is still filed under, so a project cannot take its sessions'
+// grouping down with it.
+func (c *Config) RemoveGroup(g string) bool {
+	for i, e := range c.Groups {
+		if e == g {
+			c.Groups = append(c.Groups[:i], c.Groups[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func expandHome(p string) string {

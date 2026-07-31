@@ -165,8 +165,8 @@ func TestAdoptFromWorktreeResolvesToParentRepo(t *testing.T) {
 	}
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	if err := gitx.AddWorktree(ctx, repo, wt, "feature", "main"); err != nil {
-		t.Fatalf("AddWorktree: %v", err)
+	if err := gitx.AddDetachedWorktree(ctx, repo, wt, "main"); err != nil {
+		t.Fatalf("AddDetachedWorktree: %v", err)
 	}
 
 	got, added, err := Adopt(ctx, cfg, wt)

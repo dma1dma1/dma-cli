@@ -18,6 +18,10 @@ type focusArea int
 
 const (
 	focusBoard focusArea = iota
+	// focusPreview is the running agent in the panel: keystrokes are forwarded to
+	// its terminal. focusAgent, confusingly close, is the chip that picks which
+	// agent *new* sessions launch -- it has nothing to do with a live one.
+	focusPreview
 	focusInput
 	focusAgent
 	focusRepo
@@ -25,7 +29,7 @@ const (
 )
 
 // focusRing is the order tab walks.
-var focusRing = []focusArea{focusBoard, focusInput, focusAgent, focusRepo, focusProject}
+var focusRing = []focusArea{focusBoard, focusPreview, focusInput, focusAgent, focusRepo, focusProject}
 
 const (
 	zoneAgentChip   = "chip:agent"
@@ -35,21 +39,80 @@ const (
 	zoneInput       = "panel:input"
 )
 
+// projectNew is the sentinel row that invents a project rather than selecting
+// one. Labels are free text and a dropdown cannot take text, so this row hands
+// off to the prompt; it is a sentinel rather than an empty string because ""
+// already means "no project".
+const projectNew = "\x00new-project"
+
+const newProjectLabel = "+ new project…"
+
 func zoneCard(id string) string { return "card:" + id }
 func zoneColumn(i int) string   { return fmt.Sprintf("col:%d", i) }
 func zoneOption(i int) string   { return fmt.Sprintf("opt:%d", i) }
 
-// panelHeight is how much vertical space the session panel takes. It is all of
-// the screen when expanded.
+// minPanelHeight is the fewest rows worth giving the panel: its frame, chips,
+// rule and input bar, plus enough of the agent's output to be worth reading.
+const minPanelHeight = 12
+
+// inputBoxHeight is what the task input claims once it draws its own frame: two
+// rows of border around the one row you type on.
+const inputBoxHeight = 3
+
+// inputDetached reports whether the task input gets a frame of its own below the
+// panel.
 //
-// Otherwise it takes about two fifths: an agent UI has its own input box and
-// footer, so a third of a normal window leaves it too few rows to be readable,
-// while the columns stay legible with the remainder.
-func (m Model) panelHeight() int {
-	if m.previewFull {
-		return m.height - 1
+// It does while you are typing there. Sharing the panel's frame with the live
+// agent puts your caret two rows under the agent's own prompt, which reads as
+// one crowded input into the session rather than the separate thing it is.
+func (m Model) inputDetached() bool {
+	if m.focus != focusInput {
+		return false
 	}
-	return clamp(m.height*2/5, 12, 26)
+	// On a window too short for both, the input stays in the panel: a frame of
+	// its own is not worth the rows it takes off the agent's output.
+	return m.height-1 >= inputBoxHeight+minPanelHeight
+}
+
+// splitHeights divides the screen between the columns, the panel and the task
+// input's own box, above the one status row.
+//
+// The board takes only the rows its cards need and the panel takes the rest.
+// Sizing the two by a fixed ratio instead looks right on a laptop and wrong on
+// anything taller: the columns stretch into a screenful of empty frame while the
+// agent's output stays in the same short window it had at 30 rows.
+func (m Model) splitHeights() (boardH, panelH, inputH int) {
+	boardH, panelH = m.baseHeights()
+	if !m.inputDetached() {
+		return boardH, panelH, 0
+	}
+
+	// The panel gives up the row the input bar was using, and the two the new
+	// frame adds come off the board where there are rows to spare.
+	inputH = inputBoxHeight
+	panelH--
+	frame := inputBoxHeight - 1
+	fromBoard := min(frame, max(boardH-minBoardRows, 0))
+	boardH -= fromBoard
+	panelH -= frame - fromBoard
+	return boardH, panelH, inputH
+}
+
+// baseHeights is the board/panel split with the task input inside the panel,
+// which is the layout the agents are sized to.
+func (m Model) baseHeights() (boardH, panelH int) {
+	avail := max(m.height-1, 3)
+	if m.previewFull {
+		return 0, avail
+	}
+	// The panel holds the input and the live output, so on a screen too short
+	// for both it is the board that goes.
+	maxBoard := avail - minPanelHeight
+	if maxBoard < minBoardRows {
+		return 0, avail
+	}
+	boardH = clamp(m.boardContentHeight(), minBoardRows, maxBoard)
+	return boardH, avail - boardH
 }
 
 // previewDims is the size the agent's terminal should be rendered at: the
@@ -57,16 +120,35 @@ func (m Model) panelHeight() int {
 //
 // Agents are sized to this rather than to some default, because a tmux session
 // with no client has no natural size and would otherwise draw into 80 columns.
+//
+// It deliberately ignores the input's own box: a board already down to its
+// minimum has no rows to lend, so sizing to the shrunken panel would reflow every
+// agent each time you focus the input. Showing two fewer lines of a terminal that
+// kept its size costs nothing -- the panel prints the tail, which is the part
+// being written.
 func (m Model) previewDims() (cols, rows int) {
-	h := m.panelHeight()
-	return max(m.width-4, 20), max(h-2-3, 3)
+	_, h := m.baseHeights()
+	return max(m.contentWidth()-4, 20), max(h-panelChromeRows, 3)
+}
+
+// panelChromeRows is what the panel spends on everything that is not the agent's
+// output: two rows of frame, the chip row, the rule, and the input bar.
+const panelChromeRows = 5
+
+// panelChrome is that count for the panel as it currently stands, which is one
+// row less once the input has its own box.
+func (m Model) panelChrome() int {
+	if m.inputDetached() {
+		return panelChromeRows - 1
+	}
+	return panelChromeRows
 }
 
 // viewPanel renders the persistent bottom panel: the three selectors, the live
 // session output, and the input bar.
 func (m Model) viewPanel(height int) string {
 	st := m.styles
-	inner := max(m.width-4, 20)
+	inner := max(m.contentWidth()-4, 20)
 
 	var rows []string
 	rows = append(rows, m.chipRow(inner))
@@ -74,26 +156,63 @@ func (m Model) viewPanel(height int) string {
 
 	// The dropdown opens into the body rather than floating over it, so there
 	// is no compositing to get wrong and the list is never clipped.
-	bodyRows := max(height-2-3, 1) // frame, chips, rule, input
+	bodyRows := max(height-m.panelChrome(), 1)
 	if m.dropdown.open {
 		rows = append(rows, m.viewDropdown(bodyRows, inner)...)
 	} else {
 		rows = append(rows, m.previewBody(bodyRows, inner)...)
 	}
 
-	rows = append(rows, m.inputRow(inner))
+	if !m.inputDetached() {
+		rows = append(rows, m.inputRow(inner))
+	}
 
 	title, subtitle := m.panelTitle()
 	b := Box{
 		Title:    title,
 		Subtitle: subtitle,
-		Accent:   st.P.Accent,
-		Border:   st.P.Border,
-		Width:    m.width,
-		Height:   height,
-		Focused:  m.focus != focusBoard,
+		// The same color the selected card's title wears, so the card and the
+		// panel showing it are visibly one pair rather than two blues that happen
+		// to be near each other.
+		Accent: st.P.Focus,
+		Border: st.P.Border,
+		Width:  m.contentWidth(),
+		Height: height,
+		// While the input has its own box that box is the focused one; two bold
+		// frames stacked would say keystrokes go to both.
+		Focused: m.focus != focusBoard && !m.inputDetached(),
 	}
 	return b.Render(strings.Join(rows, "\n"))
+}
+
+// viewInputBox renders the task input in its own frame, which is what it gets
+// while you are typing into it.
+func (m Model) viewInputBox(height int) string {
+	st := m.styles
+	b := Box{
+		Title:    "new session",
+		Subtitle: m.newSessionTarget(),
+		Accent:   st.P.Success,
+		Border:   st.P.Border,
+		Width:    m.contentWidth(),
+		Height:   height,
+		Focused:  true,
+	}
+	return b.Render(m.inputRow(max(m.contentWidth()-4, 20)))
+}
+
+// newSessionTarget names what pressing enter would start. The chips say the same
+// thing, but they are in the other box now, and this is the moment it matters.
+func (m Model) newSessionTarget() string {
+	repo := m.activeRepoID()
+	if repo == "" {
+		return "no repo — press r to add one"
+	}
+	target := m.agentChoice + " in " + repo
+	if m.projectFilter != "" {
+		target += " ◆ " + m.projectFilter
+	}
+	return target
 }
 
 func (m Model) panelTitle() (string, string) {
@@ -101,12 +220,23 @@ func (m Model) panelTitle() (string, string) {
 	if s == nil {
 		return "session", "nothing selected"
 	}
+	// The move list is the filter list with a different meaning, and nothing in
+	// the rows themselves says which one is open. The frame does.
+	if m.dropdown.open && m.dropdown.target != "" {
+		return s.Title, "move to a project"
+	}
 	sub := s.TmuxSession
 	if !s.TmuxAlive {
 		sub += " (not running)"
 	}
 	if m.previewFull {
 		sub += " · e to shrink"
+	}
+	// While the agent has the keyboard the way out is the one thing the frame must
+	// say: every other key is going to the agent, so a user who wants the board
+	// back has nothing else to guess from.
+	if m.focus == focusPreview {
+		sub += " · typing to agent · " + detachKey + " to leave"
 	}
 	return s.Title, sub
 }
@@ -166,14 +296,22 @@ func (m Model) previewBody(rows, width int) []string {
 	}
 
 	lines := strings.Split(strings.TrimRight(m.preview, "\n"), "\n")
+	// Drawn before the tail is taken, while a line's index is still its pane row:
+	// that is the only coordinate space the cursor tmux reported makes sense in.
+	lines = placeCursor(lines, m.previewCursor, rows, width)
 	// The tail is the interesting part of a terminal.
 	if len(lines) > rows {
 		lines = lines[len(lines)-rows:]
 	}
 	out := make([]string, 0, rows)
 	for _, l := range lines {
-		out = append(out, zone.Mark(zonePreview, pad(l, width)))
+		// pad truncates, so a cursor drawn past the panel's width is clipped
+		// away here rather than widening the row.
+		out = append(out, pad(l, width))
 	}
+	// One mark around the block, not one per line: paired markers describe a
+	// rectangle, so per-line marks would collapse the zone onto the last line.
+	out = strings.Split(zone.Mark(zonePreview, strings.Join(out, "\n")), "\n")
 	for len(out) < rows {
 		out = append(out, "")
 	}
@@ -193,18 +331,31 @@ func centered(rows, width int, msg string) []string {
 	return out
 }
 
+// newSessionGlyph marks the board's task input.
+//
+// It is deliberately not "❯": this row sits directly beneath a live agent that
+// draws its own "❯" prompt, and two prompt carets stacked read as two inputs
+// into the same session. This one only ever starts a new session, so it is
+// marked as the action it is.
+const newSessionGlyph = "+ "
+
 // inputRow is the always-present task input. It stays on screen even when the
 // board has focus, so starting work is never more than one key away.
 func (m Model) inputRow(width int) string {
 	st := m.styles
+	glyph := st.Prompt.Render(newSessionGlyph)
 	if m.focus == focusInput {
-		return zone.Mark(zoneInput, st.Prompt.Render("❯ ")+m.input.View())
+		return zone.Mark(zoneInput, pad(glyph+m.input.View(), width))
 	}
-	hint := "press i to describe a task for a new agent session"
-	if s := m.selected(); s != nil && m.input.Value() != "" {
-		hint = m.input.Value()
+	// Naming the session as new is what keeps the row from being mistaken for
+	// the agent's own input; the keystroke alone would not say where it goes.
+	hint := "new session — press i to describe a task"
+	if v := m.input.Value(); v != "" {
+		hint = v
 	}
-	return zone.Mark(zoneInput, st.Faint.Render("❯ "+truncate(hint, max(width-2, 4))))
+	body := len(newSessionGlyph)
+	// Padded so the whole row is clickable, not just the width of the hint text.
+	return zone.Mark(zoneInput, pad(glyph+st.Faint.Render(truncate(hint, max(width-body, 4))), width))
 }
 
 // --- dropdowns ---
@@ -217,6 +368,10 @@ type dropdown struct {
 	options []string
 	labels  []string
 	cursor  int
+	// target is the session a project choice applies to. Empty means the choice
+	// aims the chip instead -- which filters the board and sets the project new
+	// sessions join.
+	target string
 }
 
 func (m *Model) openDropdown(area focusArea) {
@@ -246,20 +401,56 @@ func (m *Model) openDropdown(area focusArea) {
 		// The empty option is the unfiltered board, and it comes first because
 		// it is the state you return to.
 		d.options = append(d.options, "")
-		d.labels = append(d.labels, fmt.Sprintf("%-16s %d session(s)", "all projects", len(m.sessions)))
-		for _, g := range m.projects() {
-			n := 0
-			for _, s := range m.sessions {
-				if s.Group == g {
-					n++
-				}
-			}
-			d.options = append(d.options, g)
-			d.labels = append(d.labels, fmt.Sprintf("%-16s %d session(s)", g, n))
-		}
+		d.labels = append(d.labels, projectLabel("all projects", len(m.sessions)))
+		m.appendProjects(&d)
 		d.cursor = indexOf(d.options, m.projectFilter)
 	}
 	m.dropdown = d
+}
+
+// openMoveProject opens the project list as a move rather than a filter:
+// choosing a label refiles this session. It is deliberately the same list the
+// chip shows, down to the row that invents a project, so a session can be moved
+// somewhere that does not exist yet without first going to the chip.
+func (m *Model) openMoveProject(s *core.Session) {
+	if s == nil {
+		return
+	}
+	d := dropdown{open: true, area: focusProject, target: s.ID}
+	// No project is where sessions start, so it is the first row rather than a
+	// way of clearing one -- moving a card back out of a project is as ordinary
+	// as moving it in.
+	d.options = append(d.options, "")
+	d.labels = append(d.labels, projectLabel("no project", m.projectSize("")))
+	m.appendProjects(&d)
+	d.cursor = indexOf(d.options, s.Group)
+	m.dropdown = d
+}
+
+// appendProjects adds a row per known project and then the row that creates
+// one. The labels come from config as well as from sessions, so a project added
+// by hand is selectable before anything is running in it.
+func (m Model) appendProjects(d *dropdown) {
+	for _, g := range m.projects() {
+		d.options = append(d.options, g)
+		d.labels = append(d.labels, projectLabel(g, m.projectSize(g)))
+	}
+	d.options = append(d.options, projectNew)
+	d.labels = append(d.labels, newProjectLabel)
+}
+
+func (m Model) projectSize(name string) int {
+	n := 0
+	for _, s := range m.sessions {
+		if s.Group == name {
+			n++
+		}
+	}
+	return n
+}
+
+func projectLabel(name string, n int) string {
+	return fmt.Sprintf("%-16s %d session(s)", name, n)
 }
 
 func (m Model) viewDropdown(rows, width int) []string {
@@ -279,7 +470,11 @@ func (m Model) viewDropdown(rows, width int) []string {
 		out = append(out, zone.Mark(zoneOption(i), line))
 	}
 	if len(out) < rows {
-		out = append(out, st.Faint.Render("  ↑↓ choose · enter select · esc cancel"))
+		hint := "  ↑↓ choose · enter select · esc cancel"
+		if m.dropdown.area == focusProject {
+			hint = "  ↑↓ choose · enter select · x remove · esc cancel"
+		}
+		out = append(out, st.Faint.Render(hint))
 	}
 	for len(out) < rows {
 		out = append(out, "")
@@ -296,27 +491,90 @@ func (m *Model) applyDropdown() tea.Cmd {
 	}
 	choice := d.options[d.cursor]
 
+	// None of these confirm themselves in the footer: the selector the user just
+	// closed is sitting above the board showing the choice they made.
 	switch d.area {
 	case focusAgent:
 		m.agentChoice = choice
 		m.cfg.DefaultProfile = choice
 		_ = core.SaveConfig(m.cfg)
-		return status("new sessions will use " + choice)
 	case focusRepo:
 		m.activeRepo = choice
-		return status("new sessions will use " + choice)
 	case focusProject:
-		m.projectFilter = choice
-		if m.selected() == nil {
-			if f := m.firstSession(); f != nil {
-				m.selectedID = f.ID
-			}
+		if choice == projectNew {
+			// The label has to be typed. The prompt carries the session the list
+			// was opened for, so naming a project from a card both creates it and
+			// moves the card into it.
+			m.startPrompt(promptNewProject, "new project", "", d.target)
+			m.mode = modePrompt
+			return nil
 		}
-		if choice == "" {
-			return status("showing all projects")
+		if d.target != "" {
+			m.setSessionProject(d.target, choice)
+			return nil
 		}
-		return status("filtered to " + choice)
+		m.selectProject(choice)
 	}
+	return nil
+}
+
+// selectProject aims the chip at a label, which both filters the board and is
+// the project new sessions join. The empty label is the default: an unfiltered
+// board, and new sessions in no project.
+func (m *Model) selectProject(name string) {
+	m.projectFilter = name
+	if m.selected() == nil {
+		if f := m.firstSession(); f != nil {
+			m.selectedID = f.ID
+		}
+	}
+}
+
+// setSessionProject refiles one session, registering the label if it is new.
+func (m *Model) setSessionProject(id, name string) {
+	s := core.FindByID(m.sessions, id)
+	if s == nil {
+		return
+	}
+	s.Group = name
+	if m.cfg.AddGroup(name) {
+		_ = core.SaveConfig(m.cfg)
+	}
+	m.save()
+	m.rebuild()
+}
+
+// removeProject forgets the highlighted label and reopens the list without it.
+//
+// Manually added projects would otherwise be a one-way door: a label typed by
+// mistake has no sessions to prune and so no way out of the picker.
+func (m *Model) removeProject() tea.Cmd {
+	d := m.dropdown
+	if d.cursor < 0 || d.cursor >= len(d.options) {
+		return nil
+	}
+	name := d.options[d.cursor]
+	if name == "" || name == projectNew {
+		return nil
+	}
+	// Sessions are never silently unfiled: emptying the project first is the
+	// user's decision to make, one card at a time.
+	if n := m.projectSize(name); n > 0 {
+		return errStatus(fmt.Errorf("%s still holds %d session(s) — move them out first", name, n))
+	}
+	if m.cfg.RemoveGroup(name) {
+		_ = core.SaveConfig(m.cfg)
+	}
+	if m.projectFilter == name {
+		m.selectProject("")
+	}
+	// Rebuilt rather than spliced, so the counts and the cursor come from the
+	// same code path that opened it.
+	if d.target != "" {
+		m.openMoveProject(core.FindByID(m.sessions, d.target))
+		return nil
+	}
+	m.openDropdown(focusProject)
 	return nil
 }
 
@@ -341,13 +599,10 @@ func (m *Model) cycleChip(area focusArea, dir int) tea.Cmd {
 		}
 		m.activeRepo = ids[wrap(indexOf(ids, m.activeRepoID())+dir, len(ids))]
 	case focusProject:
+		// Cycling walks the projects that exist; inventing one is a keystroke
+		// with a text field behind it, so it stays in the open list.
 		opts := append([]string{""}, m.projects()...)
-		m.projectFilter = opts[wrap(indexOf(opts, m.projectFilter)+dir, len(opts))]
-		if m.selected() == nil {
-			if f := m.firstSession(); f != nil {
-				m.selectedID = f.ID
-			}
-		}
+		m.selectProject(opts[wrap(indexOf(opts, m.projectFilter)+dir, len(opts))])
 	}
 	return nil
 }

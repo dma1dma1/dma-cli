@@ -23,7 +23,6 @@ type CreateRequest struct {
 	Group         string
 	Profile       string
 	BaseBranch    string
-	Branch        string // optional explicit branch; derived from Title when empty
 	InitialPrompt string
 	// HookURL points at the running board's hook listener. Empty disables hook
 	// installation, leaving the session on liveness-only state reporting.
@@ -40,11 +39,15 @@ type CreateResult struct {
 	Warnings []string
 }
 
-// Create performs every step needed to get an agent running: worktree, branch,
+// Create performs every step needed to get an agent running: worktree,
 // bootstrap, tmux session, agent launch, initial prompt, persistence. It is one
 // operation on purpose -- any step that needed separate user action would get
 // skipped under time pressure.
-func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req CreateRequest) (*CreateResult, error) {
+//
+// The worktree starts detached at the freshly fetched tip of the base branch
+// and carries no branch of its own. See gitx.AddDetachedWorktree for why the
+// branch is left to the agent.
+func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateResult, error) {
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		return nil, fmt.Errorf("a title is required")
@@ -66,12 +69,6 @@ func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req
 		base = gitx.DefaultBranch(ctx, repo.Path)
 	}
 
-	branch := strings.TrimSpace(req.Branch)
-	if branch == "" {
-		branch = repo.BranchPrefix + core.Slug(title)
-	}
-	branch = uniqueBranch(ctx, repo, existing, branch)
-
 	profile := req.Profile
 	if profile == "" {
 		profile = cfg.DefaultProfile
@@ -81,16 +78,21 @@ func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req
 		return nil, fmt.Errorf("unknown agent profile %q", profile)
 	}
 
-	worktree := filepath.Join(repo.WorktreeRoot, sanitizePathSegment(branch))
-	if _, err := os.Stat(worktree); err == nil {
-		return nil, fmt.Errorf("worktree path already exists: %s", worktree)
+	// Every session starts from the remote tip. Fetching is what makes that
+	// true; without it the start point is a local ref nobody has updated since
+	// the last time someone worked in the repo directly.
+	var warnings []string
+	if err := gitx.Fetch(ctx, repo.Path, base); err != nil {
+		warnings = append(warnings, fmt.Sprintf("fetch origin %s: %v — starting from the last fetched tip", base, err))
 	}
+	start := gitx.StartPoint(ctx, repo.Path, base)
 
-	if err := gitx.AddWorktree(ctx, repo.Path, worktree, branch, base); err != nil {
+	worktree := uniqueWorktreeDir(repo.WorktreeRoot, core.Slug(title))
+	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
 
-	warnings := Bootstrap(ctx, repo, worktree)
+	warnings = append(warnings, Bootstrap(ctx, repo, worktree)...)
 
 	// Hooks are installed into the worktree before the agent starts, so the
 	// very first SessionStart already reports to the board.
@@ -100,28 +102,23 @@ func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req
 		}
 	}
 
-	// tmux session names must be unique across repos, so two repos with the
-	// same branch name cannot collide on one session.
-	tmuxName := tmuxx.SafeName(repo.ID + "-" + branch)
+	// tmux session names must be unique across repos, so two repos running the
+	// same task cannot collide on one session.
+	tmuxName := tmuxx.SafeName(repo.ID + "-" + filepath.Base(worktree))
 	tmuxName = uniqueTmux(ctx, tmuxName)
 
 	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows); err != nil {
 		// Roll the worktree back rather than leaving a half-created session.
 		_ = gitx.RemoveWorktree(ctx, repo.Path, worktree, true)
-		_ = gitx.DeleteBranch(ctx, repo.Path, branch, true)
 		return nil, fmt.Errorf("start tmux session: %w", err)
 	}
 
-	if err := tmuxx.SendKeys(ctx, tmuxName, prof.Command); err != nil {
+	// The prompt is part of the launch line, so the agent starts already working
+	// on it -- nothing is typed into its UI afterwards. SendLiteral, not SendKeys:
+	// the line now carries user text, and only the literal path keeps tmux from
+	// reading a trailing semicolon as its own command separator.
+	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.LaunchCommand(req.InitialPrompt)); err != nil {
 		return nil, fmt.Errorf("launch agent: %w", err)
-	}
-
-	if p := strings.TrimSpace(req.InitialPrompt); p != "" {
-		// Give the agent a moment to come up before typing at it.
-		go func(name, prompt string) {
-			time.Sleep(2 * time.Second)
-			_ = tmuxx.SendLiteral(context.Background(), name, prompt)
-		}(tmuxName, p)
 	}
 
 	now := time.Now()
@@ -131,7 +128,6 @@ func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req
 		RepoID:          repo.ID,
 		Group:           strings.TrimSpace(req.Group),
 		WorktreePath:    worktree,
-		Branch:          branch,
 		BaseBranch:      base,
 		TmuxSession:     tmuxName,
 		AgentProfile:    profile,
@@ -148,25 +144,26 @@ func Create(ctx context.Context, cfg *core.Config, existing []*core.Session, req
 	return &CreateResult{Session: s, Warnings: warnings}, nil
 }
 
-// uniqueBranch appends a numeric suffix until the (repo_id, branch) pair is
-// free, both in git and among tracked sessions.
-func uniqueBranch(ctx context.Context, repo core.Repo, existing []*core.Session, want string) string {
-	taken := func(b string) bool {
-		if core.FindByKey(existing, core.Key{RepoID: repo.ID, Branch: b}) != nil {
-			return true
-		}
-		return gitx.BranchExists(ctx, repo.Path, b)
+// uniqueWorktreeDir picks a free directory under root for a session's slug.
+//
+// With no branch name to identify a session, the directory carries that job
+// alone -- and titles repeat, since "fix flaky login test" is a thing worth
+// doing twice. A collision suffixes rather than fails: refusing to start the
+// second session would be a strange answer to a name clash.
+func uniqueWorktreeDir(root, slug string) string {
+	free := func(path string) bool {
+		_, err := os.Stat(path)
+		return os.IsNotExist(err)
 	}
-	if !taken(want) {
-		return want
+	if path := filepath.Join(root, slug); free(path) {
+		return path
 	}
 	for i := 2; i < 100; i++ {
-		cand := fmt.Sprintf("%s-%d", want, i)
-		if !taken(cand) {
-			return cand
+		if path := filepath.Join(root, fmt.Sprintf("%s-%d", slug, i)); free(path) {
+			return path
 		}
 	}
-	return fmt.Sprintf("%s-%s", want, core.NewID()[:4])
+	return filepath.Join(root, slug+"-"+core.NewID()[:4])
 }
 
 func uniqueTmux(ctx context.Context, want string) string {
@@ -180,12 +177,6 @@ func uniqueTmux(ctx context.Context, want string) string {
 		}
 	}
 	return fmt.Sprintf("%s-%s", want, core.NewID()[:4])
-}
-
-// sanitizePathSegment flattens a branch name into a single directory name, so
-// "feat/auth" does not create a nested directory tree under the worktree root.
-func sanitizePathSegment(branch string) string {
-	return strings.ReplaceAll(branch, string(filepath.Separator), "-")
 }
 
 // TeardownOptions controls how aggressive a teardown is allowed to be.
@@ -208,6 +199,12 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 		if err == nil && dirty {
 			return &DirtyError{Path: s.WorktreePath}
 		}
+		// Commits made before the agent named a branch are reachable only from
+		// this worktree's HEAD. Removing it takes the last reference to them,
+		// which is a quieter way to lose work than an unmerged branch.
+		if s.Branch == "" && gitx.HasCommits(ctx, s.WorktreePath, s.BaseBranch) {
+			return &UnnamedCommitsError{Path: s.WorktreePath}
+		}
 	}
 
 	if tmuxx.HasSession(ctx, s.TmuxSession) {
@@ -225,6 +222,11 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 		return fmt.Errorf("prune worktrees: %w", err)
 	}
 
+	// A session only has a branch once its agent made one, and the worktree is
+	// already gone by here, so there is nothing left to clean up without one.
+	if s.Branch == "" {
+		return nil
+	}
 	// A branch delete that would lose commits fails without -D; that is a
 	// warning, not a teardown failure, since the worktree is already gone.
 	if err := gitx.DeleteBranch(ctx, repo.Path, s.Branch, opt.Force); err != nil && !opt.Force {
@@ -238,6 +240,14 @@ type DirtyError struct{ Path string }
 
 func (e *DirtyError) Error() string {
 	return fmt.Sprintf("worktree has uncommitted changes: %s", e.Path)
+}
+
+// UnnamedCommitsError reports commits sitting on a worktree's detached HEAD,
+// which no branch would keep alive after teardown.
+type UnnamedCommitsError struct{ Path string }
+
+func (e *UnnamedCommitsError) Error() string {
+	return fmt.Sprintf("worktree has commits on no branch: %s", e.Path)
 }
 
 // BranchNotMergedError reports that a branch still holds unmerged commits.
@@ -259,13 +269,17 @@ func Kill(ctx context.Context, s *core.Session) error {
 	return tmuxx.KillSession(ctx, s.TmuxSession)
 }
 
-// Observation is the periodically refreshed, non-persisted view of a session.
+// Observation is the periodically refreshed view of a session.
 type Observation struct {
 	ID          string
 	Alive       bool
 	Dirty       bool
 	DiffAdded   int
 	DiffRemoved int
+	// Branch is the branch the worktree is on right now, empty while its HEAD
+	// is still detached. Since dma never creates one, this is the only way the
+	// board learns the name the agent chose.
+	Branch string
 }
 
 // Observe collects liveness and worktree facts for all sessions. Liveness comes
@@ -274,7 +288,11 @@ func Observe(ctx context.Context, sessions []*core.Session) []Observation {
 	live, _ := tmuxx.ListSessions(ctx)
 	out := make([]Observation, 0, len(sessions))
 	for _, s := range sessions {
-		o := Observation{ID: s.ID, Alive: live[s.TmuxSession]}
+		o := Observation{
+			ID:     s.ID,
+			Alive:  live[s.TmuxSession],
+			Branch: gitx.CurrentBranch(ctx, s.WorktreePath),
+		}
 		if dirty, err := gitx.IsDirty(ctx, s.WorktreePath); err == nil {
 			o.Dirty = dirty
 		}

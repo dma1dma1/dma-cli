@@ -24,23 +24,29 @@ type Palette struct {
 	Focus    color.Color
 	Chip     color.Color
 	ChipText color.Color
+	// Selection fills the card the panel below is showing. A fill rather than a
+	// brighter foreground because the cards already spend color on agent state:
+	// another hue would compete with it, while a filled row reads as "this one"
+	// at a glance and leaves every state color meaning what it meant.
+	Selection color.Color
 }
 
 func newPalette() Palette {
 	return Palette{
-		Text:     lipgloss.Color("253"),
-		Muted:    lipgloss.Color("246"),
-		Subtle:   lipgloss.Color("242"),
-		Faint:    lipgloss.Color("239"),
-		Accent:   lipgloss.Color("111"),
-		Success:  lipgloss.Color("78"),
-		Warning:  lipgloss.Color("214"),
-		Danger:   lipgloss.Color("203"),
-		Critical: lipgloss.Color("197"),
-		Border:   lipgloss.Color("238"),
-		Focus:    lipgloss.Color("117"),
-		Chip:     lipgloss.Color("236"),
-		ChipText: lipgloss.Color("251"),
+		Text:      lipgloss.Color("253"),
+		Muted:     lipgloss.Color("246"),
+		Subtle:    lipgloss.Color("242"),
+		Faint:     lipgloss.Color("239"),
+		Accent:    lipgloss.Color("111"),
+		Success:   lipgloss.Color("78"),
+		Warning:   lipgloss.Color("214"),
+		Danger:    lipgloss.Color("203"),
+		Critical:  lipgloss.Color("197"),
+		Border:    lipgloss.Color("238"),
+		Focus:     lipgloss.Color("117"),
+		Chip:      lipgloss.Color("236"),
+		ChipText:  lipgloss.Color("251"),
+		Selection: lipgloss.Color("237"),
 	}
 }
 
@@ -93,8 +99,10 @@ func newStyles() Styles {
 		ChipFocused: base.Foreground(lipgloss.Color("232")).Background(p.Focus).Bold(true).Padding(0, 1),
 		ChipLabel:   base.Foreground(p.Subtle),
 
-		Prompt:   base.Foreground(p.Success).Bold(true),
-		Dialog:   base.Border(lipgloss.RoundedBorder()).BorderForeground(p.Warning).Padding(0, 2),
+		Prompt: base.Foreground(p.Success).Bold(true),
+		// Reversed rather than bordered: the footer is one line, and a border
+		// would need three. The fill carries the "answer this" weight instead.
+		Dialog:   base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true).Padding(0, 1),
 		Selected: base.Foreground(lipgloss.Color("232")).Background(p.Focus),
 	}
 }

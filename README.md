@@ -2,7 +2,7 @@
 
 A terminal kanban board for running and monitoring parallel AI coding agent sessions.
 
-You run 3–10 coding agents at once. Each gets its own git worktree and branch. The board answers three questions at a glance:
+You run 3–10 coding agents at once. Each gets its own git worktree, cut from a freshly fetched `origin/<base>`. The board answers three questions at a glance:
 
 1. Which session needs my attention right now?
 2. What is the state of each session's pull request?
@@ -109,9 +109,9 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `enter` `d` | review the diff |
 | `H` `L` | move a card to the previous/next column |
 | `G` | set the selected session's project |
-| `s` | commit and push the branch, open a PR |
+| `s` | commit and push the agent's branch, open a PR |
 | `m` | merge the PR |
-| `x` | prune the worktree and branch |
+| `x` | prune the worktree and its branch |
 | `D` | kill the agent, keep the worktree |
 | `R` | refresh PR and session state now |
 | `r` | repositories: switch, add, unregister |
@@ -171,7 +171,7 @@ With more than one repo registered, both appear, along with the `f` repo filter.
 
 **Groups and repos are orthogonal.** Swimlanes are always groups. A group may span several repos, and one repo's sessions may sit in several groups. A group is free text chosen at creation; typing a label that doesn't exist creates it.
 
-The join key between a worktree and its PR is the pair **`(repo_id, branch)`**, never the branch alone — two repos can each have a `feat/auth`. Worktree roots and tmux session names are namespaced per repo for the same reason.
+The join key between a worktree and its PR is the pair **`(repo_id, branch)`**, never the branch alone — two repos can each have a `feat/auth`. Worktree roots and tmux session names are namespaced per repo for the same reason. A session has no branch until its agent makes one, so PR polling starts from the moment that name is adopted.
 
 ## Files
 
@@ -193,7 +193,6 @@ Set `DMA_HOME` to relocate both.
       "remote": "you/my-project",          // read from origin at registration
       "base_branch": "main",
       "worktree_root": "/Users/you/.dma/worktrees/my-project",
-      "branch_prefix": "feat/",
       "bootstrap": {
         "symlink": ["node_modules", ".venv"],
         "copy": [".env"]
@@ -241,7 +240,8 @@ You normally need none of these — `cd` into a repo and run `dma`. `dma repo ad
 - **Only the selected session's pane is captured** for the preview. Capturing every pane every second would spawn a process per session per tick for output nobody is reading.
 - **Diffs are not parsed.** `git diff --color=always`, optionally piped through `delta`, rendered into a viewport. Untracked files are included explicitly — a new file is an agent's most common output and plain `git diff` omits it.
 - **Registration is a side effect, not a step.** Standing in a repo is a complete statement of intent; making someone declare it first is ceremony. Detection reads the checkout instead of asking.
-- **Teardown never forces.** A dirty worktree or an unmerged branch requires a second, explicit confirmation.
+- **dma creates no branches.** A worktree starts detached at the tip of `origin/<base>`, fetched at that moment — a local base branch is whatever the last direct visit to the repo left behind, which on a repo driven through this tool is nothing. The agent names its own branch once it knows what the work turned out to be, and the board adopts whatever it finds there; a name derived from the task title would be a guess made at the moment of least information. Until then the card reads `no branch`, and `s` refuses to invent one.
+- **Teardown never forces.** A dirty worktree, commits sitting on no branch, or an unmerged branch each require a second, explicit confirmation.
 
 ## Not in scope
 

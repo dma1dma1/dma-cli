@@ -12,12 +12,12 @@ import (
 	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
-	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
 	"github.com/dma1dma1/dma-cli/internal/notify"
 	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/probe"
+	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
 type mode int
@@ -66,6 +66,22 @@ type Model struct {
 	// timer. Display only.
 	preview     string
 	previewFull bool
+	// previewCursor is where that frame's terminal cursor sat. It is kept beside
+	// the content and only ever set together with it, so the caret cannot be
+	// drawn onto a frame it does not belong to.
+	previewCursor tmuxx.Cursor
+
+	// echoUntil is how long the panel keeps re-reading the pane at echoInterval
+	// after a forwarded keystroke; echoing says whether that ticker is running,
+	// so a burst of typing extends the window instead of starting a ticker per
+	// key.
+	echoUntil time.Time
+	echoing   bool
+
+	// typedAt is when each session last had a keystroke forwarded to it. The
+	// prober needs it to tell the user's typing apart from the agent's output:
+	// both change the pane, and only one of them means the agent is working.
+	typedAt map[string]time.Time
 
 	diffView viewport.Model
 	diffMode gitx.DiffMode
@@ -111,6 +127,9 @@ type Options struct {
 func New(opt Options) Model {
 	ti := textinput.New()
 	ti.Placeholder = "what should the agent do?"
+	// The row draws its own marker, and textinput's default "> " on top of it
+	// would be a second caret in a panel that already shows the agent's prompt.
+	ti.Prompt = ""
 	ti.SetVirtualCursor(true)
 
 	m := Model{
@@ -118,6 +137,7 @@ func New(opt Options) Model {
 		sessions:    opt.Sessions,
 		styles:      newStyles(),
 		prober:      probe.New(),
+		typedAt:     map[string]time.Time{},
 		mode:        modeBoard,
 		focus:       focusBoard,
 		hookEvents:  opt.HookEvents,
@@ -168,8 +188,8 @@ func (m *Model) rebuild() {
 }
 
 func (m *Model) layoutSizes() {
-	m.input.SetWidth(max(m.width-10, 20))
-	m.diffView.SetWidth(max(m.width-4, 20))
+	m.input.SetWidth(max(m.contentWidth()-10, 20))
+	m.diffView.SetWidth(max(m.contentWidth()-4, 20))
 	m.diffView.SetHeight(max(m.height-6, 5))
 }
 
@@ -200,16 +220,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tickMsg:
-		return m, tickCmd()
+		// The panel grows and shrinks with the number of cards, not just with the
+		// window, so the agent size is re-checked here too. syncAgentSize is a
+		// no-op unless the dimensions actually changed, which is what keeps this
+		// off the "never resize agents on a timer" rule.
+		resize := m.syncAgentSize()
+		return m, tea.Batch(tickCmd(), resize)
 
 	case previewTickMsg:
 		// Only the selected session is captured: the panel shows one at a time,
 		// and capturing every pane every second would spawn a process per
 		// session per tick for output nobody is looking at.
+		if m.echoing {
+			// The echo ticker is already capturing faster than this; a second
+			// capture in the same moment buys nothing.
+			return m, previewTickCmd()
+		}
 		return m, tea.Batch(previewTickCmd(), previewCmd(m.selected()))
 
+	case echoTickMsg:
+		if !now().Before(m.echoUntil) {
+			m.echoing = false
+			return m, nil
+		}
+		return m, tea.Batch(echoTickCmd(), previewCmd(m.selected()))
+
 	case probeTickMsg:
-		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions))
+		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.typedAt))
 
 	case pollTickMsg:
 		return m, tea.Batch(
@@ -217,6 +254,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pollPRsCmd(m.cfg, m.sessions),
 			observeCmd(m.sessions),
 			m.refreshDiff(),
+			// A resize normally arrives as a signal, but this program hands the
+			// terminal to tmux and takes it back, so asking outright is the cheap
+			// way to be sure a resize missed in between does not leave the board
+			// laid out for a window that no longer exists.
+			tea.RequestWindowSize,
 		)
 
 	case hookMsg:
@@ -227,7 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case previewMsg:
 		if msg.id == m.selectedID {
-			m.preview = msg.content
+			m.preview, m.previewCursor = msg.content, msg.cursor
 		}
 		return m, nil
 
@@ -236,12 +278,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, o := range msg.obs {
 			byID[o.ID] = o
 		}
+		adopted := false
 		for _, s := range m.sessions {
 			if o, ok := byID[s.ID]; ok {
 				s.TmuxAlive = o.Alive
 				s.WorktreeDirty = o.Dirty
 				s.DiffAdded, s.DiffRemoved = o.DiffAdded, o.DiffRemoved
+				// Sessions start detached and the agent names its own branch;
+				// picking it up here is what turns PR polling on. Only a real
+				// name is taken: a worktree that has gone missing reports none,
+				// and forgetting a branch over that would silently stop
+				// tracking its PR.
+				if o.Branch != "" && o.Branch != s.Branch {
+					s.Branch = o.Branch
+					adopted = true
+				}
 			}
+		}
+		if adopted {
+			m.save()
 		}
 		m.rebuild()
 		return m, nil
@@ -262,10 +317,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repos.cursor = i
 			}
 		}
-		if !msg.added {
-			return m, status(msg.repo.ID + " was already registered — now active")
-		}
-		return m, status(fmt.Sprintf("added %s — %s", msg.repo.ID, ops.SummarizeBootstrap(msg.repo.Bootstrap)))
+		// No confirmation: the repo is now in the list and active, which says it
+		// better than a line of prose that costs the shortcut bar ten seconds.
+		return m, nil
 
 	case createdMsg:
 		return m.handleCreated(msg)
@@ -282,7 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.Lifecycle = core.LifecycleMerged
 			m.save()
 		}
-		return m, status("merged")
+		return m, nil
 
 	case teardownMsg:
 		return m.handleTeardown(msg)
@@ -296,7 +350,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.SetAgentState(core.AgentIdle, "killed")
 			m.save()
 		}
-		return m, status("session killed (worktree kept)")
+		return m, nil
 
 	case diffMsg:
 		if msg.id != m.selectedID {
@@ -395,7 +449,7 @@ func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
 		}
 		// The probe already paid for a capture; reuse it as the preview.
 		if st.Content != "" && s.ID == m.selectedID {
-			m.preview = st.Content
+			m.preview, m.previewCursor = st.Content, st.Cursor
 		}
 	}
 	if dirty {
@@ -421,33 +475,27 @@ func (m Model) notifyIfBlocked(s *core.Session, was core.AgentState) {
 
 func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		return m, status(fmt.Sprintf("%s: %v", msg.repoID, msg.err))
-	}
-
-	// Index by (repo_id, branch): matching on headRefName alone would
-	// cross-assign PRs between repos that share a branch name.
-	byKey := map[core.Key]ghx.PR{}
-	for _, pr := range msg.prs {
-		k := core.Key{RepoID: msg.repoID, Branch: pr.Branch}
-		if prev, ok := byKey[k]; ok && prev.Number > pr.Number {
-			continue
-		}
-		byKey[k] = pr
+		return m, errText(fmt.Sprintf("%s: %v", msg.repoID, msg.err))
 	}
 
 	repo, _ := m.cfg.Repo(msg.repoID)
 	dirty := false
 	var follow []tea.Cmd
 
+	// The poll is scoped to this repo and keyed by branch, so a branch name
+	// shared with another repo cannot cross-assign a PR here.
 	for _, s := range m.sessions {
-		if s.RepoID != msg.repoID {
+		// A branch whose query failed is not in Answered. Skipping it leaves the
+		// card showing its last known PR state, which beats inferring anything
+		// from an answer that never came.
+		if s.RepoID != msg.repoID || !msg.poll.Answered[s.Branch] {
 			continue
 		}
 		core.Touch(s)
-		pr, ok := byKey[s.Key()]
+		pr, ok := msg.poll.Open[s.Branch]
 		if !ok {
-			// Only open PRs are listed, so a tracked PR missing from the list
-			// has reached a terminal state; resolve that one directly.
+			// Only open PRs are polled, so a tracked PR the query no longer
+			// returns has reached a terminal state; resolve that one directly.
 			if s.PRNumber > 0 && s.PRState != core.PRMerged && s.PRState != core.PRClosed {
 				follow = append(follow, prDetailCmd(repo.Remote, s.ID, s.PRNumber))
 			}
@@ -516,12 +564,16 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	m.selectedID = s.ID
 	m.preview = ""
 
-	text := "started " + s.Branch
+	// The new card is its own confirmation, so a successful start says nothing.
+	// Warnings are the exception: a symlink or hook install that failed is not
+	// visible anywhere on the board, and the session runs degraded until it is
+	// fixed.
+	var note tea.Cmd
 	if len(msg.res.Warnings) > 0 {
-		text += " — " + strings.Join(msg.res.Warnings, "; ")
+		note = errText(strings.Join(msg.res.Warnings, "; "))
 	}
 	cols, rows := m.previewDims()
-	return m, tea.Batch(status(text), observeCmd(m.sessions), previewCmd(s),
+	return m, tea.Batch(note, observeCmd(m.sessions), previewCmd(s),
 		resizeSessionsCmd([]*core.Session{s}, cols, rows))
 }
 
@@ -533,13 +585,17 @@ func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, nil
 	}
+	if msg.branch != "" {
+		s.Branch = msg.branch
+	}
 	if msg.number > 0 {
 		s.PRNumber, s.PRState = msg.number, core.PROpen
 		s.Lifecycle = core.LifecyclePROpen
 	}
+	// The card moves to In Review and grows a PR number, so there is nothing a
+	// message would add.
 	m.save()
-	return m, tea.Batch(status(fmt.Sprintf("opened PR #%d", msg.number)),
-		pollPRsCmd(m.cfg, m.sessions))
+	return m, pollPRsCmd(m.cfg, m.sessions)
 }
 
 func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
@@ -548,6 +604,14 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 		switch e := msg.err.(type) {
 		case *ops.DirtyError:
 			return m.askConfirm(fmt.Sprintf("%s has uncommitted changes. Discard and prune?", nameOf(s)),
+				func(mm *Model) tea.Cmd {
+					if s == nil {
+						return nil
+					}
+					return teardownCmd(mm.cfg, s, true)
+				})
+		case *ops.UnnamedCommitsError:
+			return m.askConfirm(fmt.Sprintf("%s has commits on no branch. Discard and prune?", nameOf(s)),
 				func(mm *Model) tea.Cmd {
 					if s == nil {
 						return nil
@@ -578,7 +642,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 	if m.selectedID == "" {
 		m.mode = modeBoard
 	}
-	return m, status("pruned")
+	return m, nil
 }
 
 func nameOf(s *core.Session) string {
@@ -631,52 +695,95 @@ func (m Model) render() string {
 	}
 
 	// Board: columns on top, session panel pinned to the bottom. The panel is
-	// always present, so the input is always one key away.
-	panelH := m.panelHeight()
-	statusH := 1
-	boardH := m.height - panelH - statusH
+	// always present, so the input is always one key away. While you are typing a
+	// task the input steps out into a box of its own.
+	boardH, panelH, inputH := m.splitHeights()
 
 	var parts []string
-	if !m.previewFull && boardH >= minBoardRows {
+	if boardH > 0 {
 		parts = append(parts, m.viewBoard(boardH))
-	} else if !m.previewFull {
-		// Too short for cards: keep the panel usable rather than rendering a
-		// column frame with nothing inside it.
-		panelH = m.height - statusH
 	}
 	parts = append(parts, m.viewPanel(panelH))
+	if inputH > 0 {
+		parts = append(parts, m.viewInputBox(inputH))
+	}
 	parts = append(parts, m.statusBar())
 
-	return zone.Scan(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	return zone.Scan(m.place(lipgloss.JoinVertical(lipgloss.Left, parts...)))
 }
 
 // frame wraps a full-screen sub-view with the status bar, so every mode has the
 // same footer.
+//
+// The body is clipped to the rows and columns it was given. Sub-views lay
+// themselves out to a comfortable size rather than to a tiny window, and content
+// spilling past the edge would otherwise cost the status bar its line -- the one
+// place that says which key gets you out.
 func (m Model) frame(body string) string {
-	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar())
+	lines := strings.Split(body, "\n")
+	if avail := max(m.height-1, 1); len(lines) > avail {
+		lines = lines[:avail]
+	}
+	for i, l := range lines {
+		lines[i] = truncate(l, m.contentWidth())
+	}
+	lines = append(lines, m.statusBar())
+	return m.place(strings.Join(lines, "\n"))
+}
+
+// maxContentWidth is where the UI stops widening. Four columns and an agent
+// terminal gain nothing past it: a card line reaching a third of the way across
+// an ultrawide display is a longer eye movement for the same information, and
+// the agents pinned to the panel width start reflowing their output into shapes
+// nobody designed them for.
+const maxContentWidth = 200
+
+// contentWidth is the width every part of the UI is laid out to.
+func (m Model) contentWidth() int { return min(m.width, maxContentWidth) }
+
+// place centers a rendered block on a screen wider than the content. Pinned to
+// the left edge instead, the UI reads as a window that failed to resize.
+func (m Model) place(block string) string {
+	pad := (m.width - m.contentWidth()) / 2
+	if pad <= 0 {
+		return block
+	}
+	indent := strings.Repeat(" ", pad)
+	lines := strings.Split(block, "\n")
+	for i, l := range lines {
+		lines[i] = indent + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // statusBar is the single bottom line: a transient message when there is one,
 // otherwise the keys for the current focus.
 func (m Model) statusBar() string {
 	st := m.styles
+	w := m.contentWidth()
 
 	if m.mode == modeConfirm {
-		return lipgloss.NewStyle().Width(m.width).
-			Render(truncate(st.Dialog.Render(m.confirm.message+"  [y/n]"), m.width))
+		// The question has to fit the one line the footer gets. A bordered box
+		// here would be three lines tall, and the two it borrows come off the
+		// bottom of the screen -- taking the answer keys with them.
+		keys := st.KeyHint.Render("y") + st.KeyDesc.Render(" yes · ") +
+			st.KeyHint.Render("n") + st.KeyDesc.Render(" no")
+		msg := truncate(m.confirm.message, max(w-lipgloss.Width(keys)-5, 4))
+		return lipgloss.NewStyle().Width(w).
+			Render(" " + st.Dialog.Render(msg) + " " + keys)
 	}
 	if m.mode == modePrompt {
 		line := st.KeyHint.Render(m.prompt.label+":") + " " + m.prompt.input.View() +
 			st.KeyDesc.Render("   enter · esc")
-		return lipgloss.NewStyle().Width(m.width).Render(truncate(line, m.width))
+		return lipgloss.NewStyle().Width(w).Render(truncate(line, w))
 	}
 	if m.statusText != "" && time.Since(m.statusAt) < 10*time.Second {
 		text := st.Status
 		if m.statusErr {
 			text = st.Error
 		}
-		return lipgloss.NewStyle().Width(m.width).
-			Render(text.Render(truncate(" "+m.statusText, m.width)))
+		return lipgloss.NewStyle().Width(w).
+			Render(text.Render(truncate(" "+m.statusText, w)))
 	}
 
 	var line string
@@ -684,7 +791,7 @@ func (m Model) statusBar() string {
 		line += st.RepoTag.Render("[repo:" + m.repoFilter + "] ")
 	}
 	line += m.hintLine(m.hints())
-	return lipgloss.NewStyle().Width(m.width).Render(truncate(" "+line, m.width))
+	return lipgloss.NewStyle().Width(w).Render(truncate(" "+line, w))
 }
 
 func (m Model) hintLine(hints []hint) string {
@@ -697,19 +804,28 @@ func (m Model) hintLine(hints []hint) string {
 
 func (m Model) viewHelp() string {
 	st := m.styles
-	var b strings.Builder
-	b.WriteString("\n")
+	lines := []string{""}
 	for _, row := range helpText {
 		if row[0] != "" {
-			b.WriteString("\n  " + st.Title.Render(row[0]) + "\n")
+			lines = append(lines, "", "  "+st.Title.Render(row[0]))
 			continue
 		}
-		b.WriteString(fmt.Sprintf("    %s  %s\n",
+		lines = append(lines, fmt.Sprintf("    %s  %s",
 			st.KeyHint.Render(padRight(row[1], 12)), st.KeyDesc.Render(row[2])))
 	}
-	b.WriteString("\n  " + st.Faint.Render("hook listener: "+m.hookURL) + "\n")
-	b.WriteString("  " + st.Faint.Render("press any key to return") + "\n")
-	return b.String()
+	footer := []string{
+		"",
+		"  " + st.Faint.Render("hook listener: "+m.hookURL),
+		"  " + st.Faint.Render("press any key to return"),
+	}
+	// The keymap is longer than a short window. Clip the list rather than let the
+	// frame clip the whole view, so the line naming the key that closes this
+	// screen is never the one that falls off the bottom of it.
+	if avail := max(m.height-1-len(footer), 1); len(lines) > avail {
+		lines = lines[:avail-1]
+		lines = append(lines, "  "+st.Faint.Render("… more keys below — grow the window to read them"))
+	}
+	return strings.Join(append(lines, footer...), "\n")
 }
 
 func padRight(s string, n int) string {

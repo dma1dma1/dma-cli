@@ -16,7 +16,7 @@ type promptKind int
 
 const (
 	promptNone promptKind = iota
-	promptGroup
+	promptNewProject
 	promptPRTitle
 	promptAddRepo
 )
@@ -30,7 +30,10 @@ type prompt struct {
 
 func (m *Model) startPrompt(kind promptKind, label, initial, target string) {
 	ti := textinput.New()
-	ti.SetWidth(max(m.width-len(label)-16, 20))
+	// The label already introduces the field; textinput's default "> " would
+	// render as "project: > value".
+	ti.Prompt = ""
+	ti.SetWidth(max(m.contentWidth()-len(label)-16, 20))
 	ti.SetValue(initial)
 	ti.SetVirtualCursor(true)
 	ti.CursorEnd()
@@ -52,19 +55,23 @@ func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		m.mode = modeBoard
 
 		switch p.kind {
-		case promptGroup:
-			s := core.FindByID(m.sessions, p.target)
-			if s == nil {
+		case promptNewProject:
+			if val == "" {
 				return m, nil
 			}
-			s.Group = val
-			// Typing a label that does not exist creates it.
 			if m.cfg.AddGroup(val) {
 				_ = core.SaveConfig(m.cfg)
 			}
-			m.save()
+			// Opened from a card, the new project takes that session. Opened from
+			// the chip it takes the board: a project you just named is the one you
+			// meant to be working in, so the next session starts there.
+			if p.target != "" {
+				m.setSessionProject(p.target, val)
+				return m, nil
+			}
+			m.selectProject(val)
 			m.rebuild()
-			return m, status("project set")
+			return m, nil
 
 		case promptPRTitle:
 			s := core.FindByID(m.sessions, p.target)

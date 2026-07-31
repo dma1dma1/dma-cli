@@ -36,7 +36,7 @@ func (m Model) viewDiff() string {
 		Subtitle: "diff · " + label + " · tab to switch",
 		Accent:   st.P.Accent,
 		Border:   st.P.Border,
-		Width:    m.width,
+		Width:    m.contentWidth(),
 		Height:   m.height - 1,
 		Focused:  true,
 	}
@@ -96,7 +96,11 @@ func (m Model) diffChips(s *core.Session) string {
 	if m.cfg.MultiRepo() {
 		add(s.RepoID, st.RepoTag)
 	}
-	add(s.Branch, st.Meta)
+	if s.Branch == "" {
+		add("no branch", st.Faint)
+	} else {
+		add(s.Branch, st.Meta)
+	}
 
 	return strings.Join(chips, "")
 }

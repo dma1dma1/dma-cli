@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
 // Event is one decoded hook payload. Correlation to a board session happens in
@@ -134,11 +136,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// needsAttention decides whether an event deserves a bell. It follows Interpret
+// so the bell and the badge cannot disagree: only a genuine request for input
+// rings, never the idle timer.
 func needsAttention(ev Event) bool {
-	return ev.EventName == "Notification" &&
-		(ev.NotificationType == "permission_prompt" ||
-			ev.NotificationType == "idle_prompt" ||
-			ev.NotificationType == "agent_needs_input")
+	return Interpret(ev).State == core.AgentNeedsYou
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

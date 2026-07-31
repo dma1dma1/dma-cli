@@ -20,6 +20,14 @@ type Outcome struct {
 	Known bool
 }
 
+// askingTools are the tools whose whole purpose is to put a question to the
+// user: the agent has stopped and cannot continue until it is answered. These
+// are the only PreToolUse events that mean needs_you.
+var askingTools = map[string]string{
+	"askuserquestion": "asking you a question",
+	"exitplanmode":    "plan needs your approval",
+}
+
 // Interpret maps a hook event to an agent state.
 func Interpret(ev Event) Outcome {
 	switch ev.EventName {
@@ -28,13 +36,13 @@ func Interpret(ev Event) Outcome {
 
 	case "Notification":
 		switch ev.NotificationType {
-		case "permission_prompt":
+		case "permission_prompt", "worker_permission_prompt", "elicitation_dialog", "elicitation_url_dialog":
 			detail := ev.Message
 			if detail == "" {
 				detail = "permission request"
 			}
 			return Outcome{State: core.AgentNeedsYou, Detail: truncate(detail, 60), Known: true}
-		case "idle_prompt", "agent_needs_input":
+		case "agent_needs_input":
 			detail := ev.Message
 			if detail == "" {
 				detail = "waiting for input"
@@ -43,14 +51,25 @@ func Interpret(ev Event) Outcome {
 		case "agent_completed":
 			return Outcome{State: core.AgentDone, Known: true}
 		}
+		// idle_prompt is deliberately ignored. It fires on a timer once the
+		// prompt has sat untouched, so it reports that *you* have been away, not
+		// that the agent is asking anything -- a finished session would drift
+		// from done to needs_you just by being left alone.
 		return Outcome{}
 
 	case "PreToolUse", "PostToolUse", "UserPromptSubmit":
-		// Heartbeat: the agent is demonstrably doing something.
 		detail := ""
 		if ev.ToolName != "" {
 			detail = strings.ToLower(ev.ToolName)
 		}
+		// A question tool is only pending before it runs; once it returns, the
+		// answer is in and the agent is working again.
+		if ev.EventName == "PreToolUse" {
+			if ask, ok := askingTools[detail]; ok {
+				return Outcome{State: core.AgentNeedsYou, Detail: ask, Known: true}
+			}
+		}
+		// Heartbeat: the agent is demonstrably doing something.
 		return Outcome{State: core.AgentWorking, Detail: detail, Known: true}
 
 	case "Stop":

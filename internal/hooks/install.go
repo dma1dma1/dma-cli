@@ -31,8 +31,8 @@ type Settings struct {
 // BuildSettings produces the hook configuration pointing at the running board.
 //
 // Notification deliberately carries no matcher: notification events do not
-// support matchers, and the permission_prompt / idle_prompt distinction arrives
-// as notification_type in the payload instead.
+// support matchers, and the kind of notification arrives as notification_type
+// in the payload instead.
 func BuildSettings(url string) Settings {
 	h := []hookEntry{{Type: "http", URL: url, Timeout: 5}}
 	return Settings{Hooks: map[string][]matcherGroup{

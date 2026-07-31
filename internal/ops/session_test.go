@@ -138,8 +138,8 @@ func TestCreateAndTeardown(t *testing.T) {
 	cfg := &core.Config{
 		Repos: []core.Repo{{
 			ID: "testrepo", Path: repoPath, BaseBranch: "main",
-			WorktreeRoot: wtRoot, BranchPrefix: "feat/",
-			Bootstrap: core.Bootstrap{Copy: []string{".env"}},
+			WorktreeRoot: wtRoot,
+			Bootstrap:    core.Bootstrap{Copy: []string{".env"}},
 		}},
 		DefaultRepo:    "testrepo",
 		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
@@ -149,7 +149,7 @@ func TestCreateAndTeardown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := Create(ctx, cfg, nil, CreateRequest{Title: "Auth Refresh", Profile: "noop"})
+	res, err := Create(ctx, cfg, CreateRequest{Title: "Auth Refresh", Profile: "noop"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -158,8 +158,12 @@ func TestCreateAndTeardown(t *testing.T) {
 		_ = tmuxx.KillSession(context.Background(), s.TmuxSession)
 	})
 
-	if s.Branch != "feat/auth-refresh" {
-		t.Errorf("branch = %q, want feat/auth-refresh (prefix + slug)", s.Branch)
+	// No branch is created: naming the work is the agent's job.
+	if s.Branch != "" {
+		t.Errorf("branch = %q, want none", s.Branch)
+	}
+	if b := gitx.CurrentBranch(ctx, s.WorktreePath); b != "" {
+		t.Errorf("worktree is on branch %q, want a detached HEAD", b)
 	}
 	if s.RepoID != "testrepo" {
 		t.Errorf("repo_id = %q", s.RepoID)
@@ -168,9 +172,12 @@ func TestCreateAndTeardown(t *testing.T) {
 		t.Errorf("base = %q", s.BaseBranch)
 	}
 
-	// The branch has a slash; the worktree must be one flat directory.
+	// The worktree is named from the title, one flat directory under the root.
 	if filepath.Dir(s.WorktreePath) != wtRoot {
 		t.Errorf("worktree %q is not directly under %q", s.WorktreePath, wtRoot)
+	}
+	if got := filepath.Base(s.WorktreePath); got != "auth-refresh" {
+		t.Errorf("worktree directory = %q, want auth-refresh", got)
 	}
 	if _, err := os.Stat(filepath.Join(s.WorktreePath, "README.md")); err != nil {
 		t.Errorf("worktree not populated: %v", err)
@@ -179,9 +186,9 @@ func TestCreateAndTeardown(t *testing.T) {
 		t.Errorf("bootstrap copy did not run: %v", err)
 	}
 
-	// The tmux session name is namespaced by repo so two repos sharing a branch
-	// name cannot collide.
-	if s.TmuxSession != "testrepo-feat-auth-refresh" {
+	// The tmux session name is namespaced by repo so two repos running the same
+	// task cannot collide.
+	if s.TmuxSession != "testrepo-auth-refresh" {
 		t.Errorf("tmux session = %q", s.TmuxSession)
 	}
 	if !tmuxx.HasSession(ctx, s.TmuxSession) {
@@ -210,14 +217,156 @@ func TestCreateAndTeardown(t *testing.T) {
 	if tmuxx.HasSession(ctx, s.TmuxSession) {
 		t.Error("tmux session still running after teardown")
 	}
-	if gitx.BranchExists(ctx, repoPath, s.Branch) {
-		t.Error("branch still present after teardown")
+}
+
+// Teardown's dirty check covers uncommitted work. Work the agent committed
+// before naming a branch is just as easy to lose and far less visible: nothing
+// but the worktree's HEAD refers to it.
+func TestTeardownRefusesCommitsOnNoBranch(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "unnamed")
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "unnamed", Path: repoPath, BaseBranch: "main",
+			WorktreeRoot: filepath.Join(t.TempDir(), "wt"),
+		}},
+		DefaultRepo:    "unnamed",
+		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
+		DefaultProfile: "noop",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := Create(ctx, cfg, CreateRequest{Title: "unnamed work", Profile: "noop"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	s := res.Session
+	t.Cleanup(func() { _ = Teardown(context.Background(), cfg, s, TeardownOptions{Force: true}) })
+
+	// A clean, detached worktree with nothing committed tears down freely.
+	if err := Teardown(ctx, cfg, s, TeardownOptions{}); err != nil {
+		t.Fatalf("teardown of an untouched worktree: %v", err)
+	}
+
+	res, err = Create(ctx, cfg, CreateRequest{Title: "unnamed work", Profile: "noop"})
+	if err != nil {
+		t.Fatalf("Create again: %v", err)
+	}
+	s = res.Session
+	if err := os.WriteFile(filepath.Join(s.WorktreePath, "work.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitx.CommitAll(ctx, s.WorktreePath, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = Teardown(ctx, cfg, s, TeardownOptions{})
+	if _, ok := err.(*UnnamedCommitsError); !ok {
+		t.Fatalf("teardown returned %v, want UnnamedCommitsError", err)
+	}
+	if _, statErr := os.Stat(s.WorktreePath); statErr != nil {
+		t.Error("refused teardown still removed the worktree")
+	}
+	if err := Teardown(ctx, cfg, s, TeardownOptions{Force: true}); err != nil {
+		t.Fatalf("forced teardown: %v", err)
 	}
 }
 
-// Two repos with the same branch name is the multi-repo case the design warns
+// A repo driven mainly through this tool never has anyone standing in it
+// running `git pull`, so its local main is whatever the last direct visit left
+// behind. Sessions have to start from the remote tip regardless.
+func TestCreateStartsFromTheFetchedRemoteTip(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	repoPath := newTestRepo(t, "stale")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	if _, err := gitx.Run(ctx, filepath.Dir(bare), "init", "--bare", "-q", "-b", "main", bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, repoPath, "remote", "add", "origin", bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, repoPath, "push", "-q", "-u", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Someone else lands a commit. This repo's main, and its origin/main, are
+	// now both behind.
+	other := filepath.Join(t.TempDir(), "other")
+	if _, err := gitx.Run(ctx, filepath.Dir(other), "clone", "-q", "-b", "main", bare, other); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "other@example.com"},
+		{"config", "user.name", "other"},
+	} {
+		if _, err := gitx.Run(ctx, other, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(other, "landed.txt"), []byte("upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitx.CommitAll(ctx, other, "land upstream work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, other, "push", "-q", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "stale", Path: repoPath, BaseBranch: "main",
+			WorktreeRoot: filepath.Join(t.TempDir(), "wt"),
+		}},
+		DefaultRepo:    "stale",
+		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
+		DefaultProfile: "noop",
+	}
+	res, err := Create(ctx, cfg, CreateRequest{Title: "fresh start", Profile: "noop"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	s := res.Session
+	t.Cleanup(func() { _ = Teardown(context.Background(), cfg, s, TeardownOptions{Force: true}) })
+
+	if _, err := os.Stat(filepath.Join(s.WorktreePath, "landed.txt")); err != nil {
+		t.Errorf("worktree is missing the upstream commit: %v", err)
+	}
+	// And the stale local ref must not make that upstream commit look like the
+	// session's own work.
+	if added, _, _ := gitx.DiffStat(ctx, s.WorktreePath, s.BaseBranch); added != 0 {
+		t.Errorf("diff stat = +%d on an untouched worktree, want 0", added)
+	}
+}
+
+// Two sessions can carry the same title, and with no branch to tell them apart
+// the worktree directory is the only thing that can.
+func TestUniqueWorktreeDirSuffixesOnCollision(t *testing.T) {
+	root := t.TempDir()
+	first := uniqueWorktreeDir(root, "fix-login")
+	if got := filepath.Base(first); got != "fix-login" {
+		t.Fatalf("first worktree = %q, want fix-login", got)
+	}
+	if err := os.MkdirAll(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	second := uniqueWorktreeDir(root, "fix-login")
+	if got := filepath.Base(second); got != "fix-login-2" {
+		t.Errorf("second worktree = %q, want fix-login-2", got)
+	}
+}
+
+// Two repos running the same task is the multi-repo case the design warns
 // about; the worktrees and tmux sessions must stay distinct.
-func TestCreateAcrossReposSharingABranchName(t *testing.T) {
+func TestCreateAcrossReposSharingATaskName(t *testing.T) {
 	if !tmuxx.Available() {
 		t.Skip("tmux not installed")
 	}
@@ -240,7 +389,7 @@ func TestCreateAcrossReposSharingABranchName(t *testing.T) {
 
 	var sessions []*core.Session
 	for _, repoID := range []string{"api", "web"} {
-		res, err := Create(ctx, cfg, sessions, CreateRequest{
+		res, err := Create(ctx, cfg, CreateRequest{
 			Title: "auth", RepoID: repoID, Profile: "noop",
 		})
 		if err != nil {
@@ -254,8 +403,9 @@ func TestCreateAcrossReposSharingABranchName(t *testing.T) {
 	}
 
 	api, web := sessions[0], sessions[1]
-	if api.Branch != web.Branch {
-		t.Fatalf("test premise broken: branches differ (%q vs %q)", api.Branch, web.Branch)
+	if filepath.Base(api.WorktreePath) != filepath.Base(web.WorktreePath) {
+		t.Fatalf("test premise broken: worktree names differ (%q vs %q)",
+			api.WorktreePath, web.WorktreePath)
 	}
 	if api.WorktreePath == web.WorktreePath {
 		t.Error("both repos got the same worktree path")
@@ -264,8 +414,11 @@ func TestCreateAcrossReposSharingABranchName(t *testing.T) {
 		t.Errorf("both repos got the same tmux session name %q", api.TmuxSession)
 	}
 
-	// Lookups keyed on the pair must resolve to the right session.
-	if got := core.FindByKey(sessions, core.Key{RepoID: "web", Branch: web.Branch}); got != web {
+	// Once each agent names its branch -- and two agents given the same task
+	// will land on the same name -- lookups keyed on the pair must still
+	// resolve to the right session.
+	api.Branch, web.Branch = "auth", "auth"
+	if got := core.FindByKey(sessions, core.Key{RepoID: "web", Branch: "auth"}); got != web {
 		t.Error("(repo_id, branch) lookup returned the wrong session")
 	}
 }
@@ -302,10 +455,20 @@ func TestObserveReportsLiveness(t *testing.T) {
 func TestMain(m *testing.M) {
 	// Keep git from picking up the developer's own hooks or templates.
 	os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// And keep anything that reaches the state directory away from the real one:
+	// a test that writes there replaces the developer's own board.
+	home, err := os.MkdirTemp("", "dma-ops-test")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("DMA_HOME", home)
 	if _, err := exec.LookPath("git"); err != nil {
+		os.RemoveAll(home)
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
 }
 
 // TestShipGitHalf covers the git side of the ship action -- commit, detect
@@ -338,7 +501,7 @@ func TestShipGitHalf(t *testing.T) {
 		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
 		DefaultProfile: "noop",
 	}
-	res, err := Create(ctx, cfg, nil, CreateRequest{Title: "add thing", Profile: "noop"})
+	res, err := Create(ctx, cfg, CreateRequest{Title: "add thing", Profile: "noop"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -347,8 +510,19 @@ func TestShipGitHalf(t *testing.T) {
 
 	// Nothing committed yet, so there is nothing to open a PR for.
 	if gitx.HasCommits(ctx, s.WorktreePath, s.BaseBranch) {
-		t.Error("a fresh branch reported commits ahead of base")
+		t.Error("a fresh worktree reported commits ahead of base")
 	}
+
+	// Stand in for the agent naming its own branch, and check the board picks
+	// the name up -- nothing else tells it what to push.
+	if _, err := gitx.Run(ctx, s.WorktreePath, "switch", "-q", "-c", "agent-picked-this"); err != nil {
+		t.Fatalf("create branch in worktree: %v", err)
+	}
+	obs := Observe(ctx, []*core.Session{s})
+	if len(obs) != 1 || obs[0].Branch != "agent-picked-this" {
+		t.Fatalf("Observe reported branch %+v, want agent-picked-this", obs)
+	}
+	s.Branch = obs[0].Branch
 
 	if err := os.WriteFile(filepath.Join(s.WorktreePath, "thing.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -405,7 +579,7 @@ func TestCreateSizesTheAgentTerminal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := Create(ctx, cfg, nil, CreateRequest{
+	res, err := Create(ctx, cfg, CreateRequest{
 		Title: "wide", Profile: "noop", Cols: 164, Rows: 13,
 	})
 	if err != nil {
@@ -438,4 +612,58 @@ func paneSize(t *testing.T, session string) string {
 		t.Fatalf("display-message: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// The agent has to receive the prompt as one argument. Typing the prompt into a
+// running agent's UI instead loses characters -- codex reads its composer
+// through a vim keymap, turning the first letters into cursor motions -- so the
+// prompt travels on the launch line, and this test stands in for the agent to
+// check what actually arrives there.
+func TestCreateHandsTheAgentThePromptAsOneArgument(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "prompt")
+
+	// A stand-in agent that records its argv, one argument per line.
+	out := filepath.Join(t.TempDir(), "argv")
+	agent := filepath.Join(t.TempDir(), "agent.sh")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\n"
+	if err := os.WriteFile(agent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "testrepo", Path: repoPath, BaseBranch: "main",
+			WorktreeRoot: filepath.Join(t.TempDir(), "worktrees"),
+		}},
+		DefaultRepo:    "testrepo",
+		AgentProfiles:  []core.AgentProfile{{Name: "recorder", Command: agent + " --flag"}},
+		DefaultProfile: "recorder",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// A prompt carrying everything a shell would otherwise act on.
+	prompt := `don't stop; run $(whoami) && ls *.go`
+	res, err := Create(ctx, cfg, CreateRequest{Title: "Shell Safety", InitialPrompt: prompt})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), res.Session.TmuxSession) })
+
+	var got string
+	for range 100 {
+		if b, err := os.ReadFile(out); err == nil {
+			got = string(b)
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	want := "--flag\n" + prompt + "\n"
+	if got != want {
+		t.Errorf("agent argv:\n%q\nwant:\n%q", got, want)
+	}
 }

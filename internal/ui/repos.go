@@ -75,8 +75,8 @@ func (m Model) viewRepos() string {
 		meta = append(meta, fmt.Sprintf("%d session(s)", counts[r.ID]))
 
 		b.WriteString("  " + marker + name + "\n")
-		b.WriteString("      " + st.Meta.Render(truncate(strings.Join(meta, "  ·  "), max(m.width-8, 20))) + "\n")
-		b.WriteString("      " + st.Meta.Render(truncate(ops.SummarizeBootstrap(r.Bootstrap), max(m.width-8, 20))) + "\n\n")
+		b.WriteString("      " + st.Meta.Render(truncate(strings.Join(meta, "  ·  "), max(m.contentWidth()-8, 20))) + "\n")
+		b.WriteString("      " + st.Meta.Render(truncate(ops.SummarizeBootstrap(r.Bootstrap), max(m.contentWidth()-8, 20))) + "\n\n")
 	}
 	return b.String()
 }
@@ -113,7 +113,8 @@ func (m Model) keyRepos(key string) (tea.Model, tea.Cmd) {
 		r := m.cfg.Repos[m.repos.cursor]
 		m.activeRepo = r.ID
 		m.mode = modeBoard
-		return m, status("new sessions will use " + r.ID)
+		// The repo selector on the board already reads back the active repo.
+		return m, nil
 
 	case "x":
 		if n == 0 {
@@ -157,7 +158,8 @@ func (m *Model) removeRepo(id string) tea.Cmd {
 		return errStatus(err)
 	}
 	m.rebuild()
-	return status("unregistered " + id)
+	// The repo is gone from the list, which is the confirmation.
+	return nil
 }
 
 // adoptCmd registers a repo by path, detecting its bootstrap paths.

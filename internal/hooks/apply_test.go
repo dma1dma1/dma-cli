@@ -7,21 +7,51 @@ import (
 )
 
 func TestInterpretNotificationTypes(t *testing.T) {
-	// The permission_prompt / idle_prompt distinction arrives as a payload
-	// field, since Notification events do not support matchers.
+	// The notification kind arrives as a payload field, since Notification
+	// events do not support matchers.
 	perm := Interpret(Event{EventName: "Notification", NotificationType: "permission_prompt", Message: "Bash(rm -rf)"})
 	if perm.State != core.AgentNeedsYou || perm.Detail != "Bash(rm -rf)" {
 		t.Fatalf("permission_prompt = %+v", perm)
 	}
 
-	idle := Interpret(Event{EventName: "Notification", NotificationType: "idle_prompt"})
-	if idle.State != core.AgentNeedsYou || idle.Detail != "waiting for input" {
-		t.Fatalf("idle_prompt = %+v", idle)
-	}
-
 	other := Interpret(Event{EventName: "Notification", NotificationType: "auth_success"})
 	if other.Known {
 		t.Fatalf("auth_success should not drive agent state: %+v", other)
+	}
+}
+
+// idle_prompt fires on a timer once the prompt has sat untouched, so it says the
+// user stepped away, not that the agent asked for anything. Acting on it made
+// every finished session drift into needs_you.
+func TestInterpretIgnoresIdlePrompt(t *testing.T) {
+	idle := Interpret(Event{
+		EventName:        "Notification",
+		NotificationType: "idle_prompt",
+		Message:          "Claude is waiting for your input",
+	})
+	if idle.Known {
+		t.Fatalf("idle_prompt should not drive agent state: %+v", idle)
+	}
+	if needsAttention(Event{EventName: "Notification", NotificationType: "idle_prompt"}) {
+		t.Error("idle_prompt should not ring the bell")
+	}
+}
+
+// The tools that exist to put a question to the user are the positive signal:
+// the agent is stopped until it is answered.
+func TestInterpretQuestionToolsNeedYou(t *testing.T) {
+	for _, tool := range []string{"AskUserQuestion", "ExitPlanMode"} {
+		pre := Interpret(Event{EventName: "PreToolUse", ToolName: tool})
+		if pre.State != core.AgentNeedsYou || pre.Detail == "" {
+			t.Errorf("PreToolUse %s = %+v, want needs_you", tool, pre)
+		}
+		if !needsAttention(Event{EventName: "PreToolUse", ToolName: tool}) {
+			t.Errorf("PreToolUse %s should ring the bell", tool)
+		}
+		// Answered: the tool returned, so the agent is moving again.
+		if post := Interpret(Event{EventName: "PostToolUse", ToolName: tool}); post.State != core.AgentWorking {
+			t.Errorf("PostToolUse %s = %+v, want working", tool, post)
+		}
 	}
 }
 
