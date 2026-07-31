@@ -88,6 +88,7 @@ func runBoard() error {
 	// first, and its dependencies and env files are detectable from the
 	// checkout itself.
 	launchRepo, notice := adoptCwd(cfg)
+	refreshRemotes(cfg)
 
 	sessions, err := core.LoadSessions()
 	if err != nil {
@@ -147,6 +148,15 @@ func adoptCwd(cfg *core.Config) (repoID, notice string) {
 		return repo.ID, ""
 	}
 	return repo.ID, fmt.Sprintf("registered %s — %s", repo.ID, ops.SummarizeBootstrap(repo.Bootstrap))
+}
+
+// refreshRemotes gives every repo another chance to have an origin. It is
+// silent: the PR badges that were missing simply appear on the next poll, which
+// says it better than a line of prose about configuration.
+func refreshRemotes(cfg *core.Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ops.RefreshRemotes(ctx, cfg)
 }
 
 // --- repo ---
