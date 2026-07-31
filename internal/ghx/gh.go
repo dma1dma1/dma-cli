@@ -111,6 +111,7 @@ type checkEntry struct {
 
 type prJSON struct {
 	Number         int          `json:"number"`
+	URL            string       `json:"url"`
 	HeadRefName    string       `json:"headRefName"`
 	State          string       `json:"state"`
 	IsDraft        bool         `json:"isDraft"`
@@ -121,7 +122,11 @@ type prJSON struct {
 
 // PR is the normalized pull request state for one branch.
 type PR struct {
-	Number    int
+	Number int
+	// URL is the PR's web address as GitHub reports it. It is carried rather
+	// than composed from the number, because composing it means assuming
+	// github.com and an Enterprise host would get the wrong link.
+	URL       string
 	Branch    string
 	State     core.PRState
 	CI        core.CIState
@@ -129,7 +134,7 @@ type PR struct {
 	Mergeable core.Mergeable
 }
 
-const prFields = "number,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup"
+const prFields = "number,url,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup"
 
 // Poll is one repo's branch-scoped poll result.
 type Poll struct {
@@ -261,6 +266,7 @@ func GetPR(ctx context.Context, remote string, number int) (PR, error) {
 func decodePR(r prJSON) PR {
 	return PR{
 		Number:    r.Number,
+		URL:       r.URL,
 		Branch:    r.HeadRefName,
 		State:     prState(r.State, r.IsDraft),
 		CI:        rollupCI(r.Checks),
@@ -338,8 +344,9 @@ func mergeable(m string) core.Mergeable {
 	return core.MergeUnknown
 }
 
-// CreatePR opens a pull request for the branch checked out in wt.
-func CreatePR(ctx context.Context, wt, remote, base, head, title, body string, draft bool) (int, error) {
+// CreatePR opens a pull request for the branch checked out in wt, returning its
+// number and web address.
+func CreatePR(ctx context.Context, wt, remote, base, head, title, body string, draft bool) (int, string, error) {
 	args := []string{"pr", "create", "-R", remote, "--base", base, "--head", head,
 		"--title", title, "--body", body}
 	if draft {
@@ -347,22 +354,26 @@ func CreatePR(ctx context.Context, wt, remote, base, head, title, body string, d
 	}
 	out, err := run(ctx, wt, args...)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return parsePRNumber(out), nil
+	n, url := parseCreated(out)
+	return n, url, nil
 }
 
-// parsePRNumber pulls the number out of the PR URL gh prints on success.
-func parsePRNumber(out string) int {
+// parseCreated pulls the number and the URL out of the line gh prints on
+// success.
+func parseCreated(out string) (int, string) {
 	for _, f := range strings.Fields(out) {
-		if i := strings.LastIndex(f, "/pull/"); i >= 0 {
-			var n int
-			if _, err := fmt.Sscanf(f[i+len("/pull/"):], "%d", &n); err == nil {
-				return n
-			}
+		i := strings.LastIndex(f, "/pull/")
+		if i < 0 {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(f[i+len("/pull/"):], "%d", &n); err == nil {
+			return n, f
 		}
 	}
-	return 0
+	return 0, ""
 }
 
 // MergePR merges an open pull request, deleting the remote branch.

@@ -176,7 +176,10 @@ type Session struct {
 	AgentStateSince  time.Time  `json:"agent_state_since"`
 	AgentStateDetail string     `json:"agent_state_detail"`
 
-	PRNumber    int         `json:"pr_number"`
+	PRNumber int `json:"pr_number"`
+	// PRURL is the PR's web address, kept so opening or copying the link is a
+	// local lookup rather than a round trip to GitHub every time.
+	PRURL       string      `json:"pr_url,omitempty"`
 	PRState     PRState     `json:"pr_state"`
 	PRCI        CIState     `json:"pr_ci"`
 	PRReview    ReviewState `json:"pr_review"`

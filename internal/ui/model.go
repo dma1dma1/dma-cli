@@ -307,6 +307,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prDetailMsg:
 		return m.handlePRDetail(msg)
 
+	case prLinkMsg:
+		if msg.err != nil {
+			return m, errStatus(msg.err)
+		}
+		// Cached on the way past, so the next open or copy of this PR is local.
+		if s := core.FindByID(m.sessions, msg.id); s != nil && s.PRURL != msg.url {
+			s.PRURL = msg.url
+			m.save()
+		}
+		return m, linkCmd(msg.url, msg.action)
+
 	case adoptedMsg:
 		if msg.err != nil {
 			return m, errStatus(msg.err)
@@ -503,10 +514,10 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		}
 		hadPR := s.HasPR()
 		if s.PRNumber != pr.Number || s.PRState != pr.State || s.PRCI != pr.CI ||
-			s.PRReview != pr.Review || s.PRMergeable != pr.Mergeable {
+			s.PRReview != pr.Review || s.PRMergeable != pr.Mergeable || s.PRURL != pr.URL {
 			dirty = true
 		}
-		s.PRNumber, s.PRState = pr.Number, pr.State
+		s.PRNumber, s.PRURL, s.PRState = pr.Number, pr.URL, pr.State
 		s.PRCI, s.PRReview, s.PRMergeable = pr.CI, pr.Review, pr.Mergeable
 
 		// A PR appearing, and that PR merging, are the two durable events that
@@ -539,6 +550,9 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	}
 	s.PRState, s.PRCI = msg.pr.State, msg.pr.CI
 	s.PRReview, s.PRMergeable = msg.pr.Review, msg.pr.Mergeable
+	if msg.pr.URL != "" {
+		s.PRURL = msg.pr.URL
+	}
 	core.Touch(s)
 	// A PR closed without merging keeps its column and is labelled closed on the
 	// card, rather than vanishing from the board.
@@ -591,6 +605,9 @@ func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
 	if msg.number > 0 {
 		s.PRNumber, s.PRState = msg.number, core.PROpen
 		s.Lifecycle = core.LifecyclePROpen
+		// gh prints the address on creation, so o and y work on a fresh PR
+		// without waiting for the next poll.
+		s.PRURL = msg.url
 	}
 	// The card moves to In Review and grows a PR number, so there is nothing a
 	// message would add.

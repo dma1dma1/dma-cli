@@ -289,6 +289,12 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		m.mode = modePrompt
 		return m, nil
 
+	case "o":
+		return m, m.prLink(s, linkOpen)
+
+	case "y":
+		return m, m.prLink(s, linkCopy)
+
 	case "m":
 		if !s.HasPR() {
 			return m, errStatus(fmt.Errorf("no PR to merge"))
@@ -305,6 +311,38 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 			func(mm *Model) tea.Cmd { return killCmd(s) })
 	}
 	return m, nil
+}
+
+// prLink opens or copies the selected session's pull request, fetching the
+// address first if the session does not already know it.
+func (m Model) prLink(s *core.Session, action linkAction) tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	url, remote, err := m.prLinkTarget(s)
+	switch {
+	case err != nil:
+		return errStatus(err)
+	case url != "":
+		return linkCmd(url, action)
+	}
+	return tea.Batch(prLinkCmd(remote, s.ID, s.PRNumber, action), status("finding PR link…"))
+}
+
+// prLinkTarget says what to act on: the address the session already knows, or
+// failing that the remote to ask GitHub for it.
+func (m Model) prLinkTarget(s *core.Session) (url, remote string, err error) {
+	if !s.HasPR() {
+		return "", "", fmt.Errorf("no PR for %q yet — press s to push and open one", s.Title)
+	}
+	if s.PRURL != "" {
+		return s.PRURL, "", nil
+	}
+	repo, ok := m.cfg.Repo(s.RepoID)
+	if !ok || repo.Remote == "" {
+		return "", "", fmt.Errorf("no remote for %s, so #%d has no link to follow", s.RepoID, s.PRNumber)
+	}
+	return "", repo.Remote, nil
 }
 
 // moveCard is the manual column override. It is most useful for the PR-owned

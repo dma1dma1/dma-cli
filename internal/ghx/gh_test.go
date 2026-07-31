@@ -84,13 +84,19 @@ func TestMergeableAndReview(t *testing.T) {
 	}
 }
 
-func TestParsePRNumber(t *testing.T) {
+func TestParseCreated(t *testing.T) {
 	out := "https://github.com/owner/name/pull/1234\n"
-	if got := parsePRNumber(out); got != 1234 {
-		t.Fatalf("parsePRNumber = %d, want 1234", got)
+	n, url := parseCreated(out)
+	if n != 1234 {
+		t.Errorf("number = %d, want 1234", n)
 	}
-	if got := parsePRNumber("no url here"); got != 0 {
-		t.Fatalf("parsePRNumber = %d, want 0", got)
+	// The whole address is kept, host included: an Enterprise PR is not on
+	// github.com, and a link composed from the number would go to the wrong one.
+	if url != "https://github.com/owner/name/pull/1234" {
+		t.Errorf("url = %q, want the address gh printed", url)
+	}
+	if n, url := parseCreated("no url here"); n != 0 || url != "" {
+		t.Fatalf("parseCreated = %d, %q, want nothing", n, url)
 	}
 }
 
