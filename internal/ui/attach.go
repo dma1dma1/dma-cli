@@ -33,14 +33,29 @@ func prepareAttach(session string) {
 	// size the preview pins it to.
 	_ = tmuxx.SetWindowSize(ctx, session, tmuxx.SizeLatest)
 
-	runTmux(ctx, "set-option", "-t", session, "status", "on")
-	runTmux(ctx, "set-option", "-t", session, "status-style", "bg=colour214,fg=colour232,bold")
-	runTmux(ctx, "set-option", "-t", session, "status-left-length", "80")
-	runTmux(ctx, "set-option", "-t", session, "status-left",
-		" ATTACHED · keys go to the agent · C-q to detach ")
-	runTmux(ctx, "set-option", "-t", session, "status-right", "")
+	applyAttachOptions(ctx, session)
+}
+
+// attachOptions are the session options attaching overrides, and restoring puts
+// back. Keeping them in one list is what stops the two halves from drifting:
+// every option set here is unset again by name.
+var attachOptions = []struct{ name, value string }{
+	{"status", "on"},
+	{"status-style", "bg=colour214,fg=colour232,bold"},
+	{"status-left-length", "80"},
+	{"status-left", " ATTACHED · keys go to the agent · C-q to detach "},
+	{"status-right", ""},
 	// A colored pane border reinforces the mode change at a glance.
-	runTmux(ctx, "set-option", "-t", session, "pane-active-border-style", "fg=colour214")
+	{"pane-active-border-style", "fg=colour214"},
+	// Scrollback is tmux's to give. Agents that draw inline rather than on the
+	// alternate screen -- Codex is one -- push their transcript into the pane's
+	// history, and with tmux's default "mouse off" the wheel reaches neither
+	// tmux nor the agent: the outer terminal scrolls its own buffer, which holds
+	// nothing but whatever was on screen before the attach. Turning mouse on for
+	// the duration makes the wheel enter copy-mode, which is the scroll the user
+	// is reaching for. Panes whose agent asks for mouse events still get them --
+	// tmux's own wheel binding forwards to the application first.
+	{"mouse", "on"},
 }
 
 // restoreAfterAttach undoes the visual changes so the session looks normal
@@ -50,11 +65,21 @@ func restoreAfterAttach(session string) {
 	defer cancel()
 	// Back to a fixed size; the board re-applies the preview dimensions.
 	_ = tmuxx.SetWindowSize(ctx, session, tmuxx.SizeManual)
-	for _, opt := range []string{
-		"status-style", "status-left", "status-left-length",
-		"status-right", "pane-active-border-style", "status",
-	} {
-		runTmux(ctx, "set-option", "-t", session, "-u", opt)
+	clearAttachOptions(ctx, session)
+}
+
+// applyAttachOptions sets the attached look on one session.
+func applyAttachOptions(ctx context.Context, session string) {
+	for _, opt := range attachOptions {
+		runTmux(ctx, "set-option", "-t", session, opt.name, opt.value)
+	}
+}
+
+// clearAttachOptions drops the session-local overrides, so each option inherits
+// the user's own setting again rather than being forced back to a default.
+func clearAttachOptions(ctx context.Context, session string) {
+	for _, opt := range attachOptions {
+		runTmux(ctx, "set-option", "-t", session, "-u", opt.name)
 	}
 }
 
