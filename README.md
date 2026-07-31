@@ -172,7 +172,8 @@ In the board:
 1. Press `A` if you want to change the selected agent.
 2. Press `i` and describe the task.
 3. Optionally press `ctrl-v` to attach an image from the clipboard.
-4. Press `enter`.
+4. Press `enter`, or `ctrl-o` to start it without leaving the session already on
+   the panel.
 
 In the task input, `ctrl-v` attaches a clipboard image or pastes ordinary text.
 Press `ctrl-u` to start the task over: it clears the text and any attached
@@ -191,6 +192,18 @@ keeps that name after the card is renamed.
 The agent is responsible for creating and naming its branch. Until it does, the
 card displays `no branch` and there is nothing for `dma` to track a pull request
 against.
+
+### Starting a session in the background
+
+`enter` starts the agent and moves the panel to it. `ctrl-o` starts the same
+session and leaves the panel showing the session you were already watching.
+
+The two differ because a start is not instant: the fetch and the worktree take
+seconds, so a foreground start moves the panel whenever it finishes — usually
+once you have gone back to reading another agent. Use `ctrl-o` to line up work
+without giving up the session in front of you. The card still appears in its
+column, and the notice line names what started, since nothing else on screen
+moves.
 
 ### Repository expectations
 
@@ -299,6 +312,7 @@ opening prompt.
 | `t` | Type into the selected agent from the session panel |
 | `ctrl-v` | Paste an image or text into a task or live agent |
 | `ctrl-u` | Clear the task input while composing |
+| `ctrl-o` | Start the composed task in the background, leaving the panel where it is |
 | `a` | Attach to the selected tmux session |
 | `enter` or `d` | Review the selected session's changes |
 | `s` | Ask the agent to commit, push, and open a pull request |

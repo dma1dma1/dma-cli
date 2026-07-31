@@ -439,20 +439,14 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		return m, m.onFocusChange()
 
 	case "enter":
-		task := strings.TrimSpace(m.input.Value())
-		if task == "" {
-			m.focus = focusBoard
-			return m, m.onFocusChange()
-		}
-		req, err := m.newSessionRequest(task)
-		if err != nil {
-			return m, errStatus(err)
-		}
-		m.input.SetValue("")
-		m.pendingImages = nil
-		m.layoutSizes()
-		m.focus = focusBoard
-		return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req))
+		return m.startTask(false)
+
+	case "ctrl+o":
+		// Start it and stay where you are. The mnemonic is readline's
+		// operate-and-get-next, which is the same bargain -- accept this line,
+		// don't move -- and ctrl+o is one of the few control keys the textarea's
+		// own keymap, tmux's prefix, and terminal flow control all leave alone.
+		return m.startTask(true)
 
 	case "shift+enter", "alt+enter", "ctrl+j":
 		// Enter is spent on starting the agent, so a task written over several
@@ -498,6 +492,33 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// startTask hands the composed task to a new session and returns to the board.
+//
+// background says the board's cursor stays where it is rather than following the
+// new card. Deciding to start work is not the same as deciding to watch it: the
+// worktree, the fetch, and the agent's first frame take seconds, so a foreground
+// start moves the panel off whatever you went back to reading in the meantime,
+// which is the one moment you did not ask for it to move.
+//
+// An empty composer closes either way. There is no task to start and nothing to
+// keep the box open for.
+func (m Model) startTask(background bool) (tea.Model, tea.Cmd) {
+	task := strings.TrimSpace(m.input.Value())
+	if task == "" {
+		m.focus = focusBoard
+		return m, m.onFocusChange()
+	}
+	req, err := m.newSessionRequest(task)
+	if err != nil {
+		return m, errStatus(err)
+	}
+	m.input.SetValue("")
+	m.pendingImages = nil
+	m.layoutSizes()
+	m.focus = focusBoard
+	return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req, background))
 }
 
 // newSessionRequest describes the session the chips currently add up to.

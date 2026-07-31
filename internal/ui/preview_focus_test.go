@@ -213,7 +213,7 @@ func TestClickOnPreviewFocusesIt(t *testing.T) {
 	m := testModel(nil, liveSess("a"))
 	m.preview = "● Hello! What can I help you with?"
 	m.layoutSizes()
-	rendered(t, m)
+	rendered(t, m, zonePreview)
 
 	z := zone.Get(zonePreview)
 	if z.IsZero() {
@@ -322,7 +322,7 @@ func TestClickOffPreviewReleasesFocus(t *testing.T) {
 	m.preview = "● Hello! What can I help you with?"
 	m.focus = focusPreview
 	m.layoutSizes()
-	rendered(t, m)
+	rendered(t, m, zoneColumn(core.LifecycleMerged.ColumnIndex()))
 
 	// The session is active, so the merged column is empty board.
 	x, y := emptyColumnPoint(t, m, core.LifecycleMerged.ColumnIndex())
@@ -338,7 +338,7 @@ func TestClickOffInputReleasesFocus(t *testing.T) {
 	m.focus = focusInput
 	m.input.Focus()
 	m.layoutSizes()
-	rendered(t, m)
+	rendered(t, m, zoneColumn(core.LifecycleMerged.ColumnIndex()))
 
 	x, y := emptyColumnPoint(t, m, core.LifecycleMerged.ColumnIndex())
 	next := clickModel(m, x, y)

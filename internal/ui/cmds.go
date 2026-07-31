@@ -76,7 +76,12 @@ type createdMsg struct {
 	// card wants all of it -- the line that matters is as often in the stack
 	// trace below the first one as in the first one.
 	task string
-	err  error
+	// background says the session was asked for without asking to watch it, so
+	// the card must arrive without taking the panel. It rides on the message
+	// rather than being read off the model when it lands, because a start takes
+	// seconds and what the panel is showing by then is a different question.
+	background bool
+	err        error
 }
 
 // titledMsg carries a summary of the task back to the card that is currently
@@ -433,12 +438,12 @@ func prDetailCmd(remote, sessionID string, number int) tea.Cmd {
 	}
 }
 
-func createCmd(cfg *core.Config, req ops.CreateRequest) tea.Cmd {
+func createCmd(cfg *core.Config, req ops.CreateRequest, background bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		res, err := ops.Create(ctx, cfg, req)
-		return createdMsg{res: res, task: req.InitialPrompt, err: err}
+		return createdMsg{res: res, task: req.InitialPrompt, background: background, err: err}
 	}
 }
 

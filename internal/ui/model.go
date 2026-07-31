@@ -955,18 +955,41 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()
-	m.selectSession(s)
+	if msg.background {
+		// rebuild rather than nothing at all: a board whose panel is empty has
+		// nothing to be pulled away from, so the first card to arrive may as well
+		// fill it. A panel emptied on purpose is left empty, which rebuild already
+		// knows.
+		m.rebuild()
+	} else {
+		m.selectSession(s)
+	}
+	// watching is whether the panel ended up on the new session, which is what
+	// decides both of the questions below.
+	watching := m.selectedID == s.ID
 
-	// The new card is its own confirmation, so a successful start says nothing.
-	// Warnings are the exception: a symlink or hook install that failed is not
-	// visible anywhere on the board, and the session runs degraded until it is
-	// fixed.
+	// A card that took the panel is its own confirmation, so a successful start
+	// says nothing. One started in the background moved nothing on screen -- it is
+	// one more card in a column that already had some -- so it says which session
+	// it was.
+	//
+	// Warnings outrank both: a symlink or hook install that failed is not visible
+	// anywhere on the board, and the session runs degraded until it is fixed.
 	var note tea.Cmd
+	if !watching {
+		m.notice, m.noticeErr, m.noticeAt = "started in the background: "+s.Title, false, time.Now()
+	}
 	if len(msg.res.Warnings) > 0 {
 		note = errText(strings.Join(msg.res.Warnings, "; "))
 	}
 	cols, rows := m.previewDims()
-	return m, tea.Batch(note, observeCmd(m.sessions), previewCmd(s),
+	var preview tea.Cmd
+	if watching {
+		// Only the session on the panel is ever captured, and a capture for any
+		// other one is dropped on arrival.
+		preview = previewCmd(s)
+	}
+	return m, tea.Batch(note, observeCmd(m.sessions), preview,
 		resizeSessionsCmd([]*core.Session{s}, cols, rows),
 		// The card starts out titled with the first line of the task; naming it
 		// properly happens off to the side, now that there is something on

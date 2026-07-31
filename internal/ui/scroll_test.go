@@ -141,7 +141,7 @@ func TestColumnWillNotScrollPastItsLastCard(t *testing.T) {
 func TestWheelScrollsTheColumnUnderThePointerOnly(t *testing.T) {
 	m, ids := crowdedBoard(t, 12)
 	m.selectedID = ids[0]
-	rendered(t, m)
+	rendered(t, m, zoneColumn(core.LifecycleIdle.ColumnIndex()))
 
 	idle := core.LifecycleIdle.ColumnIndex()
 	z := zone.Get(zoneColumn(idle))
