@@ -70,7 +70,9 @@ func (m Model) hints() []hint {
 		// PR-shaped hint would push something else off the end.
 		{"o/y", "PR open/copy"},
 		{"m", "merge"},
-		{"x", "prune"},
+		// The pair again: X is the merged column's bulk form of x, and the two
+		// only make sense read together.
+		{"x/X", "prune one/merged"},
 		// One entry for the three selectors, in chip order: three separate hints
 		// would cost more of the bar than the pair of PR keys already does.
 		{"A/r/p", "agent/repo/project"},
@@ -98,6 +100,7 @@ var helpText = [][3]string{
 	{"", "y", "copy the PR link to the clipboard"},
 	{"", "m", "merge the PR, or queue it where the base branch has a merge queue"},
 	{"", "x", "prune the worktree and branch"},
+	{"", "X", "prune every merged session on the board"},
 	{"", "D", "kill the agent, keep the worktree"},
 	{"", "R", "refresh PR and session state now"},
 	{"", "A", "pick the agent new sessions start with"},
