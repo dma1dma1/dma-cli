@@ -195,6 +195,38 @@ func Adopt(ctx context.Context, cfg *core.Config, path string) (repo core.Repo, 
 	return r, true, nil
 }
 
+// RefreshRemotes fills in the remote of any registered repo that has none,
+// reporting the ids it learned one for.
+//
+// The remote is read once, when a repo is registered, and a repo registered
+// before it had an origin -- a local project pushed to GitHub later -- keeps an
+// empty one. Nothing revisits that, and an empty remote is skipped outright by
+// the PR poll: every session in that repo sits in the agent-owned columns with
+// no PR state, no badge and no error saying why. Re-reading origin at startup
+// is one `git remote get-url` per repo still missing one, and it turns the
+// board's silence back into the state it is supposed to be showing.
+func RefreshRemotes(ctx context.Context, cfg *core.Config) (learned []string) {
+	for i := range cfg.Repos {
+		if cfg.Repos[i].Remote != "" {
+			continue
+		}
+		slug, err := gitx.RemoteSlug(ctx, cfg.Repos[i].Path)
+		if err != nil || slug == "" {
+			// Still local-only, or the checkout is gone. Both are ordinary, and
+			// both are answered by leaving PR polling off for that repo.
+			continue
+		}
+		cfg.Repos[i].Remote = slug
+		learned = append(learned, cfg.Repos[i].ID)
+	}
+	if len(learned) > 0 {
+		// A failed write costs the next launch the same lookup, which is cheap;
+		// the value is already live in the config this run is using.
+		_ = core.SaveConfig(cfg)
+	}
+	return learned
+}
+
 func repoByPath(cfg *core.Config, path string) (core.Repo, bool) {
 	for _, r := range cfg.Repos {
 		if sameDir(r.Path, path) {

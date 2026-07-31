@@ -240,3 +240,63 @@ func mustWrite(t *testing.T, p, content string) {
 		t.Fatal(err)
 	}
 }
+
+// A repo registered before it had an origin -- a local project pushed to
+// GitHub later -- kept an empty remote forever, and the PR poll skips repos
+// with an empty remote. Every session in that repo stayed in the agent-owned
+// columns with no PR state and nothing saying why.
+func TestRefreshRemotesPicksUpAnOriginAddedLater(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	ctx := context.Background()
+	repo := newTestRepo(t, "late-origin")
+
+	cfg := core.DefaultConfig()
+	cfg.Repos = []core.Repo{{ID: "late-origin", Path: repo}}
+
+	// Nothing to find yet: the repo has no origin, and PR polling stays off.
+	if learned := RefreshRemotes(ctx, cfg); len(learned) != 0 {
+		t.Fatalf("learned %v from a repo with no origin", learned)
+	}
+
+	if _, err := gitx.Run(ctx, repo, "remote", "add", "origin",
+		"git@github.com:owner/name.git"); err != nil {
+		t.Fatal(err)
+	}
+	if learned := RefreshRemotes(ctx, cfg); len(learned) != 1 || learned[0] != "late-origin" {
+		t.Fatalf("learned = %v, want [late-origin]", learned)
+	}
+	if got := cfg.Repos[0].Remote; got != "owner/name" {
+		t.Errorf("remote = %q, want owner/name", got)
+	}
+
+	// And it is written down, so the next launch does not repeat the lookup.
+	saved, err := core.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := saved.Repo("late-origin"); !ok || r.Remote != "owner/name" {
+		t.Errorf("saved remote = %q, want owner/name", r.Remote)
+	}
+}
+
+// A remote someone set by hand -- a fork, or a second remote deliberately
+// chosen -- must not be overwritten by whatever origin happens to say.
+func TestRefreshRemotesLeavesAConfiguredRemoteAlone(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	ctx := context.Background()
+	repo := newTestRepo(t, "configured")
+	if _, err := gitx.Run(ctx, repo, "remote", "add", "origin",
+		"git@github.com:owner/name.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := core.DefaultConfig()
+	cfg.Repos = []core.Repo{{ID: "configured", Path: repo, Remote: "someone-else/fork"}}
+
+	if learned := RefreshRemotes(ctx, cfg); len(learned) != 0 {
+		t.Errorf("touched a repo that already had a remote: %v", learned)
+	}
+	if got := cfg.Repos[0].Remote; got != "someone-else/fork" {
+		t.Errorf("remote = %q, want the configured one", got)
+	}
+}

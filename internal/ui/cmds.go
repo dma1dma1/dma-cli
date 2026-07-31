@@ -14,6 +14,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
+	"github.com/dma1dma1/dma-cli/internal/link"
 	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/probe"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
@@ -75,6 +76,24 @@ type shippedMsg struct {
 	// session record may still be showing none.
 	branch string
 	number int
+	url    string
+	err    error
+}
+
+// linkAction is what to do with a PR's web address once it is in hand.
+type linkAction int
+
+const (
+	linkOpen linkAction = iota
+	linkCopy
+)
+
+// prLinkMsg carries a PR address that had to be fetched before it could be
+// opened or copied, so the model can cache it on the session and then act.
+type prLinkMsg struct {
+	id     string
+	url    string
+	action linkAction
 	err    error
 }
 
@@ -383,9 +402,9 @@ func shipCmd(cfg *core.Config, s *core.Session, title string) tea.Cmd {
 				remote = r
 			}
 		}
-		n, err := ghx.CreatePR(ctx, sess.WorktreePath, remote, sess.BaseBranch, branch,
+		n, url, err := ghx.CreatePR(ctx, sess.WorktreePath, remote, sess.BaseBranch, branch,
 			title, "Opened from dma.", false)
-		return shippedMsg{id: sess.ID, branch: branch, number: n, err: err}
+		return shippedMsg{id: sess.ID, branch: branch, number: n, url: url, err: err}
 	}
 }
 
@@ -403,6 +422,45 @@ func mergeCmd(cfg *core.Config, s *core.Session) tea.Cmd {
 		}
 		err := ghx.MergePR(ctx, repo.Remote, sess.PRNumber, "squash")
 		return mergedMsg{id: sess.ID, err: err}
+	}
+}
+
+// linkCmd opens a PR in the browser or puts its address on the clipboard.
+//
+// Opening announces nothing: the browser coming to the front is the feedback.
+// Copying has no visible effect at all, so it is one of the few actions that
+// has to spend the footer to say it happened.
+func linkCmd(url string, action linkAction) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if action == linkCopy {
+			if err := link.Copy(ctx, url); err != nil {
+				return statusMsg{text: "copy link: " + err.Error(), isErr: true}
+			}
+			return statusMsg{text: "copied " + url}
+		}
+		if err := link.Open(ctx, url); err != nil {
+			return statusMsg{text: "open link: " + err.Error(), isErr: true}
+		}
+		return nil
+	}
+}
+
+// prLinkCmd resolves the address of a PR whose link the session does not know.
+//
+// Sessions record the URL as it arrives from the poll, so this only runs for a
+// PR that predates that -- most visibly one in the merged column, which is no
+// longer polled at all and would otherwise never learn its own link.
+func prLinkCmd(remote, sessionID string, number int, action linkAction) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		pr, err := ghx.GetPR(ctx, remote, number)
+		if err == nil && pr.URL == "" {
+			err = fmt.Errorf("github returned no link for #%d", number)
+		}
+		return prLinkMsg{id: sessionID, url: pr.URL, action: action, err: err}
 	}
 }
 

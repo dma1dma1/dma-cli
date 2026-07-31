@@ -110,6 +110,8 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `H` `L` | move a card to the previous/next column |
 | `G` | set the selected session's project |
 | `s` | commit and push the agent's branch, open a PR |
+| `o` | open the PR in your browser |
+| `y` | copy the PR link to the clipboard |
 | `m` | merge the PR |
 | `x` | prune the worktree and its branch |
 | `D` | kill the agent, keep the worktree |
