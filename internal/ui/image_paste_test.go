@@ -49,8 +49,14 @@ func TestClipboardTextStillPastesIntoNewSessionInput(t *testing.T) {
 	next, _ := m.handleClipboard(clipboardMsg{content: clip.Content{Text: "line one\nline two"}})
 	m = next.(Model)
 
-	if got := m.input.Value(); got != "line one line two" {
-		t.Fatalf("input = %q, want clipboard text normalized for the one-line composer", got)
+	// The composer wraps onto as many rows as it needs, so pasted text keeps the
+	// line breaks it came with rather than being flattened into one row. The
+	// session is still named after a single line of it -- see firstLine.
+	if got := m.input.Value(); got != "line one\nline two" {
+		t.Fatalf("input = %q, want the pasted text with its line breaks kept", got)
+	}
+	if got := m.inputRows(); got != 2 {
+		t.Fatalf("a two-line paste occupies %d rows, want 2", got)
 	}
 }
 

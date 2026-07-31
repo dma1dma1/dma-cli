@@ -8,6 +8,7 @@ import (
 
 	zone "github.com/lrstanley/bubblezone/v2"
 
+	"github.com/dma1dma1/dma-cli/internal/clip"
 	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
@@ -416,16 +417,16 @@ func TestTypingATaskGivesTheInputItsOwnBox(t *testing.T) {
 		t.Fatal("input stayed in the panel while being typed into")
 	}
 	boardH, panelH, inputH := m.splitHeights()
-	if inputH != inputBoxHeight {
-		t.Errorf("input box got %d rows, want %d", inputH, inputBoxHeight)
+	if inputH != minInputBoxHeight {
+		t.Errorf("empty input box got %d rows, want %d", inputH, minInputBoxHeight)
 	}
 	if boardH+panelH+inputH != m.height-1 {
 		t.Errorf("board %d + panel %d + input %d does not fill %d rows above the status bar",
 			boardH, panelH, inputH, m.height-1)
 	}
 	box := zoneMarker.ReplaceAllString(m.viewInputBox(inputH), "")
-	if got := len(strings.Split(box, "\n")); got != inputBoxHeight {
-		t.Errorf("input box rendered %d lines, want %d", got, inputBoxHeight)
+	if got := len(strings.Split(box, "\n")); got != minInputBoxHeight {
+		t.Errorf("input box rendered %d lines, want %d", got, minInputBoxHeight)
 	}
 	if !strings.Contains(box, "new session") {
 		t.Errorf("input box does not name what it creates:\n%s", box)
@@ -466,6 +467,221 @@ func TestShortWindowKeepsTheInputInThePanel(t *testing.T) {
 	}
 	if boardH+panelH != m.height-1 {
 		t.Errorf("board %d + panel %d does not fill %d rows", boardH, panelH, m.height-1)
+	}
+}
+
+// typeTask types into the focused input one keypress at a time, which is the
+// path a wrapped line has to survive.
+func typeTask(m Model, task string) Model {
+	for _, r := range task {
+		m = press(m, keyOf(r))
+	}
+	return m
+}
+
+// focusedInput is a model parked in the task input at a given window size.
+func focusedInput(width, height int) Model {
+	m := testModel(nil, sess("a", "", core.LifecycleActive, core.AgentWorking, "r"))
+	m.selectedID = "a"
+	m.width, m.height = width, height
+	m.layoutSizes()
+	m.focus = focusInput
+	m.input.Focus()
+	return m
+}
+
+// The point of the feature: a task longer than the box wraps onto another row
+// rather than scrolling its beginning out of view. Enter spends a worktree and an
+// agent on this text, so all of it has to be readable first.
+func TestALongTaskWrapsInsteadOfScrollingOutOfView(t *testing.T) {
+	m := focusedInput(90, 40)
+	task := "rewrite the session store so every write goes through one place, " +
+		"and have the board read from it instead of the file"
+	m = typeTask(m, task)
+
+	if got := m.input.Value(); got != task {
+		t.Fatalf("input holds %q, want %q", got, task)
+	}
+	if m.inputRows() < 2 {
+		t.Fatalf("a %d-cell task in a %d-cell field stayed on one row", len(task), m.inputWidth())
+	}
+
+	_, _, inputH := m.splitHeights()
+	box := zoneMarker.ReplaceAllString(m.viewInputBox(inputH), "")
+	if got := len(strings.Split(box, "\n")); got != inputH {
+		t.Errorf("input box rendered %d lines in %d rows", got, inputH)
+	}
+	// Every word is on screen somewhere: that nothing slid sideways out of the
+	// frame is the whole of the change.
+	for _, word := range strings.Fields(task) {
+		if !strings.Contains(box, word) {
+			t.Errorf("word %q is not in the box:\n%s", word, box)
+		}
+	}
+	for i, l := range strings.Split(box, "\n") {
+		if w := lipglossWidth(l); w != m.contentWidth() {
+			t.Errorf("box line %d is %d cells wide, want %d", i, w, m.contentWidth())
+		}
+	}
+}
+
+// Growing is free: the rows a wrapped task takes come from a board holding more
+// than its floor, or from a panel with rows to spare -- never off a panel that is
+// already down to its minimum. The field must also agree with the box about how
+// many rows it has, since rows it rendered and the frame then clipped would put
+// the caret somewhere off screen.
+func TestGrowingInputNeverSqueezesTheBoardOrThePanel(t *testing.T) {
+	var sessions []*core.Session
+	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
+		sessions = append(sessions, sess(id, "", core.LifecycleIdle, core.AgentIdle, "r"))
+	}
+	m := testModel(nil, sessions...)
+	m.focus = focusInput
+
+	for h := minInputBoxHeight + minPanelHeight; h <= 60; h++ {
+		m.width, m.height = 90, h
+		m.layoutSizes()
+		m.input.Focus()
+
+		// The same window with a task that fits on one row, which is what the input
+		// cost before it could grow at all.
+		m.input.SetValue("short")
+		baseBoard, basePanel, _ := m.splitHeights()
+
+		m.input.SetValue(strings.Repeat("a task that keeps going. ", 40))
+		boardH, panelH, inputH := m.splitHeights()
+
+		if boardH+panelH+inputH != h-1 {
+			t.Errorf("h=%d: board %d + panel %d + input %d does not fill %d rows",
+				h, boardH, panelH, inputH, h-1)
+		}
+		if got := m.input.Height(); got != m.inputRows() {
+			t.Errorf("h=%d: field renders %d rows, box shows %d", h, got, m.inputRows())
+		}
+		if m.inputRows() > maxInputRows {
+			t.Errorf("h=%d: input grew to %d rows, past the %d cap", h, m.inputRows(), maxInputRows)
+		}
+		if !m.inputDetached() {
+			// Still inside the panel, where there is one row for it and no frame.
+			if inputH != 0 || m.inputRows() != 1 {
+				t.Errorf("h=%d: undetached input claimed %d rows over %d text rows",
+					h, inputH, m.inputRows())
+			}
+			continue
+		}
+		if inputH != m.inputRows()+2 {
+			t.Errorf("h=%d: input box is %d rows for %d rows of text", h, inputH, m.inputRows())
+		}
+		// The panel may be pulled down to its minimum, less the input row it is no
+		// longer drawing, and no further.
+		if floor := min(basePanel, minPanelHeight-1); panelH < floor {
+			t.Errorf("h=%d: panel went from %d to %d rows for a %d-row input, past its %d floor",
+				h, basePanel, panelH, inputH, floor)
+		}
+		if floor := min(baseBoard, minBoardRows); boardH < floor {
+			t.Errorf("h=%d: board went from %d to %d rows for a %d-row input, past its %d floor",
+				h, baseBoard, boardH, inputH, floor)
+		}
+
+		// The notice line borrows from the same board and panel. Its row is held
+		// back in the ceiling, so a grown input plus a notice still fits.
+		withNotice := m
+		withNotice.notice, withNotice.noticeAt = "something failed", time.Now()
+		nBoardH, nPanelH, nInputH := withNotice.splitHeights()
+		if nBoardH+nPanelH+nInputH != h-1-noticeRows {
+			t.Errorf("h=%d: with a notice, board %d + panel %d + input %d does not fill %d rows",
+				h, nBoardH, nPanelH, nInputH, h-1-noticeRows)
+		}
+		if nInputH != inputH {
+			t.Errorf("h=%d: a notice resized the input box from %d to %d rows", h, inputH, nInputH)
+		}
+		if floor := min(basePanel, minPanelHeight-1) - noticeRows; nPanelH < floor {
+			t.Errorf("h=%d: panel at %d rows with a notice and a %d-row input, past its %d floor",
+				h, nPanelH, nInputH, floor)
+		}
+	}
+}
+
+// The pending-image badge leads the first row and the task wraps clear of it, in
+// one column. Written on top of the view instead, it would sit on the first line
+// with the rest of the rows hanging under nothing.
+func TestImageBadgeLeadsTheFirstRowOfAWrappedTask(t *testing.T) {
+	m := focusedInput(64, 40)
+	m.pendingImages = []clip.Image{{PNG: []byte("png"), Width: 640, Height: 480}}
+	m.layoutSizes()
+	m = typeTask(m, "make the prune key ask once for the whole merged column")
+
+	badge := m.imageSummary()
+	if m.inputRows() < 2 {
+		t.Fatalf("task did not wrap beside a %d-cell badge", lipglossWidth(badge))
+	}
+	_, _, inputH := m.splitHeights()
+	rows := strings.Split(zoneMarker.ReplaceAllString(m.inputRow(m.inputWidth()), ""), "\n")
+
+	if !strings.Contains(rows[0], strings.TrimSpace(badge)) {
+		t.Errorf("first row does not lead with the badge: %q", rows[0])
+	}
+	lead := lipglossWidth(newSessionGlyph) + lipglossWidth(badge)
+	for i, r := range rows[1:] {
+		if strings.Contains(r, strings.TrimSpace(badge)) {
+			t.Errorf("row %d repeats the badge: %q", i+1, r)
+		}
+		if got := r[:lead]; strings.TrimSpace(got) != "" {
+			t.Errorf("row %d does not clear the badge: %q", i+1, r)
+		}
+	}
+	// The field wraps against the width left after the badge, so no row outgrows
+	// the frame it is drawn in.
+	box := zoneMarker.ReplaceAllString(m.viewInputBox(inputH), "")
+	for i, l := range strings.Split(box, "\n") {
+		if w := lipglossWidth(l); w != m.contentWidth() {
+			t.Errorf("box line %d is %d cells wide, want %d", i, w, m.contentWidth())
+		}
+	}
+}
+
+// A window with no rows to spare keeps the input to the one row it always had:
+// the text scrolls inside it instead, which is the graceful end of growing.
+func TestWindowWithNoSpareRowsKeepsTheInputToOneRow(t *testing.T) {
+	for _, h := range []int{14, 20} {
+		m := focusedInput(90, h)
+		m.input.SetValue(strings.Repeat("wrap me. ", 20))
+		if got := m.inputRows(); got != 1 {
+			t.Errorf("h=%d: input took %d rows on a window with none to spare", h, got)
+		}
+		if got := m.input.Height(); got != 1 {
+			t.Errorf("h=%d: field renders %d rows into a one-row box", h, got)
+		}
+	}
+}
+
+// A task can arrive with line breaks in it -- pasted, most of the time. It is
+// still one session: the first line names it, and the whole text is the prompt.
+func TestPastedTaskTitlesFromItsFirstLine(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.Repos = []core.Repo{{ID: "api", BaseBranch: "main"}}
+	m := testModel(cfg)
+
+	// Leading blank line and all: a paste starting with one still has to name the
+	// session after the line that says what the work is.
+	task := "\nadd retries to the api client\n\n- back off exponentially\n- give up after 30s"
+	req, err := m.newSessionRequest(task)
+	if err != nil {
+		t.Fatalf("newSessionRequest: %v", err)
+	}
+	if want := "add retries to the api client"; req.Title != want {
+		t.Errorf("title %q, want %q", req.Title, want)
+	}
+	if req.InitialPrompt != task {
+		t.Errorf("prompt %q dropped part of the task", req.InitialPrompt)
+	}
+
+	// Unfocused, the row inside the panel has one row to spend, whatever the
+	// value holds.
+	m.input.SetValue(task)
+	m.focus = focusBoard
+	if row := m.inputRow(80); strings.Contains(row, "\n") {
+		t.Errorf("input row spans several lines inside the panel: %q", row)
 	}
 }
 
