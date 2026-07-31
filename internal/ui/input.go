@@ -139,7 +139,7 @@ func (m Model) keyPreview(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) 
 	m.previewScroll = 0
 	// This keystroke is about to change the pane, and the prober must not read
 	// that change as the agent producing output.
-	m.typedAt[s.ID] = now()
+	m.touchedAt[s.ID] = now()
 	send := sendKeyCmd(s, fk)
 	if m.focus != focusPreview {
 		// A paste aimed at the board's selected session never passed through panel
@@ -243,7 +243,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		if !s.TmuxAlive {
 			return m, errStatus(fmt.Errorf("terminal for %s is not running", s.Title))
 		}
-		return m, attachCmd(s)
+		return m, m.attach(s)
 
 	case "enter", "d":
 		if m.selected() == nil {
@@ -284,7 +284,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 
 	case "R":
 		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
-			probeCmd(m.prober, m.cfg, m.sessions, m.typedAt))
+			probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt))
 	}
 
 	return m.sessionAction(key)
@@ -328,7 +328,7 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		}
 		// The agent is about to work and repaint, and the prober must not read
 		// that as output it produced on its own.
-		m.typedAt[s.ID] = now()
+		m.touchedAt[s.ID] = now()
 		// The request never passes through panel focus, so nothing has readied a
 		// modal composer for it. Sequence, not batch: the mode has to change
 		// before the request arrives.
@@ -584,7 +584,7 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 			return m, errStatus(fmt.Errorf("terminal for this session is not running"))
 		}
 		m.previewScroll = 0
-		m.typedAt[s.ID] = now()
+		m.touchedAt[s.ID] = now()
 		return m, tea.Batch(sendPasteCmd(s, msg.Content), m.startEcho())
 	}
 	return m, nil
@@ -797,7 +797,7 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if s == nil || !s.TmuxAlive {
 			return m, nil
 		}
-		return m, attachCmd(s)
+		return m, m.attach(s)
 	}
 
 	if mm, cmd := m.sessionAction(key); cmd != nil {
@@ -909,6 +909,15 @@ func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
+	// Either way this is a gesture at a session, so the prober is told before the
+	// branch: whether the wheel ends up reaching the application is a detail of
+	// how the agent draws, and an agent that scrolls its own viewport repaints the
+	// pane for a reason that has nothing to do with a turn. Capability is
+	// re-checked at send time as well, so the branch not taken here is not proof
+	// the pane was left alone.
+	if s := m.selected(); s != nil {
+		m.touchedAt[s.ID] = now()
+	}
 	if m.previewMouseSGR {
 		s := m.selected()
 		if s == nil || !s.TmuxAlive {
@@ -917,7 +926,6 @@ func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		z := zone.Get(zonePreview)
 		x, y := msg.Mouse().X-z.StartX, msg.Mouse().Y-z.StartY
 		m.previewScroll = 0
-		m.typedAt[s.ID] = now()
 		return m, tea.Batch(sendWheelCmd(s, up, x, y), m.startEcho())
 	}
 	m.previewScroll = max(m.previewScroll+delta, 0)

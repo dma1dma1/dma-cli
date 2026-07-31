@@ -14,7 +14,10 @@
 // to do with the agent -- attaching hands the window to the real terminal and
 // detaching pins it back, and either reflows every line on screen -- so once an
 // agent has been seen to advertise its turns, its hint is believed over the
-// pixels. An agent that never advertises one still gets the coarse treatment.
+// pixels. An agent that never advertises one still gets the coarse treatment,
+// with one exemption that applies either way: a frame dma provoked itself, by
+// forwarding a key or a wheel event or by resizing the terminal, never starts the
+// clock a turn is measured on.
 //
 // This is deliberately a fallback. Pane text is a rendering of the agent's UI,
 // not a state machine, so nothing here matches on product wording, which changes
@@ -53,14 +56,15 @@ const IdleAfter = 25 * time.Second
 // in seconds rather than the better part of a minute.
 const SettleAfter = 3 * time.Second
 
-// TypingWindow is how long a forwarded keystroke accounts for what is on the
-// pane. Inside it, a pane that changed is the user's own text appearing in the
-// composer, which says nothing about the agent -- so it must not read as work.
+// ActionGrace is how long after something dma did to a terminal that terminal's
+// redraw still counts as dma's doing rather than the agent's. Agents do not echo
+// instantly -- a keystroke lands in a composer a moment later, and a resize
+// reflows a moment after that -- so the action and the frame that shows it are
+// never in the same instant.
 //
-// It has to outlast the gap between keystrokes rather than the keystroke
-// itself, since a person typing a sentence pauses mid-word and the pane goes
-// still each time they do.
-const TypingWindow = 3 * time.Second
+// It is a grace on the sampling window rather than a window of its own: see
+// caused, where the change is attributed.
+const ActionGrace = 3 * time.Second
 
 // promptPatterns match lines that only a dialog draws: a key the user is being
 // asked to press, or a question posed as the whole line. They are about
@@ -141,6 +145,16 @@ type sample struct {
 	hash     [32]byte
 	changed  time.Time
 	previous core.AgentState
+	// probed is when this sample was taken, which bounds how old the next
+	// change can be: a frame that differs changed somewhere between then and
+	// now, and nothing narrower is knowable at four seconds a sample.
+	probed time.Time
+	// moved records that this pane has been seen to change under the agent at
+	// least once, which is what makes "changed recently" mean anything. changed
+	// starts at first sight, so without this a pane nobody has ever seen move is
+	// a pane that changed seconds ago -- and the second probe of a freshly
+	// opened board called every hookless card working on the strength of it.
+	moved bool
 	// sawBusy records that this agent has shown an interrupt hint at least
 	// once, which is what makes the hint's absence meaningful later.
 	sawBusy bool
@@ -150,10 +164,11 @@ func New() *Prober { return &Prober{last: map[string]sample{}} }
 
 // Probe captures the pane and classifies the session.
 //
-// typedAt is when the board last forwarded a keystroke to this session, or the
-// zero time. It is what lets the pane's own text be attributed: dma sent those
-// characters, so the agent did not.
-func (p *Prober) Probe(ctx context.Context, s *core.Session, typedAt time.Time) State {
+// actedAt is when the board last did something to this session's terminal --
+// forwarded a keystroke, a paste or a wheel event, or resized it -- or the zero
+// time. It is what lets the pane's own text be attributed: dma caused that
+// frame, so the agent did not.
+func (p *Prober) Probe(ctx context.Context, s *core.Session, actedAt time.Time) State {
 	if !tmuxx.HasSession(ctx, s.TmuxSession) {
 		delete(p.last, s.ID)
 		return State{SessionID: s.ID, Agent: core.AgentIdle, Detail: "session ended", Alive: false}
@@ -179,25 +194,56 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session, typedAt time.Time) 
 		prev = sample{previous: s.AgentState}
 	}
 
-	changedAt := now
-	if seen && prev.hash == h {
-		changedAt = prev.changed
+	// A change is the agent's only when nothing dma did accounts for it. The hash
+	// below moves on either way -- the frame is the frame -- but a provoked one
+	// neither restarts the quiet clock nor counts as this pane having moved.
+	//
+	// Resetting the clock and then excusing the one frame around the keystroke,
+	// which is what this did, excused nothing: the next sample found a pane that
+	// had "changed" moments ago and called it work for the whole IdleAfter window.
+	// That is what walked an idle card into active and back out again on every
+	// scroll, keystroke and resize.
+	moved := seen && prev.hash != h && !caused(actedAt, prev.probed)
+	changedAt := prev.changed
+	if moved || !seen {
+		changedAt = now
 	}
-
-	typing := !typedAt.IsZero() && now.Sub(typedAt) < TypingWindow
+	moved = moved || prev.moved
 
 	st := State{SessionID: s.ID, Alive: true, Content: content, Cursor: pane.Cursor}
 	var sawBusy bool
-	st.Agent, st.Detail, sawBusy = classify(content, now.Sub(changedAt), typing, prev, seen)
+	st.Agent, st.Detail, sawBusy = classify(content, now.Sub(changedAt), moved, prev, seen)
 
-	p.last[s.ID] = sample{hash: h, changed: changedAt, previous: st.Agent, sawBusy: sawBusy}
+	p.last[s.ID] = sample{
+		hash: h, changed: changedAt, previous: st.Agent,
+		probed: now, moved: moved, sawBusy: sawBusy,
+	}
 	return st
 }
 
-// classify decides a session's state from one captured frame, how long that
-// frame has been unchanged, whether the user has just typed into it, and what
+// caused reports whether a change first seen in this sample can be put down to
+// something dma did rather than to the agent.
+//
+// The window is the gap since the previous sample, not a fixed span: the change
+// happened somewhere in that gap, so an action anywhere in it is a candidate
+// cause. A fixed window is what made this unreliable -- three seconds of
+// forgiveness against a four second sampling interval means a keystroke sent
+// just after one probe has expired by the next, and the frame it caused arrives
+// unexplained.
+//
+// ActionGrace pads the far end, because the redraw an action causes lands after
+// the action does and can therefore fall the other side of a sample boundary.
+func caused(actedAt, probedAt time.Time) bool {
+	return !actedAt.IsZero() && actedAt.After(probedAt.Add(-ActionGrace))
+}
+
+// classify decides a session's state from one captured frame, how long the agent
+// has left the pane alone, whether it has ever been seen to touch it, and what
 // the session looked like last time.
-func classify(content string, quiet time.Duration, typing bool, prev sample, seen bool) (core.AgentState, string, bool) {
+//
+// quiet and moved both describe changes the agent is answerable for: attribution
+// is settled in Probe, so nothing below has to know who typed.
+func classify(content string, quiet time.Duration, moved bool, prev sample, seen bool) (core.AgentState, string, bool) {
 	busy := isBusy(content)
 	sawBusy := busy || prev.sawBusy
 
@@ -241,14 +287,12 @@ func classify(content string, quiet time.Duration, typing bool, prev sample, see
 	if !seen {
 		return held(prev), "", sawBusy
 	}
-	// The user is typing into the composer, so the pane is changing because of
-	// them. Composing a message for an idle agent is not the agent working, and
-	// moving the card to active while someone types at it gets the board exactly
-	// backwards.
-	if typing {
-		return settled(prev), "", sawBusy
-	}
-	if quiet < IdleAfter {
+	// "Changed recently" is only evidence of a turn once this pane has been seen
+	// to change at all. The clock starts when the board starts watching, so a pane
+	// nobody has ever seen move is one that changed seconds ago by that clock, and
+	// reading that as output announced a turn on the second probe of every
+	// hookless session -- before anyone had touched anything.
+	if moved && quiet < IdleAfter {
 		return core.AgentWorking, "", sawBusy
 	}
 	return settled(prev), "", sawBusy

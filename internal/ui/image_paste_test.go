@@ -90,7 +90,7 @@ func TestTerminalPasteIsForwardedWithoutAttachedMode(t *testing.T) {
 		if cmd == nil {
 			t.Fatalf("focus %v: terminal paste produced no forwarding command", focus)
 		}
-		if m.typedAt[s.ID].IsZero() {
+		if m.touchedAt[s.ID].IsZero() {
 			t.Fatalf("focus %v: terminal paste was not recorded as user input", focus)
 		}
 	}
@@ -112,7 +112,7 @@ func TestCtrlVFromBoardTargetsSelectedAgent(t *testing.T) {
 	if m.focus != focusBoard {
 		t.Fatalf("ctrl+v changed focus to %v, want board focus preserved", m.focus)
 	}
-	if m.typedAt[s.ID].IsZero() {
+	if m.touchedAt[s.ID].IsZero() {
 		t.Fatal("ctrl+v was not recorded as user input")
 	}
 }

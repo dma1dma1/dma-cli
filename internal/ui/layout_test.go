@@ -437,6 +437,32 @@ func TestDetachingTheInputDoesNotResizeAgents(t *testing.T) {
 	}
 }
 
+// Sizing the agents reflows every line on every pane, and sizing them is the
+// first thing the board does. Recording it is what stops the probe reading that
+// reflow as a screenful of output, which walked every hookless card into active
+// on launch and back out 25 seconds later.
+func TestResizingAgentsIsRecordedForTheProber(t *testing.T) {
+	m := testModel(nil, sess("a", "", core.LifecycleIdle, core.AgentIdle, "r"))
+	m.width, m.height = 140, 40
+
+	if cmd := m.syncAgentSize(); cmd == nil {
+		t.Fatal("first sizing issued no resize")
+	}
+	if m.touchedAt["a"].IsZero() {
+		t.Error("resize was not recorded, so the reflow it causes reads as agent output")
+	}
+
+	// A sizing pass that changes nothing sends nothing, so there is nothing to
+	// excuse: stamping anyway would forgive real output for the next few seconds.
+	m.touchedAt["a"] = time.Time{}
+	if cmd := m.syncAgentSize(); cmd != nil {
+		t.Error("re-sizing to the same dimensions issued a resize")
+	}
+	if !m.touchedAt["a"].IsZero() {
+		t.Error("a no-op sizing pass recorded a touch")
+	}
+}
+
 // A window with no rows to spare keeps the input inside the panel: a frame of
 // its own would come straight off the agent's output.
 func TestShortWindowKeepsTheInputInThePanel(t *testing.T) {
