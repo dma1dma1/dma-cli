@@ -24,7 +24,7 @@ func (m Model) viewDiff() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		m.diffChips(s),
 		"",
-		m.diffPanes(),
+		m.overlayPicker(m.diffPanes()),
 	)
 
 	b := Box{
@@ -41,31 +41,80 @@ func (m Model) viewDiff() string {
 
 // diffModeLabel names the range on screen.
 func (m Model) diffModeLabel(s *core.Session) string {
-	if m.diffMode == gitx.DiffBranch {
+	if m.review.mode == gitx.DiffBranch {
 		return s.BaseBranch + "...HEAD"
 	}
 	return "working tree"
 }
 
-// diffSubtitle says which range, which layout, and which row -- the three things
-// that decide what the pane is showing.
+// diffSubtitle says what question the pane is answering, about what, and where
+// in the answer you are.
 func (m Model) diffSubtitle(s *core.Session) string {
-	parts := []string{"diff", m.diffModeLabel(s)}
-	if m.diffSideBySide {
-		parts = append(parts, "side by side")
+	var parts []string
+	if m.review.source == sourceFile {
+		parts = append(parts, "file")
+	} else {
+		parts = append(parts, "diff", m.diffModeLabel(s))
+		if m.review.sideBySide {
+			parts = append(parts, "side by side")
+		}
 	}
-	if path := m.diffFiles.selectedPath(); path != "" {
+	if path := m.review.files.selectedPath(); path != "" {
 		parts = append(parts, path)
 	} else {
 		parts = append(parts, rootLabel)
 	}
-	// Where you are in the file, in changes rather than in lines: a scroll bar
-	// says how far down a wall of text you are, which is not the question.
-	if n := len(m.diffHunks); n > 1 {
+	// A search is a mode -- n and N belong to it while it has hits -- so it has
+	// to be visible for as long as that is true, not just while the field is up.
+	if label := m.review.find.label(); label != "" {
+		parts = append(parts, label)
+	} else if n := len(m.diffHunks()); n > 1 && m.review.source == sourceDiff {
+		// Where you are in the file, in changes rather than in lines: a scroll
+		// bar says how far down a wall of text you are, which is not the
+		// question.
 		parts = append(parts, fmt.Sprintf("change %d of %d",
-			currentHunk(m.diffHunkRows, m.diffView.YOffset())+1, n))
+			m.review.doc.HunkAt(m.review.view.YOffset())+1, n))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// pickerWidth is how wide the search overlay is drawn: most of the view, but
+// short of the frame on either side so it reads as floating over the panes
+// rather than as having replaced them.
+func (m Model) pickerWidth() int {
+	return clamp(m.contentWidth()-12, 40, 110)
+}
+
+// overlayPicker draws the search box over the panes, if one is open.
+//
+// It is composited over the rendered panes rather than drawn instead of them:
+// what is behind the box is the diff you are searching from, and covering it
+// entirely would lose the context that makes a result list mean anything.
+func (m Model) overlayPicker(panes string) string {
+	if !m.review.picker.open() {
+		return panes
+	}
+	p := m.review.picker
+	box := p.render(m.styles, m.pickerWidth())
+
+	rows := strings.Split(panes, "\n")
+	overlay := strings.Split(box, "\n")
+	// Two rows down from the top of the panes: far enough not to sit on the
+	// chips, close enough that the eye is already there from typing.
+	const top = 1
+	left := max((lipgloss.Width(panes)-lipgloss.Width(box))/2, 0)
+	pad := strings.Repeat(" ", left)
+	for i, line := range overlay {
+		r := top + i
+		if r >= len(rows) {
+			rows = append(rows, "")
+		}
+		// The box is opaque: whatever the pane had on that row is replaced
+		// rather than blended, so a colored diff underneath cannot bleed
+		// through the border.
+		rows[r] = pad + line
+	}
+	return strings.Join(rows, "\n")
 }
 
 // diffPanes lays the file tree beside the diff, or gives the diff the whole
@@ -75,13 +124,13 @@ func (m Model) diffSubtitle(s *core.Session) string {
 // from their first line down, and a shorter tree centered against a long diff
 // would start halfway down the pane.
 func (m Model) diffPanes() string {
-	diff := m.diffView.View()
+	diff := m.review.view.View()
 	treeW := m.diffTreeWidth()
 	if treeW == 0 {
 		return diff
 	}
 
-	tree := m.diffFiles.render(m.styles, treeW, m.diffPaneHeight(), m.diffTreeFocus)
+	tree := m.review.files.render(m.styles, treeW, m.diffPaneHeight(), m.review.treeFocus)
 	// The divider is drawn per row rather than as one tall glyph, so it stops
 	// where the panes stop instead of being padded out by the join.
 	rows := make([]string, m.diffPaneHeight())

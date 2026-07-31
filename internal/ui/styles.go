@@ -77,6 +77,14 @@ type Styles struct {
 	Prompt   lipgloss.Style
 	Dialog   lipgloss.Style
 	Selected lipgloss.Style
+
+	// MatchHit marks the characters a query matched in a picker row, and
+	// MatchCurrent the one hit a find is stepping through. Both are fills
+	// rather than colors: they land on top of syntax highlighting, and a
+	// foreground color there would be competing with the one the highlighter
+	// already chose for the same characters.
+	MatchHit     lipgloss.Style
+	MatchCurrent lipgloss.Style
 }
 
 func newStyles() Styles {
@@ -109,6 +117,9 @@ func newStyles() Styles {
 		// would need three. The fill carries the "answer this" weight instead.
 		Dialog:   base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true).Padding(0, 1),
 		Selected: base.Foreground(lipgloss.Color("232")).Background(p.Focus),
+
+		MatchHit:     base.Foreground(lipgloss.Color("232")).Background(p.Accent),
+		MatchCurrent: base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true),
 	}
 }
 

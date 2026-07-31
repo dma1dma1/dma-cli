@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/dma1dma1/dma-cli/internal/render"
 )
 
 // This file puts line numbers down the side of a diff git rendered on its own.
@@ -43,12 +45,11 @@ var sgrPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // Rows are classified and prefixed, nothing more. The colors, the markers and the
 // text stay git's own -- re-rendering a diff ourselves would be a lot of code for
 // no gain over what git already produces.
-func numberLines(patch string) string {
+func numberLines(patch string, width int) string {
 	if patch == "" {
 		return patch
 	}
 	lines := strings.Split(patch, "\n")
-	width := numberWidth(lines)
 
 	var b strings.Builder
 	b.Grow(len(patch) + len(lines)*(2*width+8))
@@ -102,8 +103,12 @@ func numberLines(patch string) string {
 
 // gutter is the margin for one row: its line in each file, then the rule that
 // separates the numbers from the text.
+//
+// The glyphs and the spacing are render's, not this file's -- delta is pinned
+// to the same margin, and render reads both. See render.DeltaLeftFormat.
 func gutter(width, oldLine, newLine int) string {
-	return sgrFaint + fmt.Sprintf("%s ⋮ %s │", pad(oldLine, width), pad(newLine, width)) + sgrReset + " "
+	return sgrFaint + fmt.Sprintf("%s %c %s %c", pad(oldLine, width), render.MarginMid,
+		pad(newLine, width), render.MarginEnd) + sgrReset + " "
 }
 
 // pad right-aligns a line number, and leaves the column blank for a row that has
@@ -127,13 +132,19 @@ func hunkRule(width int, context string) string {
 	return sgrFaint + rule + sgrReset
 }
 
-// numberWidth is how wide a number column has to be, from the largest line number
-// the patch's headers reach. Measured once for the whole patch so the margin does
-// not step in and out as the diff is scrolled.
-func numberWidth(lines []string) int {
+// MarginWidth is how wide a number column has to be, from the largest line
+// number the patch's headers reach. Measured once for the whole patch so the
+// margin does not step in and out as the diff is scrolled.
+//
+// It is worked out before either renderer runs, because both have to be told
+// the same answer: delta is given it as a format string, and the fallback
+// writes the margin itself. A patch numbered one way by one renderer and
+// another way by the other would land the content in a different column
+// depending on what happens to be installed.
+func MarginWidth(patch string) int {
 	const min = 2
 	widest := 0
-	for _, line := range lines {
+	for _, line := range strings.Split(patch, "\n") {
 		m := hunkHeader.FindStringSubmatch(sgrPattern.ReplaceAllString(line, ""))
 		if m == nil {
 			continue

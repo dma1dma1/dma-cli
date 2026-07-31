@@ -72,7 +72,8 @@ Optional tools:
 
 | Tool | Purpose |
 |---|---|
-| `delta` | Improved diff rendering |
+| `delta` | Improved diff rendering, and the side-by-side layout |
+| `ripgrep` (`rg`) | Faster worktree search; `git grep` is used without it |
 | `notify-send` | Desktop notifications on Linux |
 | `wl-copy`, `xclip`, or `xsel` | Copying PR links on Linux |
 | `xdg-open` | Opening PRs in a browser on Linux |
@@ -357,17 +358,21 @@ rather than fifty.
 
 | Key | Action |
 |---|---|
-| `j` `k` | Move within the focused pane: tree rows, or diff lines |
-| `h` `l` | Focus the file tree or the diff |
+| `j` `k` | Move within the focused pane: tree rows, or content lines |
+| `h` `l` | Focus the file tree or the pane |
 | `n` / `p` | Next or previous file, skipping directory rows |
 | `}` / `{` | Next or previous change within the file |
-| `enter` | Open or close a directory; on a file, focus the diff |
+| `c` | Read the file's contents instead of its diff, and back |
+| `/` | Find in what the pane is showing |
+| `f` | Find a file anywhere in the worktree, by fuzzy name |
+| `g` | Search the worktree for a string |
+| `enter` | Open or close a directory; on a file, focus the pane |
 | `t` | Type `look at <file>:<lines>` to the agent, unsent, and hand over the keyboard |
 | `tab` | Switch between the working tree and the whole branch (`base...HEAD`) |
 | `v` | Toggle side-by-side columns (requires `delta`) |
-| `e` | Hide the file tree and give the diff the whole width |
+| `e` | Hide the file tree and give the pane the whole width |
 | `[` / `]` | Previous or next session, without leaving the view |
-| `←` `→` | Scroll a wide diff sideways |
+| `←` `→` | Scroll a wide line sideways — content is never wrapped |
 | `esc`, `d`, `q` | Back to the board |
 
 Directory rows show the totals of everything beneath them, and a directory that
@@ -384,6 +389,26 @@ enclosing function instead.
 The header counts the changes in the file (`change 2 of 5`) and follows the
 scroll, so `}` and `t` always refer to what is on screen. In a window narrower
 than 100 columns the tree gives way to the diff automatically.
+
+### Reading and searching the whole worktree
+
+A diff shows what changed and three lines either side of it, which is often not
+enough to answer a review question. `c` swaps the pane between a file's diff and
+its contents, syntax-highlighted and numbered the same way.
+
+`f` opens a fuzzy file finder over every path in the worktree — everything git
+tracks plus everything untracked and not ignored, so build output and
+dependencies stay out of it. Type an abbreviation the way you would say it:
+`iur` finds `internal/ui/review.go`. `g` searches those files for a string,
+through `ripgrep` when it is installed and `git grep` when it is not; the query
+is taken literally, so a function signature with brackets in it is a search
+rather than a syntax error. Picking a result opens the file in the pane, at the
+line the hit was on.
+
+`/` searches what the pane is already showing, whether that is a diff or a file.
+Matches are highlighted in place and `n` and `N` step between them; while a
+search has hits, the header says so (`find "needle" · 3 of 12`) and `esc` puts
+it down, at which point `n` goes back to meaning next file.
 
 ## How the board is organized
 

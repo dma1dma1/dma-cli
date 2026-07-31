@@ -18,6 +18,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/link"
 	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/probe"
+	"github.com/dma1dma1/dma-cli/internal/render"
 	"github.com/dma1dma1/dma-cli/internal/summarize"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
@@ -151,14 +152,6 @@ type changedFilesMsg struct {
 	id    string
 	mode  gitx.DiffMode
 	files []gitx.ChangedFile
-	err   error
-}
-
-// hunksMsg carries the structure of one file's diff.
-type hunksMsg struct {
-	id    string
-	key   string
-	hunks []gitx.Hunk
 	err   error
 }
 
@@ -648,18 +641,6 @@ func diffCmd(s *core.Session, mode gitx.DiffMode, target gitx.DiffTarget, opts g
 	}
 }
 
-// hunksCmd reads the structure of one file's diff: a plain patch from git,
-// parsed. No delta and no colors, so it is cheap next to rendering.
-func hunksCmd(s *core.Session, mode gitx.DiffMode, target gitx.DiffTarget, key string) tea.Cmd {
-	sess := *s
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		hunks, err := gitx.Hunks(ctx, sess.WorktreePath, sess.BaseBranch, mode, target)
-		return hunksMsg{id: sess.ID, key: key, hunks: hunks, err: err}
-	}
-}
-
 // captureCmd reads recent pane content for display only. Agent state comes from
 // hooks; this output is never parsed for it.
 func captureCmd(s *core.Session) tea.Cmd {
@@ -711,4 +692,83 @@ func errText(text string) tea.Cmd {
 
 func errStatus(err error) tea.Cmd {
 	return func() tea.Msg { return noticeMsg{text: err.Error()} }
+}
+
+// fileMsg carries a rendered file for the pane, keyed the same way a diff is so
+// a render that finished after the cursor moved on is filed and not drawn.
+type fileMsg struct {
+	id      string
+	key     string
+	path    string
+	content string
+	err     error
+}
+
+// worktreeFilesMsg carries the path list the fuzzy finder ranks.
+type worktreeFilesMsg struct {
+	id    string
+	paths []string
+	err   error
+}
+
+// grepMsg carries one search's hits. gen says which query asked, so a slow
+// answer cannot land on top of a newer one.
+type grepMsg struct {
+	id   string
+	gen  int
+	hits []gitx.Hit
+	err  error
+}
+
+// grepDebounceMsg fires once typing has paused. Each keystroke starts one and
+// bumps the generation, so only the last of a burst reaches the search.
+type grepDebounceMsg struct{ gen int }
+
+// grepDebounce is how long typing has to stop before the worktree is searched.
+// Short enough to feel immediate, long enough that a word typed at speed costs
+// one process rather than one per letter.
+const grepDebounce = 150 * time.Millisecond
+
+func grepDebounceCmd(gen int) tea.Cmd {
+	return tea.Tick(grepDebounce, func(time.Time) tea.Msg { return grepDebounceMsg{gen: gen} })
+}
+
+// fileCmd renders one file of the worktree for the pane.
+func fileCmd(s *core.Session, path string, width int, key string) tea.Cmd {
+	sess := *s
+	return func() tea.Msg {
+		src, err := gitx.ReadFile(sess.WorktreePath, path)
+		if err != nil {
+			return fileMsg{id: sess.ID, key: key, path: path, err: err}
+		}
+		return fileMsg{id: sess.ID, key: key, path: path,
+			content: render.File(path, src, 0).Text()}
+	}
+}
+
+// worktreeFilesCmd lists every path the finder can offer.
+func worktreeFilesCmd(s *core.Session) tea.Cmd {
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		paths, err := gitx.ListFiles(ctx, sess.WorktreePath)
+		return worktreeFilesMsg{id: sess.ID, paths: paths, err: err}
+	}
+}
+
+// grepCmd searches the worktree.
+//
+// The timeout is the cap that matters: the result count is bounded by the tools
+// themselves, but a query of one letter against a large repo can still take
+// long enough to be worth abandoning, and cancelling the context kills the
+// process rather than leaving it writing into a buffer nobody will read.
+func grepCmd(s *core.Session, query string, gen int) tea.Cmd {
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		hits, err := gitx.Grep(ctx, sess.WorktreePath, query, pickLimit)
+		return grepMsg{id: sess.ID, gen: gen, hits: hits, err: err}
+	}
 }

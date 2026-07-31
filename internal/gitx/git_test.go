@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/dma1dma1/dma-cli/internal/render"
 )
 
 func TestParseRemote(t *testing.T) {
@@ -361,7 +363,7 @@ func TestDiffCarriesLineNumbers(t *testing.T) {
 }
 
 func TestDeltaArgs(t *testing.T) {
-	args := strings.Join(deltaArgs(DiffOpts{Width: 80}), " ")
+	args := strings.Join(deltaArgs(DiffOpts{Width: 80}, 4), " ")
 	if !strings.Contains(args, "-w=80") {
 		t.Errorf("width not passed to delta: %s", args)
 	}
@@ -380,14 +382,69 @@ func TestDeltaArgs(t *testing.T) {
 		t.Errorf("hunk headers would still carry line numbers: %s", args)
 	}
 
-	sbs := strings.Join(deltaArgs(DiffOpts{Width: 80, SideBySide: true}), " ")
+	sbs := strings.Join(deltaArgs(DiffOpts{Width: 80, SideBySide: true}, 4), " ")
 	if !strings.Contains(sbs, "--side-by-side") {
 		t.Errorf("side-by-side not passed to delta: %s", sbs)
 	}
 
 	// No width means no -w, rather than -w=0, which delta would read as a
 	// zero-column pane.
-	if strings.Contains(strings.Join(deltaArgs(DiffOpts{}), " "), "-w=") {
+	if strings.Contains(strings.Join(deltaArgs(DiffOpts{}, 4), " "), "-w=") {
 		t.Error("width flag emitted without a width")
+	}
+}
+
+// The margin is the contract between whichever renderer drew the diff and the
+// parser that reads the line numbers back out of it -- see package render.
+// Both renderers are asserted here against a real diff, because the two ways it
+// can quietly break are invisible from either side on its own: delta could
+// change what its format strings mean on any upgrade, and the fallback could
+// drift away from the format delta is pinned to.
+func TestRenderedMarginIsReadable(t *testing.T) {
+	dir := testRepo(t)
+	write(t, dir, "keep.txt", "alpha\nbravo\ncharlie\ndingo\n")
+
+	for _, layout := range []struct {
+		name string
+		opts DiffOpts
+		lay  render.Layout
+	}{
+		{"unified", DiffOpts{Width: 90}, render.Unified},
+		{"side by side", DiffOpts{Width: 120, SideBySide: true}, render.SideBySide},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
+			if layout.lay == render.SideBySide && !HasDelta() {
+				t.Skip("two columns are delta's doing; git has no such mode")
+			}
+			out, err := Diff(context.Background(), dir, "main", DiffUncommitted,
+				DiffTarget{Path: "keep.txt"}, layout.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := render.Parse(out, layout.lay)
+
+			// Every line of the file the patch printed, found by its number
+			// rather than by searching the text for it.
+			for line, want := range map[int]string{1: "alpha", 2: "bravo", 3: "charlie", 4: "dingo"} {
+				row, ok := doc.RowForLine(line)
+				if !ok {
+					t.Fatalf("line %d is nowhere in the rendered diff:\n%s", line, out)
+				}
+				if got := doc.Rows[row].New; got != line {
+					t.Errorf("line %d landed on a row numbered %d", line, got)
+				}
+				if !strings.Contains(doc.Rows[row].Content(), want) {
+					t.Errorf("line %d reads %q, want it to contain %q",
+						line, doc.Rows[row].Content(), want)
+				}
+			}
+			// One change to one file is one hunk, spanning the added line.
+			if len(doc.Hunks) != 1 {
+				t.Fatalf("got %d hunks, want 1:\n%s", len(doc.Hunks), stripANSI(out))
+			}
+			if h := doc.Hunks[0]; h.Start > 4 || h.End < 4 {
+				t.Errorf("hunk covers lines %d-%d, want it to include the added line 4", h.Start, h.End)
+			}
+		})
 	}
 }
