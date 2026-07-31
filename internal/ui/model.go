@@ -111,6 +111,12 @@ type Model struct {
 	// change the pane, and only one of them means the agent is working.
 	touchedAt map[string]time.Time
 
+	// hookSeen marks the sessions that have reported a hook to this board since
+	// it started, which is the difference between a state that was observed and
+	// one that was read off disk. Only the second kind can be a transition the
+	// board was not running to receive; see stranded.
+	hookSeen map[string]bool
+
 	// review is the full-screen review view: the file tree, the pane beside it,
 	// and the searches that choose what the pane shows. See review.go.
 	review review
@@ -169,6 +175,7 @@ func New(opt Options) Model {
 		styles:      styles,
 		prober:      probe.New(),
 		touchedAt:   map[string]time.Time{},
+		hookSeen:    map[string]bool{},
 		mode:        modeBoard,
 		focus:       focusBoard,
 		hookEvents:  opt.HookEvents,
@@ -385,7 +392,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(echoTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
 
 	case probeTickMsg:
-		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt))
+		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt, m.hookSeen))
 
 	case pollTickMsg:
 		// Hoisted out of the batch: refreshDiff drops the rendered-diff cache, and
@@ -833,6 +840,10 @@ func (m Model) handleHook(ev hooks.Event) (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, next
 	}
+	// This session's state is now something this board watched happen rather than
+	// something it inherited from the last one, so the pane has nothing to add and
+	// the exact channel takes it back.
+	m.hookSeen[s.ID] = true
 	if ev.ClaudeSessionID != "" {
 		s.ClaudeSessionID = ev.ClaudeSessionID
 	}

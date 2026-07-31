@@ -333,19 +333,21 @@ func readClipboardCmd() tea.Cmd {
 	}
 }
 
-// probeCmd infers state for sessions whose agent has no hook channel. Sessions
-// running a hook-capable agent are skipped: their own reports are exact, and a
-// heuristic could only contradict them.
+// probeCmd infers state for sessions whose agent has no hook channel, and for
+// the few hook-backed ones whose recorded state nothing has confirmed -- see
+// stranded. A hook-capable agent is otherwise skipped: its own reports are
+// exact, and a heuristic could only contradict them.
 //
-// touchedAt is read and pruned here rather than inside the command, because the
-// map belongs to the model and the command runs on another goroutine.
-func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touchedAt map[string]time.Time) tea.Cmd {
+// touchedAt and hookSeen are read and pruned here rather than inside the
+// command, because the maps belong to the model and the command runs on another
+// goroutine.
+func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touchedAt map[string]time.Time, hookSeen map[string]bool) tea.Cmd {
 	var targets []*core.Session
 	keep := map[string]bool{}
 	touched := map[string]time.Time{}
 	for _, s := range sessions {
 		keep[s.ID] = true
-		if prof, ok := cfg.Profile(s.AgentProfile); ok && prof.Hooks {
+		if prof, ok := cfg.Profile(s.AgentProfile); ok && prof.Hooks && !stranded(s, hookSeen[s.ID]) {
 			continue
 		}
 		copied := *s
@@ -356,6 +358,11 @@ func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touch
 	for id := range touchedAt {
 		if !keep[id] {
 			delete(touchedAt, id)
+		}
+	}
+	for id := range hookSeen {
+		if !keep[id] {
+			delete(hookSeen, id)
 		}
 	}
 	if len(targets) == 0 {
@@ -370,6 +377,33 @@ func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touch
 		}
 		return probeMsg{states: states}
 	}
+}
+
+// stranded reports whether a hook-backed session is sitting in a state that no
+// hook has confirmed and no later hook can correct, which is the one case where
+// reading the pane beats trusting the record.
+//
+// Hooks are exact but they are not durable. A hook is an HTTP post to the board,
+// so an event raised while the board is not listening is refused and the
+// transition it carried is lost outright -- and restarting the board takes long
+// enough for a turn to end inside the gap. What survives on disk is the last
+// event that did land, which the next launch reloads and then believes forever,
+// because a hook-backed session is never probed.
+//
+// Only working strands that way, and it is the state the agent leaves behind
+// when its Stop is the event that went missing: the turn is over, so nothing is
+// coming to say so, and the card advertises work that finished before the board
+// was even running. Every other state is self-healing by comparison. A card
+// wrongly reading idle or done belongs to an agent that is running, and its next
+// tool call reports within seconds. A card reading needs_you belongs to one
+// blocked on a question, which is what needs_you means -- and the moment the
+// question is answered the agent resumes and hooks again.
+//
+// reported is whether a hook for this session has reached the board since it
+// started, which is what "confirmed" means here: state read off disk is a claim
+// about a board that is no longer running.
+func stranded(s *core.Session, reported bool) bool {
+	return !reported && s.AgentState == core.AgentWorking
 }
 
 // waitForHook blocks on the hook channel and re-arms itself after each event,

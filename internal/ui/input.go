@@ -284,7 +284,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 
 	case "R":
 		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
-			probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt))
+			probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt, m.hookSeen))
 	}
 
 	return m.sessionAction(key)
