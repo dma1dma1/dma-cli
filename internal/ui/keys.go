@@ -103,7 +103,7 @@ var helpText = [][3]string{
 	{"", "o", "open the PR in your browser"},
 	{"", "y", "copy the PR link to the clipboard"},
 	{"", "m", "merge the PR, or queue it where the base branch has a merge queue"},
-	{"", "x", "prune the worktree and branch"},
+	{"", "x", "prune the worktree and branch, closing the PR if it is open"},
 	{"", "X", "prune every merged session on the board"},
 	{"", "D", "kill the agent, keep the worktree"},
 	{"", "R", "refresh PR and session state now"},

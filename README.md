@@ -241,7 +241,7 @@ opening prompt.
 | `s` | Commit, push, and open a pull request |
 | `o` / `y` | Open or copy the pull-request link |
 | `m` | Merge the pull request or add it to the merge queue |
-| `x` | Prune one session's worktree and branch |
+| `x` | Prune one session's worktree and branch, closing its pull request if it is still open |
 | `X` | Prune the merged sessions currently shown |
 | `D` | Kill the agent but keep its worktree |
 | `A` | Choose the agent used for new sessions |
@@ -284,6 +284,13 @@ reviewer asking for changes. Each fires once on the transition rather than for
 as long as the state lasts, and is not repeated when the board is relaunched.
 Drafts and pull requests already in a merge queue are not announced, since
 neither is waiting on you.
+
+Pruning a session whose pull request is still open closes that pull request
+first, since the worktree and branch behind it are about to be removed. The
+confirmation prompt names the pull request, and the remote branch is left in
+place—it holds the only remaining copy of the work, and it is what makes the
+pull request reopenable. If GitHub cannot be reached, nothing is removed and
+`dma` offers to prune anyway and leave the pull request open.
 
 The columns grow with the cards they hold, up to half the window; past that they
 scroll instead, so a busy column never crowds out the session panel below. A

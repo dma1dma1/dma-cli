@@ -161,3 +161,29 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+// Teardown closes a session's pull request only when it is still open, and a
+// draft is open: GitHub says so, and it sits in the repo's PR list like any
+// other.
+func TestHasOpenPR(t *testing.T) {
+	cases := []struct {
+		state  PRState
+		number int
+		want   bool
+	}{
+		{PROpen, 7, true},
+		{PRDraft, 7, true},
+		{PRMerged, 7, false},
+		{PRClosed, 7, false},
+		{PRNone, 0, false},
+		// A state without a number is a record half written by an interrupted
+		// push; there is nothing to close.
+		{PROpen, 0, false},
+	}
+	for _, c := range cases {
+		s := &Session{PRState: c.state, PRNumber: c.number}
+		if got := s.HasOpenPR(); got != c.want {
+			t.Errorf("HasOpenPR(%s, #%d) = %v, want %v", c.state, c.number, got, c.want)
+		}
+	}
+}

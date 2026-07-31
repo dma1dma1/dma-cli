@@ -546,8 +546,8 @@ func prLinkCmd(remote, sessionID string, number int, action linkAction) tea.Cmd 
 	}
 }
 
-func teardownCmd(cfg *core.Config, s *core.Session, force bool) tea.Cmd {
-	return teardownOne(cfg, s, force, false)
+func teardownCmd(cfg *core.Config, s *core.Session, opt ops.TeardownOptions) tea.Cmd {
+	return teardownOne(cfg, s, opt, false)
 }
 
 // teardownAllCmd prunes several sessions, one after another rather than at
@@ -556,17 +556,17 @@ func teardownCmd(cfg *core.Config, s *core.Session, force bool) tea.Cmd {
 func teardownAllCmd(cfg *core.Config, sessions []*core.Session) tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(sessions))
 	for _, s := range sessions {
-		cmds = append(cmds, teardownOne(cfg, s, false, true))
+		cmds = append(cmds, teardownOne(cfg, s, ops.TeardownOptions{}, true))
 	}
 	return tea.Sequence(cmds...)
 }
 
-func teardownOne(cfg *core.Config, s *core.Session, force, bulk bool) tea.Cmd {
+func teardownOne(cfg *core.Config, s *core.Session, opt ops.TeardownOptions, bulk bool) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		err := ops.Teardown(ctx, cfg, &sess, ops.TeardownOptions{Force: force})
+		err := ops.Teardown(ctx, cfg, &sess, opt)
 		return teardownMsg{id: sess.ID, bulk: bulk, err: err}
 	}
 }

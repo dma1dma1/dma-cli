@@ -133,3 +133,26 @@ func TestClassifyStillSeparatesOfflineAndAuth(t *testing.T) {
 		}
 	}
 }
+
+// The board's view of a PR is up to a poll interval old, so a teardown can ask
+// GitHub to close one that has since closed or merged. gh reports the merged
+// case as a failure whose error carries no reason of its own -- only what it
+// printed says why -- and the caller wanted the PR not-open either way.
+func TestAlreadyNotOpenReadsWhatGhPrinted(t *testing.T) {
+	cases := map[string]bool{
+		"! Pull request acme/api#7 (Fix login) is already closed":                             true,
+		"X Pull request acme/api#7 (Fix login) can't be closed because it was already merged": true,
+		"HTTP 404: Not Found": false,
+		"":                    false,
+	}
+	for stderr, want := range cases {
+		if got := alreadyNotOpen(stderr, &Error{Kind: ErrOther, Msg: firstLine(stderr)}); got != want {
+			t.Errorf("alreadyNotOpen(%q) = %v, want %v", stderr, got, want)
+		}
+	}
+	// gh prints nothing to stderr for some failures and puts the reason in the
+	// error instead; both places have to be read.
+	if !alreadyNotOpen("", &Error{Kind: ErrOther, Msg: "pull request is already closed"}) {
+		t.Error("the reason was missed when it arrived in the error rather than stderr")
+	}
+}
