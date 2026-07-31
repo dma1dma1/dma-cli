@@ -222,7 +222,7 @@ opening prompt.
 
 | Key | Action |
 |---|---|
-| `h` `j` `k` `l` | Move between cards and columns |
+| `h` `j` `k` `l` | Move between cards and columns; a full column scrolls to keep the cursor in view |
 | `i` or `n` | Start composing a new task |
 | `t` | Type into the selected agent from the session panel |
 | `ctrl-v` | Paste an image or text into a task or live agent |
@@ -261,6 +261,12 @@ your tmux mouse setting when you detach.
 
 Cards move automatically as agent and GitHub state changes. Within a column,
 sessions needing attention sort first, followed by the longest time in state.
+
+The columns grow with the cards they hold, up to half the window; past that they
+scroll instead, so a busy column never crowds out the session panel below. A
+column with cards off screen counts them at that end. Moving the cursor scrolls
+its column to follow, and the mouse wheel scrolls whichever column the pointer is
+over without changing which session the panel shows.
 
 Projects are optional labels for grouping and filtering sessions. Selecting a
 project filters the board and makes new sessions join that project. A project

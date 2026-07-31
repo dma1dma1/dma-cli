@@ -38,6 +38,9 @@ func columnWidths(total int) [4]int {
 // boardContentHeight is the number of rows the columns need to show every card
 // in the tallest one, frame included. The board is sized to this rather than to
 // a share of the screen: rows beyond it would draw empty column.
+//
+// It is what the columns want, not what they get -- baseHeights caps it, and the
+// columns scroll past the cap.
 func (m Model) boardContentHeight() int {
 	widths := columnWidths(m.contentWidth())
 	cols := m.columns()
@@ -45,11 +48,17 @@ func (m Model) boardContentHeight() int {
 	for i := range cols {
 		rows := 0
 		for _, s := range cols[i] {
-			rows += len(m.cardLines(s, false, widths[i]-4)) + 1 // a blank line ends each card
+			rows += m.cardHeight(s, widths[i])
 		}
 		tallest = max(tallest, rows)
 	}
 	return tallest + 2 // the frame
+}
+
+// cardHeight is the rows one card occupies in a column of the given outer width,
+// the blank line that separates it from the next included.
+func (m Model) cardHeight(s *core.Session, width int) int {
+	return len(m.cardLines(s, false, width-4)) + 1
 }
 
 // viewBoard renders the four columns. Cards live inside the column frames as
@@ -84,45 +93,87 @@ func (m Model) viewBoard(height int) string {
 		rendered[0], gap, rendered[1], gap, rendered[2], gap, rendered[3])
 }
 
-// columnRows stacks one column's cards, keeping only the ones that fit whole
-// and replacing the rest with a count.
+// columnRows stacks one column's cards from its scroll offset, keeping only the
+// ones that fit whole and counting the rest off each end.
 //
 // Cards are dropped rather than clipped mid-card because the box clips by line:
 // a card cut in half loses the end of its click zone, which leaves it visible
-// but unclickable.
+// but unclickable. That is also why the column scrolls by whole cards rather
+// than by rows.
 func (m Model) columnRows(col []*core.Session, colIndex int, sel cardPos, width, height int) []string {
 	if len(col) == 0 {
 		return []string{"", m.styles.Faint.Render("  —")}
 	}
 
 	avail := max(height-2, 1) // two rows go to the frame
+	off := m.scrollOffset(col, colIndex, width, avail)
+	shown := m.columnFit(col, off, width, avail)
+
 	var rows []string
-	hidden := 0
-	for j, s := range col {
-		if hidden > 0 {
-			// Once anything has been dropped the rest go too, so the order on
-			// screen stays the column's order.
-			hidden++
-			continue
-		}
-		card := m.renderCard(s, sel.col == colIndex && sel.row == j, width-4)
-		limit := avail
-		if j < len(col)-1 {
-			limit-- // reserve the row the overflow count would need
-		}
-		// The first card is kept even when it cannot fit: a clipped card beats an
-		// empty column.
-		if len(rows)+len(card) > limit && len(rows) > 0 {
-			hidden++
-			continue
-		}
-		rows = append(rows, card...)
+	if off > 0 {
+		rows = append(rows, m.styles.Faint.Render(fmt.Sprintf("  ↑ %d more", off)))
+	}
+	for j := off; j < off+shown; j++ {
+		rows = append(rows, m.renderCard(col[j], sel.col == colIndex && sel.row == j, width-4)...)
 		rows = append(rows, "")
 	}
-	if hidden > 0 {
-		rows[len(rows)-1] = m.styles.Faint.Render(fmt.Sprintf("  +%d more", hidden))
+	// The count below takes the blank row that ended the last card, so it costs
+	// the column nothing it was not already spending.
+	if below := len(col) - off - shown; below > 0 {
+		rows[len(rows)-1] = m.styles.Faint.Render(fmt.Sprintf("  ↓ %d more", below))
 	}
 	return rows
+}
+
+// columnFit reports how many of col's cards, starting at offset, can be drawn
+// whole in an interior avail rows tall. It is the one place that decides what a
+// column shows: the renderer and the scroll arithmetic both go through it, so
+// they cannot disagree about which card is on screen.
+func (m Model) columnFit(col []*core.Session, offset, width, avail int) int {
+	used := 0
+	if offset > 0 {
+		used++ // the row the count above needs
+	}
+	shown := 0
+	for j := offset; j < len(col); j++ {
+		limit := avail
+		if j < len(col)-1 {
+			limit-- // reserve the row the count below would need
+		}
+		h := m.cardHeight(col[j], width)
+		// The first card is kept even when it cannot fit: a clipped card beats an
+		// empty column.
+		if used+h > limit && shown > 0 {
+			break
+		}
+		used += h
+		shown++
+	}
+	return shown
+}
+
+// scrollOffset is a column's stored offset, clamped to what the column can
+// actually show. The clamp is applied here as well as in syncColumnScroll so that
+// rendering a model straight out of a resize -- or a test -- cannot draw a column
+// scrolled into empty space.
+func (m Model) scrollOffset(col []*core.Session, colIndex, width, avail int) int {
+	off := m.colScroll[colIndex]
+	if off <= 0 {
+		return 0
+	}
+	return min(off, m.maxScroll(col, width, avail))
+}
+
+// maxScroll is the furthest an offset is worth taking: the first one whose page
+// still ends on the column's last card. Past it the column would give up cards at
+// the top to show blank rows at the bottom.
+func (m Model) maxScroll(col []*core.Session, width, avail int) int {
+	for off := 0; off < len(col); off++ {
+		if off+m.columnFit(col, off, width, avail) >= len(col) {
+			return off
+		}
+	}
+	return max(len(col)-1, 0)
 }
 
 // renderCard returns the lines for one card, sized to the column interior.

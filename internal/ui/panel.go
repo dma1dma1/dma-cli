@@ -167,6 +167,11 @@ func (m Model) baseHeights() (boardH, panelH int) {
 	if maxBoard < minBoardRows {
 		return 0, avail
 	}
+	// Past halfway the board stops growing and the columns scroll instead. Letting
+	// it keep taking rows was worse than it sounds: one busy column would push the
+	// agent's output down to minPanelHeight, so a board doing its job cost you sight
+	// of the session you were actually working in.
+	maxBoard = clamp(avail/2, minBoardRows, maxBoard)
 	boardH = clamp(m.boardContentHeight(), minBoardRows, maxBoard)
 	return boardH, avail - boardH
 }

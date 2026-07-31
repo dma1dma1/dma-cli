@@ -58,6 +58,16 @@ type Model struct {
 	repoFilter    string
 	projectFilter string
 
+	// colScroll is the index of the first card each column draws, so a column
+	// holding more cards than fit scrolls instead of growing.
+	colScroll [4]int
+	// scrollPinned marks the columns the wheel has parked. A pinned column is
+	// left where the pointer put it, even when the cursor is somewhere off screen;
+	// otherwise the offset chases the selected card, which is what keeps the cursor
+	// visible while the agents reorder the cards underneath it. Moving the cursor
+	// unpins, so the keyboard always wins the column back.
+	scrollPinned [4]bool
+
 	// activeRepo and agentChoice are what new sessions are built from. They are
 	// seeded from the launch directory and the configured default.
 	activeRepo  string
@@ -169,6 +179,7 @@ func New(opt Options) Model {
 		m.selectedID = s.ID
 	}
 	m.layoutSizes()
+	m.syncColumnScroll()
 	return m
 }
 
@@ -183,6 +194,7 @@ func (m Model) selected() *core.Session {
 func (m *Model) selectSession(s *core.Session) {
 	m.selectedID, m.deselected = s.ID, false
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
+	m.unpinScroll()
 }
 
 // clearSelection empties the panel and keeps it empty until something is picked.
@@ -227,6 +239,9 @@ func (m *Model) rebuild() {
 		} else {
 			m.selectedID = ""
 		}
+		// A card the board picked for you still has to be a card you can see, so a
+		// column the wheel had parked gives way here too.
+		m.unpinScroll()
 	}
 }
 
@@ -253,7 +268,24 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
+// Update settles the column scroll after every message, whatever the message
+// did.
+//
+// Scroll offsets are model state, so they cannot be fixed up during render, and
+// almost anything can invalidate them: a resize, a filter, a moved cursor, or a
+// poll that lands a new card. Doing it in one place here beats a call at the end
+// of each of the dozens of paths through update, which is a call the next handler
+// would forget.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if mm, ok := next.(Model); ok {
+		mm.syncColumnScroll()
+		return mm, cmd
+	}
+	return next, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
