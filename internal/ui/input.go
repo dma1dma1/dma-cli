@@ -915,17 +915,22 @@ func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // cursor: looking around must not change which file is rendered.
 func (m Model) diffWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if z := zone.Get(zoneDiffTree); z != nil && z.InBounds(msg) {
-		delta := 0
-		switch msg.Mouse().Button {
-		case tea.MouseWheelUp:
-			delta = -1
-		case tea.MouseWheelDown:
-			delta = 1
-		default:
-			return m, nil
+		mouse := msg.Mouse()
+		// The tree has only a vertical axis. Let horizontal wheel events pass
+		// through to the diff even when the pointer happens to be over the tree;
+		// otherwise a trackpad's sideways gesture is silently swallowed there.
+		// Bubble Tea also treats Shift+wheel as horizontal scrolling, so preserve
+		// that fallback for terminals which cannot report wheel-left/right.
+		if !mouse.Mod.Contains(tea.ModShift) {
+			switch mouse.Button {
+			case tea.MouseWheelUp:
+				m.diffFiles.scroll(-1, m.diffPaneHeight())
+				return m, nil
+			case tea.MouseWheelDown:
+				m.diffFiles.scroll(1, m.diffPaneHeight())
+				return m, nil
+			}
 		}
-		m.diffFiles.scroll(delta, m.diffPaneHeight())
-		return m, nil
 	}
 	var cmd tea.Cmd
 	m.diffView, cmd = m.diffView.Update(msg)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
@@ -115,6 +116,70 @@ func TestKeysRouteByFocus(t *testing.T) {
 	}
 	if m.diffView.YOffset() == 0 {
 		t.Error("j with the diff focused did not scroll the diff")
+	}
+}
+
+func TestArrowKeysScrollWideDiffHorizontally(t *testing.T) {
+	m := diffModel(t, someFiles()...)
+	m.diffTreeFocus = false
+	m.diffView.SetContent(strings.Repeat("x", m.diffPaneWidth()+40))
+
+	next, _ := m.keyDiff(tea.KeyPressMsg{Code: tea.KeyRight}, "right")
+	m = next.(Model)
+	if m.diffView.XOffset() == 0 {
+		t.Fatal("right arrow did not scroll the diff")
+	}
+
+	next, _ = m.keyDiff(tea.KeyPressMsg{Code: tea.KeyLeft}, "left")
+	m = next.(Model)
+	if got := m.diffView.XOffset(); got != 0 {
+		t.Errorf("left arrow left the diff at column %d, want 0", got)
+	}
+}
+
+func TestHorizontalWheelScrollsWideDiff(t *testing.T) {
+	m := diffModel(t, someFiles()...)
+	m.height = 10
+	m.layoutSizes()
+	m.diffView.SetContent(strings.Repeat("x", m.diffPaneWidth()+40))
+	rendered(t, m, zoneDiffTree)
+	z := zone.Get(zoneDiffTree)
+	if z.IsZero() {
+		t.Fatal("no zone recorded for the diff tree")
+	}
+	x, y := (z.StartX+z.EndX)/2, (z.StartY+z.EndY)/2
+
+	// Ordinary vertical scrolling still belongs to the tree under the pointer.
+	next, _ := m.diffWheel(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
+	m = next.(Model)
+	if m.diffFiles.offset == 0 {
+		t.Fatal("vertical wheel did not scroll the tree")
+	}
+	if got := m.diffView.XOffset(); got != 0 {
+		t.Fatalf("vertical tree scroll moved the diff to column %d", got)
+	}
+
+	// A horizontal gesture belongs to the only pane which can use it, even if
+	// the pointer is parked over the tree.
+	next, _ = m.diffWheel(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelRight})
+	m = next.(Model)
+	if m.diffView.XOffset() == 0 {
+		t.Fatal("horizontal wheel did not scroll the diff")
+	}
+
+	next, _ = m.diffWheel(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelLeft})
+	m = next.(Model)
+	if got := m.diffView.XOffset(); got != 0 {
+		t.Errorf("horizontal wheel left the diff at column %d, want 0", got)
+	}
+
+	// Some terminals encode horizontal scrolling as Shift+vertical wheel.
+	next, _ = m.diffWheel(tea.MouseWheelMsg{
+		X: x, Y: y, Button: tea.MouseWheelDown, Mod: tea.ModShift,
+	})
+	m = next.(Model)
+	if m.diffView.XOffset() == 0 {
+		t.Fatal("shift+wheel did not scroll the diff")
 	}
 }
 
