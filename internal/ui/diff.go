@@ -10,9 +10,10 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 )
 
-// viewDiff is the full-screen review of one session's changes. The board panel
-// already shows live output, so this view exists purely for the diff -- the two
-// compete for space and are never rendered together.
+// viewDiff is the full-screen review of one session's changes: the files it
+// touched on the left, the diff of the one under the cursor on the right. The
+// board panel already shows live output, so this view exists purely for the
+// diff -- the two compete for space and are never rendered together.
 func (m Model) viewDiff() string {
 	s := m.selected()
 	if s == nil {
@@ -20,20 +21,15 @@ func (m Model) viewDiff() string {
 	}
 	st := m.styles
 
-	label := "working tree"
-	if m.diffMode == gitx.DiffBranch {
-		label = s.BaseBranch + "...HEAD"
-	}
-
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		m.diffChips(s),
 		"",
-		m.diffView.View(),
+		m.diffPanes(),
 	)
 
 	b := Box{
 		Title:    s.Title,
-		Subtitle: "diff · " + label + " · tab to switch",
+		Subtitle: m.diffSubtitle(s),
 		Accent:   st.P.Accent,
 		Border:   st.P.Border,
 		Width:    m.contentWidth(),
@@ -41,6 +37,58 @@ func (m Model) viewDiff() string {
 		Focused:  true,
 	}
 	return b.Render(body)
+}
+
+// diffModeLabel names the range on screen.
+func (m Model) diffModeLabel(s *core.Session) string {
+	if m.diffMode == gitx.DiffBranch {
+		return s.BaseBranch + "...HEAD"
+	}
+	return "working tree"
+}
+
+// diffSubtitle says which range, which layout, and which row -- the three things
+// that decide what the pane is showing.
+func (m Model) diffSubtitle(s *core.Session) string {
+	parts := []string{"diff", m.diffModeLabel(s)}
+	if m.diffSideBySide {
+		parts = append(parts, "side by side")
+	}
+	if path := m.diffFiles.selectedPath(); path != "" {
+		parts = append(parts, path)
+	} else {
+		parts = append(parts, rootLabel)
+	}
+	// Where you are in the file, in changes rather than in lines: a scroll bar
+	// says how far down a wall of text you are, which is not the question.
+	if n := len(m.diffHunks); n > 1 {
+		parts = append(parts, fmt.Sprintf("change %d of %d",
+			currentHunk(m.diffHunkRows, m.diffView.YOffset())+1, n))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// diffPanes lays the file tree beside the diff, or gives the diff the whole
+// width when the tree is hidden.
+//
+// The two are joined at the top rather than centered: they are both lists read
+// from their first line down, and a shorter tree centered against a long diff
+// would start halfway down the pane.
+func (m Model) diffPanes() string {
+	diff := m.diffView.View()
+	treeW := m.diffTreeWidth()
+	if treeW == 0 {
+		return diff
+	}
+
+	tree := m.diffFiles.render(m.styles, treeW, m.diffPaneHeight(), m.diffTreeFocus)
+	// The divider is drawn per row rather than as one tall glyph, so it stops
+	// where the panes stop instead of being padded out by the join.
+	rows := make([]string, m.diffPaneHeight())
+	for i := range rows {
+		rows[i] = m.styles.Faint.Render(" │ ")
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, tree, strings.Join(rows, "\n"), diff)
 }
 
 // diffChips summarizes the facts you need while reading a diff: whether it

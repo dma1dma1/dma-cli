@@ -246,8 +246,8 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		if m.selected() == nil {
 			return m, nil
 		}
-		m.mode = modeDiff
-		return m, m.refreshDiff()
+		cmd := m.openDiff()
+		return m, cmd
 
 	case "H", "L":
 		return m.moveCard(key == "L")
@@ -651,6 +651,12 @@ func (m Model) keyDropdown(key string) (tea.Model, tea.Cmd) {
 
 // --- diff view ---
 
+// keyDiff routes a key by which pane has focus: the tree walks rows, the diff
+// scrolls lines.
+//
+// Stepping between sessions moves off j/k to [ and ], which is the one piece of
+// muscle memory the file tree costs. It is unavoidable: j/k in a pane of rows
+// cannot also mean "a different agent's work".
 func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "d", "q":
@@ -663,18 +669,103 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.diffMode = gitx.DiffUncommitted
 		}
-		return m, m.refreshDiff()
+		cmd := m.refreshDiff()
+		return m, cmd
 
-	case "j", "down", "k", "up":
+	case "h", "l":
+		// The tree is to the left of the diff, so the keys that move between
+		// cards on the board move between panes here.
+		if m.diffTreeWidth() == 0 {
+			return m, nil
+		}
+		m.diffTreeFocus = key == "h"
+		return m, nil
+
+	case "e":
+		// Hiding the tree changes the diff pane's width, which is part of how the
+		// diff was rendered, so the pane has to be asked for again.
+		m.diffTreeHidden = !m.diffTreeHidden
+		if m.diffTreeWidth() == 0 {
+			m.diffTreeFocus = false
+		}
+		m.layoutSizes()
+		cmd := m.showSelectedFile()
+		return m, cmd
+
+	case "}", "{":
+		// Jump between the separate changes in this file. Scrolling to a row
+		// rather than to a line number: the pane may hold delta's rendering of
+		// the patch, whose rows and the file's lines are not the same thing.
 		dir := 1
-		if key == "k" || key == "up" {
+		if key == "{" {
+			dir = -1
+		}
+		row, ok := nextHunkRow(m.diffHunkRows, m.diffView.YOffset(), dir)
+		if !ok {
+			return m, nil
+		}
+		m.diffView.SetYOffset(row)
+		m.diffTreeFocus = false
+		return m, nil
+
+	case "t":
+		return m.tellAgentAboutHunk()
+
+	case "v":
+		// Two columns are delta's doing, not git's, so without it there is
+		// nothing to switch to -- and a key that silently does nothing reads as
+		// a bug.
+		if !gitx.HasDelta() {
+			return m, errStatus(fmt.Errorf("side-by-side needs delta on PATH"))
+		}
+		m.diffSideBySide = !m.diffSideBySide
+		cmd := m.showSelectedFile()
+		return m, cmd
+
+	case "[", "]":
+		dir := 1
+		if key == "[" {
 			dir = -1
 		}
 		if s := m.stepSession(dir); s != nil {
 			m.selectSession(s)
-			return m, tea.Batch(m.refreshDiff(), previewCmd(s))
+			cmd := m.refreshDiff()
+			return m, tea.Batch(cmd, previewCmd(s))
 		}
 		return m, nil
+
+	case "n", "p":
+		dir := 1
+		if key == "p" {
+			dir = -1
+		}
+		if !m.diffFiles.moveFile(dir) {
+			return m, nil
+		}
+		cmd := m.showSelectedFile()
+		return m, cmd
+
+	case "enter", " ":
+		// On a directory this opens or closes it; on a file there is nothing to
+		// open, so it hands focus to the diff that is already beside it.
+		if m.diffFiles.toggle() {
+			cmd := m.showSelectedFile()
+			return m, cmd
+		}
+		m.diffTreeFocus = false
+		return m, nil
+
+	case "j", "down", "k", "up":
+		if !m.diffTreeFocus {
+			break // the viewport scrolls the diff
+		}
+		dir := 1
+		if key == "k" || key == "up" {
+			dir = -1
+		}
+		m.diffFiles.move(dir)
+		cmd := m.showSelectedFile()
+		return m, cmd
 
 	case "a":
 		s := m.selected()
@@ -690,6 +781,37 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.diffView, cmd = m.diffView.Update(msg)
 	return m, cmd
+}
+
+// tellAgentAboutHunk types a reference to the change on screen into the agent's
+// terminal and hands it the keyboard, without pressing Enter.
+//
+// This is the point of knowing where the hunks are. Reviewing an agent's work
+// and steering it are the same activity interrupted by a context switch: finding
+// the file again in the agent's pane, and typing out where you were looking. The
+// reference is left unsent so the sentence is still yours to finish.
+func (m Model) tellAgentAboutHunk() (tea.Model, tea.Cmd) {
+	s := m.selected()
+	row, ok := m.diffFiles.selected()
+	if s == nil || !ok || row.dir {
+		return m, nil
+	}
+	if !s.TmuxAlive {
+		return m, errStatus(fmt.Errorf("terminal for %s is not running", s.Title))
+	}
+
+	// The whole file when its structure has not arrived, or has none to speak of:
+	// a path on its own is still a better handle than nothing.
+	ref := row.path
+	if len(m.diffHunks) > 0 {
+		ref = m.diffHunks[currentHunk(m.diffHunkRows, m.diffView.YOffset())].Ref(row.path)
+	}
+
+	// Back to the board with the agent focused, since what follows is typing to
+	// it: the review view forwards nothing.
+	m.mode = modeBoard
+	m.focus = focusPreview
+	return m, tea.Batch(sendPasteCmd(s, "look at "+ref+" "), m.onFocusChange())
 }
 
 // --- confirm ---
@@ -724,16 +846,56 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.(type) {
 	case tea.MouseWheelMsg:
-		// Scroll routes by zone: the diff when it is open, otherwise the column
-		// under the pointer.
+		// Scroll routes by zone: in the review view, whichever of the two panes
+		// the pointer is over; otherwise the column under the pointer.
 		if m.mode == modeDiff {
-			var cmd tea.Cmd
-			m.diffView, cmd = m.diffView.Update(msg)
-			return m, cmd
+			return m.diffWheel(msg)
 		}
 		return m.handleWheel(msg)
 	case tea.MouseClickMsg:
+		if m.mode == modeDiff {
+			return m.diffClick(msg)
+		}
 		return m.handleClick(msg)
+	}
+	return m, nil
+}
+
+// diffWheel scrolls the file tree when the pointer is over it, and the diff
+// otherwise. Like the board's wheel, scrolling the tree does not move its
+// cursor: looking around must not change which file is rendered.
+func (m Model) diffWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if z := zone.Get(zoneDiffTree); z != nil && z.InBounds(msg) {
+		delta := 0
+		switch msg.Mouse().Button {
+		case tea.MouseWheelUp:
+			delta = -1
+		case tea.MouseWheelDown:
+			delta = 1
+		default:
+			return m, nil
+		}
+		m.diffFiles.scroll(delta, m.diffPaneHeight())
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.diffView, cmd = m.diffView.Update(msg)
+	return m, cmd
+}
+
+// diffClick picks the file row under the pointer. One click rather than two: a
+// tree row is a much bigger target than a card, and picking one only renders a
+// diff.
+func (m Model) diffClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	for i := range m.diffFiles.rows {
+		z := zone.Get(zoneDiffRow(i))
+		if z == nil || !z.InBounds(msg) {
+			continue
+		}
+		m.diffFiles.cursor = i
+		m.diffTreeFocus = true
+		cmd := m.showSelectedFile()
+		return m, cmd
 	}
 	return m, nil
 }
@@ -822,8 +984,8 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// because misclicks on a dense board are frequent.
 		if m.selectedID == s.ID && m.lastClickID == s.ID &&
 			timeSince(m.lastClickAt) < doubleClickWindow {
-			m.mode = modeDiff
-			return m, m.refreshDiff()
+			cmd := m.openDiff()
+			return m, cmd
 		}
 		m.focus = focusBoard
 		m.selectSession(s)

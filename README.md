@@ -300,7 +300,7 @@ opening prompt.
 | `ctrl-v` | Paste an image or text into a task or live agent |
 | `ctrl-u` | Clear the task input while composing |
 | `a` | Attach to the selected tmux session |
-| `enter` or `d` | Review the selected session's diff |
+| `enter` or `d` | Review the selected session's changes |
 | `s` | Ask the agent to commit, push, and open a pull request |
 | `o` / `y` | Open or copy the pull-request link |
 | `m` | Merge the pull request or add it to the merge queue |
@@ -328,6 +328,38 @@ to normal mode after every message it sends—`dma` puts it back into insert mod
 when you hand it the keyboard, so a sentence typed into the panel arrives as text
 rather than as vim commands. Nothing is sent to an agent that is not modal, or
 while a dialog is open, so answering a prompt with `1` or `y` still works.
+
+## Reviewing changes
+
+`enter` or `d` opens the review view: the files the session touched on the left,
+the diff of the one under the cursor on the right. Only the selected row is
+rendered, so a session with fifty changed files costs one file's worth of `git`
+rather than fifty.
+
+| Key | Action |
+|---|---|
+| `j` `k` | Move within the focused pane: tree rows, or diff lines |
+| `h` `l` | Focus the file tree or the diff |
+| `n` / `p` | Next or previous file, skipping directory rows |
+| `}` / `{` | Next or previous change within the file |
+| `enter` | Open or close a directory; on a file, focus the diff |
+| `t` | Type `look at <file>:<lines>` to the agent, unsent, and hand over the keyboard |
+| `tab` | Switch between the working tree and the whole branch (`base...HEAD`) |
+| `v` | Toggle side-by-side columns (requires `delta`) |
+| `e` | Hide the file tree and give the diff the whole width |
+| `[` / `]` | Previous or next session, without leaving the view |
+| `←` `→` | Scroll a wide diff sideways |
+| `esc`, `d`, `q` | Back to the board |
+
+Directory rows show the totals of everything beneath them, and a directory that
+holds nothing but one directory is collapsed onto a single row. The top row,
+`all changes`, is the whole diff. Files git is not tracking are listed with `?`
+and diffed against `/dev/null`, so a brand new file — a coding agent's most
+common output — is reviewable like any other.
+
+The header counts the changes in the file (`change 2 of 5`) and follows the
+scroll, so `}` and `t` always refer to what is on screen. In a window narrower
+than 100 columns the tree gives way to the diff automatically.
 
 ## How the board is organized
 

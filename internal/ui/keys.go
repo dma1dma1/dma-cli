@@ -51,8 +51,10 @@ func (m Model) hints() []hint {
 	switch m.mode {
 	case modeDiff:
 		return []hint{
-			{"tab", "diff mode"}, {"j/k", "prev/next session"}, {"a", "attach"},
-			{"s", "ship"}, {"o/y", "PR open/copy"}, {"m", "merge"}, {"x", "prune"},
+			{"j/k", "move"}, {"h/l", "tree/diff"}, {"n/p", "next/prev file"},
+			{"}/{", "next/prev change"}, {"t", "point the agent here"},
+			{"tab", "diff mode"}, {"v", "side by side"}, {"[/]", "prev/next session"},
+			{"e", "hide tree"}, {"a", "attach"}, {"s", "ship"}, {"m", "merge"},
 			{"esc", "board"},
 		}
 	case modeRepos:
@@ -128,9 +130,18 @@ var helpText = [][3]string{
 	{"", "x", "remove the highlighted project (must hold no sessions)"},
 
 	{"Diff", "", ""},
+	{"", "j k", "move in the focused pane: tree rows, or diff lines"},
+	{"", "h l", "focus the file tree / the diff"},
+	{"", "n p", "next/previous file, skipping directories"},
+	{"", "} {", "next/previous change within the file"},
+	{"", "t", "type \"look at <file>:<lines>\" to the agent, unsent"},
+	{"", "enter", "open or close a directory; on a file, focus the diff"},
+	{"", "e", "hide the file tree and give the diff the whole width"},
 	{"", "tab", "toggle working tree / branch diff"},
-	{"", "j k", "previous/next session"},
-	{"", "esc", "back to the board"},
+	{"", "v", "toggle side-by-side columns (needs delta)"},
+	{"", "[ ]", "previous/next session"},
+	{"", "← →", "scroll a wide diff sideways"},
+	{"", "esc / d / q", "back to the board"},
 
 	{"Repositories", "", ""},
 	{"", "enter", "use this repo for new sessions"},
