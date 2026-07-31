@@ -36,11 +36,26 @@ Required at runtime:
 | `git` | Creates worktrees and manages branches and diffs |
 | `tmux` | Hosts persistent agent sessions |
 | A coding-agent CLI | `claude`, `codex`, or another configured command |
+| `terminal-notifier` | Desktop notifications on macOS |
 
 Install and authenticate at least one coding-agent CLI before starting a
 session. `dma` includes profiles for Claude Code and Codex and uses Claude Code
 by default. If you only have Codex installed, select it with `A` before starting
 your first task.
+
+On macOS, install the notifier:
+
+```sh
+brew install terminal-notifier
+```
+
+Notifications are how a session that needs you reaches you when the board is not
+on screen, which is what makes a board of parallel agents worth having. Without
+`terminal-notifier`, `dma` falls back to AppleScript: notifications still
+arrive, but macOS attributes them to Script Editor, so they carry its icon,
+clicking one opens Script Editor rather than returning you to the board, and they
+take focus. The board says so once on launch and `dma doctor` treats it as an
+incomplete setup.
 
 For GitHub pull-request features, also install `gh` and authenticate it:
 
@@ -401,6 +416,12 @@ the intended profile. Profile commands can be edited in
 
 Run `gh auth status`, confirm the repository has a GitHub `origin`, and inspect
 the repository's `remote` value with `dma repo list`.
+
+**Notifications come from Script Editor, or steal focus**
+
+`terminal-notifier` is not installed. Run `brew install terminal-notifier` and
+confirm it with `dma doctor`. The launch hint appears only once, recorded as
+`notifier_hint_shown` in `~/.dma/config.json`; delete that key to see it again.
 
 **The wrong files are shared or copied**
 

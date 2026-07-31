@@ -20,6 +20,7 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
+	"github.com/dma1dma1/dma-cli/internal/notify"
 	"github.com/dma1dma1/dma-cli/internal/ops"
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 	"github.com/dma1dma1/dma-cli/internal/ui"
@@ -88,6 +89,9 @@ func runBoard() error {
 	// first, and its dependencies and env files are detectable from the
 	// checkout itself.
 	launchRepo, notice := adoptCwd(cfg)
+	if notice == "" {
+		notice = notifierNotice(cfg)
+	}
 	refreshRemotes(cfg)
 
 	sessions, err := core.LoadSessions()
@@ -148,6 +152,24 @@ func adoptCwd(cfg *core.Config) (repoID, notice string) {
 		return repo.ID, ""
 	}
 	return repo.ID, fmt.Sprintf("registered %s — %s", repo.ID, ops.SummarizeBootstrap(repo.Bootstrap))
+}
+
+// notifierNotice is the one line telling the user that notifications need a
+// helper this machine does not have, and marks it said.
+//
+// It yields to an adoption notice rather than being crammed alongside it: the
+// notice line is one row, and a hint that loses its install command to
+// truncation is worse than a hint that waits for the next launch. Not claiming
+// the flag is what makes waiting work.
+func notifierNotice(cfg *core.Config) string {
+	req, missing := notify.MissingRequirement()
+	if !missing || cfg.NotifierHintShown {
+		return ""
+	}
+	cfg.NotifierHintShown = true
+	// A failed write only costs the user the same hint again next launch.
+	_ = core.SaveConfig(cfg)
+	return req.Hint() + " (see dma doctor)"
 }
 
 // refreshRemotes gives every repo another chance to have an origin. It is
@@ -416,33 +438,50 @@ func runDoctor() error {
 	type check struct {
 		name, why string
 		required  bool
+		install   string
 	}
 	checks := []check{
-		{"tmux", "hosts agent sessions", true},
-		{"git", "worktrees, branches, diffs", true},
-		{"gh", "pull request state", true},
-		{"delta", "nicer diff rendering (optional)", false},
+		{"tmux", "hosts agent sessions", true, ""},
+		{"git", "worktrees, branches, diffs", true, ""},
+		{"gh", "pull request state", true, ""},
+		{"delta", "nicer diff rendering (optional)", false, ""},
 	}
+	// The notifier is whatever this platform needs, so the check follows the
+	// package that does the notifying rather than being restated here.
+	for _, r := range notify.Requirements() {
+		checks = append(checks, check{r.Tool, r.Why, r.Required, r.Install})
+	}
+
+	// One column wide enough for the longest name: terminal-notifier is three
+	// times the width the fixed column used to assume.
+	width := 0
+	for _, c := range checks {
+		width = max(width, len(c.name))
+	}
+
 	ok := true
 	for _, c := range checks {
 		path, err := exec.LookPath(c.name)
 		switch {
 		case err == nil:
-			fmt.Printf("  ✓ %-6s %s\n", c.name, path)
+			fmt.Printf("  ✓ %-*s %s\n", width, c.name, path)
 		case c.required:
-			fmt.Printf("  ✗ %-6s missing — %s\n", c.name, c.why)
+			fmt.Printf("  ✗ %-*s missing — %s\n", width, c.name, c.why)
 			ok = false
 		default:
-			fmt.Printf("  · %-6s not installed — %s\n", c.name, c.why)
+			fmt.Printf("  · %-*s not installed — %s\n", width, c.name, c.why)
+		}
+		if err != nil && c.install != "" {
+			fmt.Printf("    %-*s run: %s\n", width, "", c.install)
 		}
 	}
 
 	if _, err := exec.LookPath("gh"); err == nil {
 		if !ghAuthed() {
-			fmt.Printf("  ✗ gh     not authenticated — run: gh auth login\n")
+			fmt.Printf("  ✗ %-*s not authenticated — run: gh auth login\n", width, "gh")
 			ok = false
 		} else {
-			fmt.Printf("  ✓ gh     authenticated\n")
+			fmt.Printf("  ✓ %-*s authenticated\n", width, "gh")
 		}
 	}
 
