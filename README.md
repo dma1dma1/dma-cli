@@ -259,6 +259,12 @@ board. While attached, the mouse wheel scrolls through the agent's history.
 Hold `shift`—or `option` in some macOS terminals—to select text. `dma` restores
 your tmux mouse setting when you detach.
 
+If the agent's composer is modal—Codex with `tui.vim_mode_default`, which returns
+to normal mode after every message it sends—`dma` puts it back into insert mode
+when you hand it the keyboard, so a sentence typed into the panel arrives as text
+rather than as vim commands. Nothing is sent to an agent that is not modal, or
+while a dialog is open, so answering a prompt with `1` or `y` still works.
+
 ## How the board is organized
 
 | Column | Meaning |

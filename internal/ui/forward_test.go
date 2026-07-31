@@ -1,10 +1,17 @@
 package ui
 
 import (
+	"context"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+
+	"github.com/dma1dma1/dma-cli/internal/core"
+	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
 // printable characters must go out literally, because send-keys would otherwise
@@ -139,5 +146,119 @@ func TestTmuxKeyUnmappableIsDropped(t *testing.T) {
 				t.Errorf("tmuxKey(%s): ok with %+v, want dropped", tc.name, fk)
 			}
 		})
+	}
+}
+
+// --- modal composers ---
+
+// The frame Codex draws with a vim composer, captured from a live session:
+// the mode sits in the status line under the composer, colored, and says
+// "Normal" whenever a message has just been submitted.
+const (
+	codexVimNormal = "• Panes split one window into several terminals.\n\n" +
+		"› Write tests for @filename\n\n" +
+		"  \x1b[2mgpt-5.6-sol high · ~/w\x1b[39m \x1b[38;5;5mVim: Normal\x1b[39m\n"
+
+	codexVimInsert = "• Panes split one window into several terminals.\n\n" +
+		"› explain tmu\n\n" +
+		"  \x1b[2mgpt-5.6-sol high · ~/w\x1b[39m \x1b[38;5;5mVim: Insert\x1b[39m\n"
+
+	// No marker at all: the composer is not modal.
+	codexPlain = "• Panes split one window into several terminals.\n\n" +
+		"› Write tests for @filename\n\n" +
+		"  \x1b[2mgpt-5.6-sol high · ~/w\x1b[39m\n"
+
+	// An approval dialog replaces the composer, and the marker goes with it.
+	// Keystrokes belong to the dialog here, so nothing may be sent ahead of them.
+	codexDialog = "  Would you like to run the following command?\n\n" +
+		"  $ curl -sI https://example.com\n\n" +
+		"› 1. Yes, proceed (y)\n" +
+		"  2. No, and tell Codex what to do differently (esc)\n\n" +
+		"  Press enter to confirm or esc to cancel\n"
+)
+
+func TestInNormalModeReadsTheComposerMode(t *testing.T) {
+	cases := map[string]struct {
+		content string
+		want    bool
+	}{
+		"vim normal":      {codexVimNormal, true},
+		"vim insert":      {codexVimInsert, false},
+		"no modal marker": {codexPlain, false},
+		"dialog open":     {codexDialog, false},
+		"empty pane":      {"", false},
+		"marker scrolled": {codexVimNormal + "\nlater output\n", false},
+		// An agent that merely wrote the words is not reporting a mode. The status
+		// line is the bottom row and ends with the mode; prose does neither.
+		"prose mentioning": {"I set vim: normal mode in my config, as you asked.\n", false},
+		"prose then status": {"I set vim: normal in your config, as you asked.\n\n" +
+			"  gpt-5.6-sol high · ~/w Vim: Insert\n", false},
+	}
+	for name, tc := range cases {
+		if got := inNormalMode(tc.content); got != tc.want {
+			t.Errorf("%s: inNormalMode = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// Nothing is sent to a session that cannot receive it, and the command is a
+// no-op rather than an error: the panel works either way.
+func TestInsertModeCmdSkipsDeadSessions(t *testing.T) {
+	if cmd := insertModeCmd(nil); cmd != nil {
+		t.Error("built a command for no session")
+	}
+	if cmd := insertModeCmd(&core.Session{ID: "a", TmuxSession: "gone"}); cmd != nil {
+		t.Error("built a command for a session whose terminal is not running")
+	}
+}
+
+// End to end against a real pane: the key only goes out when the composer says
+// it is in normal mode, and what goes out is one keystroke.
+func TestInsertModeCmdSendsOnlyWhenNormal(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	cases := map[string]struct {
+		status string
+		want   bool
+	}{
+		"normal": {"Vim: Normal", true},
+		"insert": {"Vim: Insert", false},
+		"plain":  {"", false},
+	}
+	for name, tc := range cases {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		session := "dma-ui-test-insert-" + name
+		if err := tmuxx.NewSession(ctx, session, os.TempDir(), 100, 20); err != nil {
+			t.Fatalf("%s: NewSession: %v", name, err)
+		}
+		t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), session) })
+
+		// A status line and nothing after it: sleep rather than a prompt, which
+		// would sit below the line the mode has to be the last of.
+		line := strings.TrimSpace("gpt-5.6-sol high · ~/w " + tc.status)
+		if err := tmuxx.SendLiteral(ctx, session, "clear; printf '  %s\\n' '"+line+"'; sleep 20"); err != nil {
+			t.Fatalf("%s: write to pane: %v", name, err)
+		}
+		time.Sleep(700 * time.Millisecond)
+
+		cmd := insertModeCmd(&core.Session{ID: name, TmuxSession: session, TmuxAlive: true})
+		if cmd == nil {
+			t.Fatalf("%s: no command for a live session", name)
+		}
+		cmd()
+		time.Sleep(400 * time.Millisecond)
+
+		// The pane echoes what was typed into it, so the key shows up on screen.
+		pane, err := tmuxx.CapturePane(ctx, session, 0)
+		if err != nil {
+			t.Fatalf("%s: CapturePane: %v", name, err)
+		}
+		sent := strings.Contains(pane.Content, insertKey)
+		if sent != tc.want {
+			t.Errorf("%s: sent %q = %v, want %v\npane:\n%s", name, insertKey, sent, tc.want, pane.Content)
+		}
 	}
 }

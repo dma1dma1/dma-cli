@@ -137,9 +137,17 @@ func (m Model) keyPreview(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) 
 	// This keystroke is about to change the pane, and the prober must not read
 	// that change as the agent producing output.
 	m.typedAt[s.ID] = now()
+	send := sendKeyCmd(s, fk)
+	if m.focus != focusPreview {
+		// A paste aimed at the board's selected session never passed through panel
+		// focus, so nothing has readied a modal composer for it -- and in vim's
+		// normal mode ctrl+v starts a block selection instead of pasting. Sequence,
+		// not batch: the mode has to change before the paste arrives.
+		send = tea.Sequence(insertModeCmd(s), send)
+	}
 	// Sequenced rather than inlined into the return: startEcho mutates m, and Go
 	// does not order that against copying m into the return value.
-	cmd := tea.Batch(sendKeyCmd(s, fk), m.startEcho())
+	cmd := tea.Batch(send, m.startEcho())
 	return m, cmd
 }
 
@@ -156,12 +164,19 @@ func (m *Model) startEcho() tea.Cmd {
 	return echoTickCmd()
 }
 
-// onFocusChange manages the text cursor, which must only blink in the input.
+// onFocusChange manages the text cursor, which must only blink in the input, and
+// readies the agent's composer when the keyboard is handed to it.
 func (m *Model) onFocusChange() tea.Cmd {
 	if m.focus == focusInput {
 		return m.input.Focus()
 	}
 	m.input.Blur()
+	if m.focus == focusPreview {
+		// Every route into panel focus comes through here -- "t", tab, and a click
+		// on the preview -- so a modal composer is readied once per handover
+		// rather than once per entry point.
+		return insertModeCmd(m.selected())
+	}
 	return nil
 }
 
