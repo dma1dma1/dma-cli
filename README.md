@@ -207,7 +207,8 @@ Set `DMA_HOME` to relocate both.
       "bootstrap": {
         "symlink": ["node_modules", ".venv"],
         "copy": [".env"]
-      }
+      },
+      "on_pr_open": "/deploy-watch {pr}"    // optional; overrides the profile's
     }
   ],
   "default_repo": "my-project",
@@ -243,6 +244,22 @@ Set `DMA_HOME` to relocate both.
 "on_pr_open": "Watch PR {url} until CI is green and every review thread is resolved."
 ```
 
+It can be set in two places, and the more specific one wins:
+
+| Where | Means |
+|---|---|
+| `agent_profiles[].on_pr_open` | the default for that agent, in every repo |
+| `repos[].on_pr_open` | this repo instead — **absent** inherits the profile, **`""`** disables shepherding here |
+
+So the profile is how you say "always", and the repo is how you say "except here". A repo needing its own line sets one; a repo with nothing worth shepherding sets `""`; a repo that says nothing follows the agent.
+
+```sh
+dma repo add --on-pr-open '/deploy-watch {pr}' ~/code/service   # this repo's own line
+dma repo add --on-pr-open '' ~/code/scratch                     # never shepherd here
+```
+
+Both are plain fields in `~/.dma/config.json` and can be edited there directly.
+
 It fires on the pull request existing, not on anything the agent was told at launch. Asking for shepherding in the opening prompt only works when you remember to ask and the agent is still holding the instruction an hour later; a PR appearing is a durable fact the board already computes, so it covers the sessions you forgot to ask. Both ways one can appear — pressing `s`, and the poll finding a PR the agent opened itself — go through the same path.
 
 Sent once per pull request number, recorded in `state.json`, so restarting the board does not start a second turn, and a PR closed and reopened under a new number is picked up again. A send is only recorded once it lands: a session whose terminal is gone stays armed and is served when the agent comes back.
@@ -263,7 +280,7 @@ dma hooks print        print the hook config the board installs
 dma doctor             check required external tools
 ```
 
-You normally need none of these — `cd` into a repo and run `dma`. `dma repo add` exists for scripting and for overriding detection with explicit `--symlink` / `--copy` lists.
+You normally need none of these — `cd` into a repo and run `dma`. `dma repo add` exists for scripting, for overriding detection with explicit `--symlink` / `--copy` lists, and for setting a repo's `--on-pr-open` line.
 
 ## Design notes
 
@@ -279,7 +296,7 @@ You normally need none of these — `cd` into a repo and run `dma`. `dma repo ad
 - **Diffs are not parsed.** `git diff --color=always`, optionally piped through `delta`, rendered into a viewport. Untracked files are included explicitly — a new file is an agent's most common output and plain `git diff` omits it.
 - **Registration is a side effect, not a step.** Standing in a repo is a complete statement of intent; making someone declare it first is ceremony. Detection reads the checkout instead of asking.
 - **dma creates no branches.** A worktree starts detached at the tip of `origin/<base>`, fetched at that moment — a local base branch is whatever the last direct visit to the repo left behind, which on a repo driven through this tool is nothing. The agent names its own branch once it knows what the work turned out to be, and the board adopts whatever it finds there; a name derived from the task title would be a guess made at the moment of least information. Until then the card reads `no branch`, and `s` refuses to invent one.
-- **`on_pr_open` lives on the agent profile, not on the repo.** The line is written in one agent's vocabulary — `/pr-shepherd 412` means something to Claude Code and nothing to anything else. Setting it once therefore covers every repo that agent works in, which is what "always" has to mean. A per-repo setting would be a list to keep in step with the repo list.
+- **`on_pr_open` defaults on the agent profile and is overridden on the repo.** The line is written in one agent's vocabulary — `/pr-shepherd 412` means something to Claude Code and nothing to anything else — so the profile is where it belongs by default, and setting it in one place is what lets "always" mean every repo that agent works in. Putting it *only* on repos would make unconditional shepherding a list to keep in step with the repo list. Putting it only on profiles would make one repo with a different review flow, or none at all, unrepresentable. The repo field is a pointer for that second case: absent inherits, present-and-empty disables, and with a plain string those two would be the same value.
 - **Teardown never forces.** A dirty worktree, commits sitting on no branch, or an unmerged branch each require a second, explicit confirmation.
 
 ## Not in scope

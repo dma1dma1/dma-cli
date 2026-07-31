@@ -22,6 +22,14 @@ func shepherdCfg(line string) *core.Config {
 	return cfg
 }
 
+// shepherdRepoCfg puts a line on the claude profile and an override on repo r1,
+// which is the repo every session in these tests belongs to.
+func shepherdRepoCfg(profileLine string, repoLine *string) *core.Config {
+	cfg := shepherdCfg(profileLine)
+	cfg.Repos = append(cfg.Repos, core.Repo{ID: "r1", Path: "/tmp/r1", OnPROpen: repoLine})
+	return cfg
+}
+
 // shepherdSess is an open pull request whose agent is still running.
 func shepherdSess(id string, number int) *core.Session {
 	s := prSess(id, number, "https://github.com/o/r/pull/"+strconv.Itoa(number))
@@ -149,5 +157,48 @@ func TestShepherdFailureLeavesThePullRequestArmed(t *testing.T) {
 	}
 	if m.shepherdCmdFor(s) == nil {
 		t.Error("a failed send left the pull request unarmed")
+	}
+}
+
+// A repo whose review flow differs from the agent's default replaces the line.
+func TestShepherdUsesARepoOverride(t *testing.T) {
+	line := "/deploy-watch {pr}"
+	s := shepherdSess("a", 412)
+	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", &line), s)
+
+	if m.shepherdCmdFor(s) == nil {
+		t.Fatal("a repo override did not trigger the on-PR-open line")
+	}
+	if got := core.ExpandPROpen(m.cfg.PROpenLine("r1", "claude"), 412, ""); got != "/deploy-watch 412" {
+		t.Errorf("resolved line = %q, want the repo override", got)
+	}
+}
+
+// A repo with nothing to shepherd opts out with an empty override, even where
+// the profile sets a line for every other repo.
+func TestShepherdRepoCanOptOut(t *testing.T) {
+	off := ""
+	s := shepherdSess("a", 412)
+	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", &off), s)
+
+	if m.shepherdCmdFor(s) != nil {
+		t.Error("a repo that opted out was still sent the line")
+	}
+}
+
+// The override reaches the send path, not just the resolver: a repo that turns
+// shepherding on for itself alone has to work with no profile default at all.
+func TestShepherdRepoCanOptInAlone(t *testing.T) {
+	line := "/pr-shepherd {pr}"
+	on := shepherdSess("a", 412)
+	off := shepherdSess("b", 413)
+	off.RepoID = "r2"
+	m := testModel(shepherdRepoCfg("", &line), on, off)
+
+	if m.shepherdCmdFor(on) == nil {
+		t.Error("the repo that opted in was not sent the line")
+	}
+	if m.shepherdCmdFor(off) != nil {
+		t.Error("a repo with no override inherited a line the profile never set")
 	}
 }

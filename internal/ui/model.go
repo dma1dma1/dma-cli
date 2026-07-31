@@ -629,11 +629,7 @@ func (m Model) shepherdCmdFor(s *core.Session) tea.Cmd {
 	if s == nil || !s.HasPR() || s.ShepherdedPR == s.PRNumber {
 		return nil
 	}
-	prof, ok := m.cfg.Profile(s.AgentProfile)
-	if !ok {
-		return nil
-	}
-	line := prof.PROpenCommand(s.PRNumber, s.PRURL)
+	line := core.ExpandPROpen(m.cfg.PROpenLine(s.RepoID, s.AgentProfile), s.PRNumber, s.PRURL)
 	if line == "" || !s.TmuxAlive {
 		return nil
 	}

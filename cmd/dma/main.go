@@ -187,6 +187,7 @@ func runRepoAdd(args []string) error {
 	wtRoot := fs.String("worktree-root", "", "where worktrees live (must differ per repo)")
 	symlink := fs.String("symlink", "", "comma-separated paths to symlink into each worktree")
 	copyPaths := fs.String("copy", "", "comma-separated paths to copy into each worktree")
+	onPROpen := fs.String("on-pr-open", "", "line to send the agent when a PR opens here, overriding the profile ({pr}, {url}; empty disables)")
 	setDefault := fs.Bool("default", false, "make this the default repo")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -260,6 +261,16 @@ func runRepoAdd(args []string) error {
 		r.Bootstrap.Symlink = splitList(*symlink)
 		r.Bootstrap.Copy = splitList(*copyPaths)
 	}
+
+	// Read through Visit rather than off the value: an override has to be able to
+	// be empty, which is how a repo opts out of a line its profile sets, and an
+	// empty value is indistinguishable from an absent flag any other way.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "on-pr-open" {
+			line := *onPROpen
+			r.OnPROpen = &line
+		}
+	})
 
 	cfg.Repos = append(cfg.Repos, r)
 	if *setDefault || cfg.DefaultRepo == "" {

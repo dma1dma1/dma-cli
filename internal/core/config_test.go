@@ -333,36 +333,116 @@ func TestProjectRepoIgnoresUnregisteredRepos(t *testing.T) {
 
 // The line is typed into an agent that is already running, so both placeholders
 // have to be filled in before it is sent.
-func TestPROpenCommandSubstitutesPlaceholders(t *testing.T) {
-	p := AgentProfile{OnPROpen: "/pr-shepherd {pr} {url}"}
-	got := p.PROpenCommand(412, "https://github.com/o/r/pull/412")
+func TestExpandPROpenSubstitutesPlaceholders(t *testing.T) {
+	got := ExpandPROpen("/pr-shepherd {pr} {url}", 412, "https://github.com/o/r/pull/412")
 	want := "/pr-shepherd 412 https://github.com/o/r/pull/412"
 	if got != want {
-		t.Errorf("PROpenCommand = %q, want %q", got, want)
+		t.Errorf("ExpandPROpen = %q, want %q", got, want)
 	}
 }
 
 // A line with no placeholder is a perfectly good instruction and must survive
 // untouched.
-func TestPROpenCommandLeavesAPlainLineAlone(t *testing.T) {
-	p := AgentProfile{OnPROpen: "watch the PR until CI is green"}
-	if got := p.PROpenCommand(412, "u"); got != "watch the PR until CI is green" {
-		t.Errorf("PROpenCommand = %q", got)
+func TestExpandPROpenLeavesAPlainLineAlone(t *testing.T) {
+	if got := ExpandPROpen("watch the PR until CI is green", 412, "u"); got != "watch the PR until CI is green" {
+		t.Errorf("ExpandPROpen = %q", got)
 	}
 }
 
-// Empty is the default and means send nothing, which is what the caller checks.
-func TestPROpenCommandIsEmptyWhenUnset(t *testing.T) {
-	if got := (AgentProfile{}).PROpenCommand(412, "u"); got != "" {
-		t.Errorf("PROpenCommand = %q, want empty", got)
+// Empty means send nothing, which is what the caller checks.
+func TestExpandPROpenIsEmptyWhenUnset(t *testing.T) {
+	if got := ExpandPROpen("", 412, "u"); got != "" {
+		t.Errorf("ExpandPROpen = %q, want empty", got)
 	}
 }
 
 // Unlike a launch command this is not handed to a shell, so quoting it would
 // put literal quotes in the agent's composer.
-func TestPROpenCommandDoesNotShellQuote(t *testing.T) {
-	p := AgentProfile{OnPROpen: "shepherd it, don't stop at the first failure"}
-	if got := p.PROpenCommand(1, ""); strings.Contains(got, `'\''`) {
-		t.Errorf("PROpenCommand shell-quoted the line: %q", got)
+func TestExpandPROpenDoesNotShellQuote(t *testing.T) {
+	if got := ExpandPROpen("shepherd it, don't stop at the first failure", 1, ""); strings.Contains(got, `'\''`) {
+		t.Errorf("ExpandPROpen shell-quoted the line: %q", got)
+	}
+}
+
+// shepherdConfig is one repo and one profile, each optionally carrying a line.
+func shepherdConfig(profileLine string, repoLine *string) *Config {
+	return &Config{
+		Repos:         []Repo{{ID: "r1", OnPROpen: repoLine}},
+		AgentProfiles: []AgentProfile{{Name: "claude", OnPROpen: profileLine}},
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// The profile is the default, so setting it once covers every repo that agent
+// works in -- which is what makes shepherding unconditional.
+func TestPROpenLineFallsBackToTheProfile(t *testing.T) {
+	c := shepherdConfig("/pr-shepherd {pr}", nil)
+	if got := c.PROpenLine("r1", "claude"); got != "/pr-shepherd {pr}" {
+		t.Errorf("PROpenLine = %q, want the profile line", got)
+	}
+	// A repo nobody registered still gets the profile's line: sessions are
+	// created against a repo id, and losing the line over a stale one would be a
+	// silent hole in "always".
+	if got := c.PROpenLine("unregistered", "claude"); got != "/pr-shepherd {pr}" {
+		t.Errorf("PROpenLine for an unknown repo = %q, want the profile line", got)
+	}
+}
+
+// A repo whose review flow differs replaces the line rather than adding to it.
+func TestPROpenLineRepoOverridesTheProfile(t *testing.T) {
+	c := shepherdConfig("/pr-shepherd {pr}", ptr("/deploy-watch {pr}"))
+	if got := c.PROpenLine("r1", "claude"); got != "/deploy-watch {pr}" {
+		t.Errorf("PROpenLine = %q, want the repo line", got)
+	}
+}
+
+// The reason the repo field is a pointer: a repo with nothing to shepherd has to
+// be able to say so, and an empty string is how it says it.
+func TestPROpenLineRepoCanDisableTheProfileLine(t *testing.T) {
+	c := shepherdConfig("/pr-shepherd {pr}", ptr(""))
+	if got := c.PROpenLine("r1", "claude"); got != "" {
+		t.Errorf("PROpenLine = %q, want empty", got)
+	}
+}
+
+// A repo can also turn shepherding on for itself alone.
+func TestPROpenLineRepoCanSetALineWithNoProfileDefault(t *testing.T) {
+	c := shepherdConfig("", ptr("/pr-shepherd {pr}"))
+	if got := c.PROpenLine("r1", "claude"); got != "/pr-shepherd {pr}" {
+		t.Errorf("PROpenLine = %q, want the repo line", got)
+	}
+}
+
+// A repo override has to survive a save/load round trip, including the empty
+// one -- omitempty on a pointer must not drop a deliberate opt-out.
+func TestPROpenLineOverrideRoundTrips(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	cfg := DefaultConfig()
+	cfg.Repos = []Repo{
+		{ID: "off", Path: "/tmp/off", OnPROpen: ptr("")},
+		{ID: "custom", Path: "/tmp/custom", OnPROpen: ptr("/deploy-watch {pr}")},
+		{ID: "inherit", Path: "/tmp/inherit"},
+	}
+	for i := range cfg.AgentProfiles {
+		if cfg.AgentProfiles[i].Name == "claude" {
+			cfg.AgentProfiles[i].OnPROpen = "/pr-shepherd {pr}"
+		}
+	}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ repo, want string }{
+		{"off", ""},
+		{"custom", "/deploy-watch {pr}"},
+		{"inherit", "/pr-shepherd {pr}"},
+	} {
+		if line := got.PROpenLine(tc.repo, "claude"); line != tc.want {
+			t.Errorf("PROpenLine(%q) = %q, want %q", tc.repo, line, tc.want)
+		}
 	}
 }

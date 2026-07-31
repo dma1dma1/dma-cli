@@ -28,6 +28,13 @@ type Repo struct {
 	BaseBranch   string    `json:"base_branch"`
 	WorktreeRoot string    `json:"worktree_root"`
 	Bootstrap    Bootstrap `json:"bootstrap"`
+	// OnPROpen overrides the agent profile's on-PR-open line for this repo.
+	//
+	// It is a pointer because a repo needs a way to say "nothing here" as well as
+	// "this instead": with a plain string, opting out and never having been
+	// configured would be the same value, and one of them has to fall through to
+	// the profile. Absent inherits; present and empty disables.
+	OnPROpen *string `json:"on_pr_open,omitempty"`
 }
 
 // Project is a named grouping of sessions. It may also name the repo its work
@@ -74,12 +81,7 @@ type AgentProfile struct {
 	Hooks bool `json:"hooks"`
 	// OnPROpen is a line typed into the agent the first time a pull request
 	// appears for its session -- a slash command, or plain instructions. Empty,
-	// the default, sends nothing.
-	//
-	// It lives on the profile rather than on the repo because the line is
-	// written in one agent's vocabulary: "/pr-shepherd 412" means something to
-	// Claude Code and nothing to anything else. Setting it once therefore covers
-	// every repo that agent works in, which is what "always" has to mean.
+	// the default, sends nothing. Repo.OnPROpen overrides it per repo.
 	OnPROpen string `json:"on_pr_open,omitempty"`
 }
 
@@ -117,14 +119,13 @@ func (p AgentProfile) LaunchCommand(prompt string, images ...string) string {
 	return command + " " + quoted
 }
 
-// PROpenCommand is the line to type when a pull request appears, with {pr} and
-// {url} substituted.
+// ExpandPROpen fills {pr} and {url} into an on-PR-open line.
 //
 // Nothing is shell-quoted here, unlike LaunchCommand: that string is a command
 // line handed to a shell, this one is typed into an agent that is already
 // running. Quoting it would put literal quotes in the agent's composer.
-func (p AgentProfile) PROpenCommand(number int, url string) string {
-	line := strings.TrimSpace(p.OnPROpen)
+func ExpandPROpen(line string, number int, url string) string {
+	line = strings.TrimSpace(line)
 	if line == "" {
 		return ""
 	}
@@ -387,6 +388,23 @@ func (c *Config) ResolveRepo(id string) (Repo, error) {
 // MultiRepo reports whether repo handles should be rendered on cards. The
 // single-repo case is the common one and stays uncluttered.
 func (c *Config) MultiRepo() bool { return len(c.Repos) > 1 }
+
+// PROpenLine resolves the on-PR-open line for a repo worked by a profile,
+// before {pr} and {url} are filled in.
+//
+// The profile carries the default because the line is written in one agent's
+// vocabulary -- "/pr-shepherd 412" means something to Claude Code and nothing to
+// anything else -- and setting it in one place is what lets "always" mean every
+// repo that agent works in. A repo overrides it where its own review flow
+// differs, or clears it where there is nothing to shepherd, and the two settings
+// compose without turning either into a list to keep in step with the other.
+func (c *Config) PROpenLine(repoID, profileName string) string {
+	if r, ok := c.Repo(repoID); ok && r.OnPROpen != nil {
+		return strings.TrimSpace(*r.OnPROpen)
+	}
+	p, _ := c.Profile(profileName)
+	return strings.TrimSpace(p.OnPROpen)
+}
 
 func (c *Config) Profile(name string) (AgentProfile, bool) {
 	for _, p := range c.AgentProfiles {
