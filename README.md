@@ -299,6 +299,17 @@ press means `needs you`, and for an agent that shows neither, a pane quiet for 2
 seconds means the turn ended. It is a good signal rather than an exact one — a
 turn shorter than one poll can pass unnoticed.
 
+A hook is exact but it is not durable: it is an HTTP post to the running board,
+so an agent that finishes its turn while the board is restarting has its `Stop`
+refused, and the transition is lost. What is left on disk is the last event that
+did land, which is why a card could come back from a restart claiming an agent
+was working and stay that way for good. On launch, a hook-backed session found
+in `working` is read off its terminal until a hook confirms it, and the first
+one to arrive hands the session back to its own reports. Nothing else is
+second-guessed, because nothing else strands: an agent behind an `idle` card is
+running and reports within seconds, and one behind `needs you` is blocked on a
+question, which is what the badge says.
+
 You can add another agent by adding an entry to `agent_profiles`. The command
 runs inside the new worktree. The task is appended as a positional argument;
 use `{prompt}` in the command if it needs to appear somewhere else.

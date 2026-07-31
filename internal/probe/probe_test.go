@@ -113,6 +113,51 @@ func TestClassifyWaitsOutARepaintBeforeSettling(t *testing.T) {
 	}
 }
 
+// The frame a stranded Claude Code session actually leaves behind, captured from
+// the live pane that prompted this: a turn that finished, a Stop hook that could
+// not reach a board mid-restart, and a card that went on claiming the agent was
+// busy. The composer holds text the user typed and never sent, which is what
+// makes this worth a fixture -- the pane of a finished agent is not empty, and
+// the last thing on it is a line beginning with a selection marker.
+const claudeStranded = `⏺ PR is open: https://github.com/dma1dma1/dma-cli/pull/39
+
+⏺ Ran 1 stop hook
+  ⎿  Stop hook error: connect ECONNREFUSED 127.0.0.1:8787
+
+✻ Brewed for 2m 29s
+
+────────────────────────────────────────────────────────────
+❯ watch the PR until CI passes and reviews are resolved
+────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
+
+// The pane a hook-backed session strands on has to resolve, or reconciling it is
+// pointless: the board would hand the card to the probe and get "working" back
+// forever. Nothing on this frame advertises a turn and nothing asks for a key, so
+// the still pane is the whole answer and the turn reads as over.
+func TestClassifySettlesAStrandedClaudePane(t *testing.T) {
+	// Second sight of a pane that has not moved since the first: no change to
+	// attribute, and nothing this agent has ever been seen to advertise.
+	prev := sample{previous: core.AgentWorking}
+	state, detail, _ := classify(claudeStranded, 0, false, prev, true)
+	if state != core.AgentDone {
+		t.Errorf("state = %q (%q), want done: the turn ended before the board restarted", state, detail)
+	}
+}
+
+// The same frame must not be read as a question. A composer with unsent text in
+// it opens with the marker a menu puts on its selected row, and calling that a
+// dialog would move a finished session to the front of the board and raise a
+// desktop notification for it.
+func TestAStrandedClaudePaneIsNotADialog(t *testing.T) {
+	if line, ok := awaitingInput(claudeStranded, false); ok {
+		t.Errorf("read %q as a request for input; it is a composer holding unsent text", line)
+	}
+	if isBusy(claudeStranded) {
+		t.Error("read a finished pane as a turn in flight")
+	}
+}
+
 // An agent that has never shown a hint gets the old, coarse treatment rather
 // than being called done the moment it pauses.
 func TestClassifyFallsBackToQuiescenceWithoutAHint(t *testing.T) {

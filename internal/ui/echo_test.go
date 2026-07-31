@@ -68,7 +68,7 @@ func TestProbeForgetsTouchesForDeadSessions(t *testing.T) {
 	m.touchedAt["a"] = time.Now()
 	m.touchedAt["gone"] = time.Now()
 
-	probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt)
+	probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt, m.hookSeen)
 	if _, ok := m.touchedAt["gone"]; ok {
 		t.Error("kept a touch record for a session that no longer exists")
 	}
