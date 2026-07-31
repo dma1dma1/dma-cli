@@ -557,6 +557,11 @@ func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// notifyFn is the desktop notifier, indirected so tests can assert on what the
+// board would have raised without a notification landing on the screen of
+// whoever is running them.
+var notifyFn = notify.Notify
+
 // notifyIfBlocked raises a desktop notification on the transition into
 // needs_you, not on every event while it stays there.
 func (m Model) notifyIfBlocked(s *core.Session, was core.AgentState) {
@@ -567,7 +572,22 @@ func (m Model) notifyIfBlocked(s *core.Session, was core.AgentState) {
 	if detail == "" {
 		detail = "needs your input"
 	}
-	notify.Notify(s.Title, detail)
+	notifyFn(s.Title, detail)
+}
+
+// notifyIfMergeable raises a desktop notification the first time an open PR has
+// nothing left blocking it, for the same reason needs_you does: the board is not
+// meant to be babysat, and a PR that has gone green is waiting on the user.
+//
+// It reports whether the session changed, since releasing a claim has to be
+// persisted too -- a stale claim left on disk would swallow the notification for
+// the next time the PR comes clean.
+func (m Model) notifyIfMergeable(s *core.Session) (changed bool) {
+	was := s.PRMergeableNotified
+	if s.ClaimMergeableNotice() {
+		notifyFn(s.Title, fmt.Sprintf("#%d ready to merge", s.PRNumber))
+	}
+	return s.PRMergeableNotified != was
 }
 
 // --- PR sync ---
@@ -628,6 +648,13 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		if pr.State == core.PRMerged || pr.State == core.PRClosed {
 			s.PRQueued = false
 		}
+
+		// Last, so the verdict is read off the fully applied poll. A card that is
+		// also waiting on a queue re-check is judged on the queue standing GitHub
+		// last confirmed; if that check changes it, it notifies from there.
+		if m.notifyIfMergeable(s) {
+			dirty = true
+		}
 	}
 	if dirty {
 		m.save()
@@ -678,6 +705,9 @@ func (m Model) handlePRQueue(msg prQueueMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	s.PRQueued = msg.inQueue
+	// A PR the queue dropped back out is the user's problem again, and if it is
+	// otherwise green that happened without any poll field changing.
+	m.notifyIfMergeable(s)
 	m.save()
 	return m, nil
 }
@@ -704,6 +734,10 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	if msg.pr.State == core.PRMerged {
 		s.Lifecycle = core.LifecycleMerged
 	}
+	// This normally resolves a PR that has landed, which releases the claim. It
+	// can also find one still open -- the poll and this query are two requests,
+	// and a PR can rejoin the open set between them.
+	m.notifyIfMergeable(s)
 	m.save()
 	return m, nil
 }
