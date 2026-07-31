@@ -82,6 +82,7 @@ func TestTmuxKeyModifiers(t *testing.T) {
 	}{
 		{"ctrl+c", tea.Key{Code: 'c', Mod: tea.ModCtrl}, "C-c"},
 		{"ctrl+r", tea.Key{Code: 'r', Mod: tea.ModCtrl}, "C-r"},
+		{"ctrl+v", tea.Key{Code: 'v', Mod: tea.ModCtrl}, "C-v"},
 		{"alt+b", tea.Key{Code: 'b', Mod: tea.ModAlt}, "M-b"},
 		// Not "S-Tab": tmux accepts that and sends a plain tab, losing the shift
 		// silently. See tmuxCombos.

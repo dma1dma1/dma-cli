@@ -62,6 +62,10 @@ func (p *Project) UnmarshalJSON(data []byte) error {
 type AgentProfile struct {
 	Name    string `json:"name"`
 	Command string `json:"command"`
+	// ImageArgument is repeated once per initial image. {path} is replaced by
+	// the shell-quoted staged image path. Profiles without one receive image
+	// paths in the opening prompt instead.
+	ImageArgument string `json:"image_argument,omitempty"`
 	// Hooks is true when the agent reports its own state through dma's hook
 	// listener, as Claude Code does. Agents without that channel fall back to
 	// liveness plus a pane-change heuristic, which is coarser but never blocks
@@ -80,21 +84,67 @@ type AgentProfile struct {
 // opening prompt as a positional argument, which the agent parses itself and so
 // cannot misread.
 //
-// An agent needing the prompt somewhere other than the end -- behind a flag, say
-// -- can put {prompt} in its command and have it substituted in place.
-func (p AgentProfile) LaunchCommand(prompt string) string {
+// An agent needing the prompt or image arguments somewhere other than the end
+// can put {prompt} or {images} in its command and have them substituted in
+// place.
+func (p AgentProfile) LaunchCommand(prompt string, images ...string) string {
 	prompt = strings.TrimSpace(prompt)
+	imageArgs := p.imageArguments(images)
+	command := strings.ReplaceAll(p.Command, imagePlaceholder, imageArgs)
+	if imageArgs != "" && !strings.Contains(p.Command, imagePlaceholder) {
+		command += " " + imageArgs
+	}
+	if len(images) > 0 && strings.TrimSpace(p.ImageArgument) == "" {
+		prompt = promptWithImagePaths(prompt, images)
+	}
 	if prompt == "" {
-		return strings.ReplaceAll(p.Command, promptPlaceholder, "")
+		return strings.ReplaceAll(command, promptPlaceholder, "")
 	}
 	quoted := shellQuote(prompt)
-	if strings.Contains(p.Command, promptPlaceholder) {
-		return strings.ReplaceAll(p.Command, promptPlaceholder, quoted)
+	if strings.Contains(command, promptPlaceholder) {
+		return strings.ReplaceAll(command, promptPlaceholder, quoted)
 	}
-	return p.Command + " " + quoted
+	return command + " " + quoted
 }
 
-const promptPlaceholder = "{prompt}"
+const (
+	promptPlaceholder    = "{prompt}"
+	imagePlaceholder     = "{images}"
+	imagePathPlaceholder = "{path}"
+)
+
+func (p AgentProfile) imageArguments(images []string) string {
+	template := strings.TrimSpace(p.ImageArgument)
+	if template == "" || len(images) == 0 {
+		return ""
+	}
+	args := make([]string, 0, len(images))
+	for _, path := range images {
+		quoted := shellQuote(path)
+		arg := template
+		if strings.Contains(arg, imagePathPlaceholder) {
+			arg = strings.ReplaceAll(arg, imagePathPlaceholder, quoted)
+		} else {
+			arg += " " + quoted
+		}
+		args = append(args, arg)
+	}
+	return strings.Join(args, " ")
+}
+
+func promptWithImagePaths(prompt string, images []string) string {
+	var b strings.Builder
+	if prompt != "" {
+		b.WriteString(prompt)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Images for this task:")
+	for _, path := range images {
+		b.WriteString("\n- ")
+		b.WriteString(path)
+	}
+	return b.String()
+}
 
 // shellQuote wraps s so a shell hands it to the agent as one argument, whatever
 // it contains. Single quotes protect everything except a single quote itself,
@@ -135,7 +185,7 @@ const (
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
 		{Name: "claude", Command: "claude --permission-mode auto", Hooks: true},
-		{Name: "codex", Command: "codex", Hooks: false},
+		{Name: "codex", Command: "codex", ImageArgument: "--image {path}", Hooks: false},
 	}
 }
 
@@ -204,6 +254,7 @@ func (c *Config) normalize() {
 		}
 	}
 	c.adoptDefaultFlags()
+	c.adoptDefaultImageArguments()
 	if c.DefaultProfile == "" {
 		c.DefaultProfile = c.AgentProfiles[0].Name
 	}
@@ -220,6 +271,18 @@ func (c *Config) normalize() {
 	}
 	if c.DefaultRepo == "" && len(c.Repos) > 0 {
 		c.DefaultRepo = c.Repos[0].ID
+	}
+}
+
+// adoptDefaultImageArguments upgrades an untouched Codex profile written
+// before image launch support existed. Custom commands are left alone and use
+// the documented path-in-prompt fallback.
+func (c *Config) adoptDefaultImageArguments() {
+	for i := range c.AgentProfiles {
+		p := &c.AgentProfiles[i]
+		if p.Name == "codex" && p.Command == "codex" && p.ImageArgument == "" {
+			p.ImageArgument = "--image {path}"
+		}
 	}
 }
 

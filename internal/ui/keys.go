@@ -39,7 +39,10 @@ func (m Model) hints() []hint {
 		// advertise.
 		return []hint{{detachKey, "leave · every other key goes to the agent"}}
 	case focusInput:
-		return []hint{{"enter", "start agent"}, {"tab", "selectors"}, {"esc", "board"}}
+		return []hint{
+			{"ctrl-v", "paste image/text"}, {"enter", "start agent"},
+			{"tab", "selectors"}, {"esc", "board"},
+		}
 	case focusAgent, focusRepo, focusProject:
 		return []hint{{"←→", "change"}, {"enter", "open list"}, {"tab", "next"}, {"esc", "board"}}
 	}
@@ -89,6 +92,7 @@ var helpText = [][3]string{
 	{"", "h j k l", "move between cards and columns"},
 	{"", "i / n", "focus the task input at the bottom"},
 	{"", "t", "type to the selected agent in the panel"},
+	{"", "ctrl-v", "paste to the selected live agent without attaching"},
 	{"", "tab", "cycle board → agent panel → input → agent → repo → project"},
 	{"", "a", "attach to the selected session's terminal"},
 	{"", "e", "expand the session panel to full screen"},
@@ -111,6 +115,8 @@ var helpText = [][3]string{
 	{"", "q", "quit — agents keep running"},
 
 	{"Task input", "", ""},
+	{"", "ctrl-v", "add a clipboard image, or paste clipboard text"},
+	{"", "backspace", "at the start, remove the last image"},
 	{"", "enter", "start an agent with the chosen agent/repo/project"},
 	{"", "esc", "return to the board"},
 

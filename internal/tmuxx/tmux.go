@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func run(ctx context.Context, args ...string) (string, error) {
@@ -161,6 +162,34 @@ func SendKey(ctx context.Context, name, key string) error {
 // happens to spell a tmux key name ("Enter", "C-c") from being read as one.
 func SendText(ctx context.Context, name, text string) error {
 	return sendLiteral(ctx, name, text)
+}
+
+// SendPaste inserts a complete terminal paste into the pane. tmux wraps it in
+// bracketed-paste markers when the application requested that mode, preserving
+// multiline text as one paste instead of turning embedded newlines into Enter
+// keypresses.
+func SendPaste(ctx context.Context, name, text string) error {
+	if text == "" {
+		return nil
+	}
+	buffer := fmt.Sprintf("dma-paste-%s-%d", SafeName(name), time.Now().UnixNano())
+	cmd := exec.CommandContext(ctx, "tmux", "load-buffer", "-b", buffer, "-")
+	cmd.Stdin = strings.NewReader(text)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("tmux load-buffer: %s", msg)
+	}
+	if _, err := run(ctx, "paste-buffer", "-d", "-p", "-r", "-S",
+		"-b", buffer, "-t", name); err != nil {
+		_, _ = run(ctx, "delete-buffer", "-b", buffer)
+		return err
+	}
+	return nil
 }
 
 // sendLiteral sends text with no interpretation and no trailing Enter.

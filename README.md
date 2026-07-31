@@ -65,7 +65,7 @@ dma
 
 That's it. There is no setup step. The repo you are standing in is registered on first launch and becomes the default for new sessions, so `cd` is how you choose what to work on.
 
-Press `i`, type what you want the agent to do, press enter. The agent, repo and project it uses are whatever the three selectors at the bottom show.
+Press `i`, type what you want the agent to do, press enter. The agent, repo and project it uses are whatever the three selectors at the bottom show. While composing, `ctrl-v` pastes an image from the system clipboard (or ordinary text when there is no image); press backspace at the start of the input to remove the last image.
 
 Press `r` at any time to switch repos, add another one, or unregister one.
 
@@ -103,6 +103,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 |---|---|
 | `h` `j` `k` `l` | move between cards and columns |
 | `i` | focus the task input at the bottom |
+| `ctrl-v` | paste to the selected live agent without attaching |
 | `tab` | cycle board → input → agent → repo → project |
 | `a` | attach to the selected session's terminal |
 | `e` | expand the session panel to full screen |
@@ -124,7 +125,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `?` | help |
 | `q` | quit — agents keep running |
 
-**Task input** — `enter` starts an agent using the agent/repo/project shown in the selectors. `esc` returns to the board.
+**Task input** — `ctrl-v` adds a clipboard image (or pastes text), and `backspace` at the start removes the last image. `enter` starts an agent using the agent/repo/project shown in the selectors. `esc` returns to the board.
 
 **Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too. From the board, `A` and `p` jump straight to the agent and project lists.
 
@@ -211,8 +212,13 @@ Set `DMA_HOME` to relocate both.
   ],
   "default_repo": "my-project",
   "agent_profiles": [
-    { "name": "claude", "command": "claude", "hooks": true },
-    { "name": "codex",  "command": "codex",  "hooks": false }
+    { "name": "claude", "command": "claude --permission-mode auto", "hooks": true },
+    {
+      "name": "codex",
+      "command": "codex",
+      "image_argument": "--image {path}",
+      "hooks": false
+    }
   ],
   "default_profile": "claude",
   "groups": [                              // known projects
@@ -222,6 +228,8 @@ Set `DMA_HOME` to relocate both.
   "hook_port": 8787
 }
 ```
+
+`image_argument` is repeated for every image attached to a new session; `{path}` becomes the shell-quoted path of the staged PNG. The built-in Codex profile uses `--image {path}`. Profiles without `image_argument` receive the image paths in their opening prompt, which lets agents such as Claude Code read them directly.
 
 `hooks: false` puts a profile on the inferred-state path described above. Add any agent you like — the command is run inside the worktree's tmux session.
 
