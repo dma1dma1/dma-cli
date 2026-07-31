@@ -10,15 +10,12 @@ type cardPos struct {
 	ok       bool
 }
 
-// visible applies the repo and project filters. Filtering, rather than
-// swimlanes, is how the board narrows: with four bordered columns there is no
-// room for a second visual axis.
+// visible applies the project filter. Filtering, rather than swimlanes, is how
+// the board narrows: with four bordered columns there is no room for a second
+// visual axis.
 func (m Model) visible() []*core.Session {
 	var out []*core.Session
 	for _, s := range m.sessions {
-		if m.repoFilter != "" && s.RepoID != m.repoFilter {
-			continue
-		}
 		if m.projectFilter != "" && s.Group != m.projectFilter {
 			continue
 		}

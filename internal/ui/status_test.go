@@ -35,9 +35,9 @@ func drainNotice(t *testing.T, cmd tea.Cmd) (noticeMsg, bool) {
 }
 
 // Only failures are posted. Work in flight and work that landed both say so by
-// changing the board -- the card moves, the filter tag appears, the selector
-// reads back the choice -- and a line of prose about it is a row of the screen
-// spent on something already on it.
+// changing the board -- the card moves, the selector reads back the choice --
+// and a line of prose about it is a row of the screen spent on something
+// already on it.
 func TestOrdinaryActionsPostNothing(t *testing.T) {
 	repoCfg := core.DefaultConfig()
 	repoCfg.Repos = []core.Repo{{ID: "r1", Path: "/tmp/r1"}, {ID: "r2", Path: "/tmp/r2"}}
@@ -49,11 +49,6 @@ func TestOrdinaryActionsPostNothing(t *testing.T) {
 		{"moving a card between columns", func() tea.Cmd {
 			m := testModel(nil, sess("a", "", core.LifecycleIdle, core.AgentIdle, "r1"))
 			_, cmd := m.moveCard(true)
-			return cmd
-		}},
-		{"toggling the repo filter on", func() tea.Cmd {
-			m := testModel(repoCfg, sess("a", "", core.LifecycleIdle, core.AgentIdle, "r1"))
-			_, cmd := m.keyBoard("f")
 			return cmd
 		}},
 		{"declining a confirm", func() tea.Cmd {

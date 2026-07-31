@@ -7,10 +7,10 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
-// What a filter does to the selection, for both the project chip and the repo
-// filter: the panel shows the selected card's session, so a filter that hides
-// that card has to take the panel with it. Narrowing lands on the empty panel;
-// widening leaves the selection where the user put it.
+// What the project filter does to the selection: the panel shows the selected
+// card's session, so a filter that hides that card has to take the panel with
+// it. Narrowing lands on the empty panel; widening leaves the selection where
+// the user put it.
 
 // twoProjects is a board with a session filed under each of two projects, which
 // is what the panel-emptying tests need: something to switch away from, and
@@ -94,68 +94,3 @@ func TestWideningToAllProjectsKeepsTheSelection(t *testing.T) {
 	}
 }
 
-// repoBoard is a session in each of two registered repos, with the chip aimed at
-// the second: pressing f from here hides the selected card.
-func repoBoard() (Model, *core.Session, *core.Session) {
-	a := sess("a", "", core.LifecycleIdle, core.AgentIdle, "api")
-	b := sess("b", "", core.LifecycleIdle, core.AgentIdle, "web")
-	m := testModel(twoRepos(), a, b)
-	m.selectedID = a.ID
-	m.activeRepo = "web"
-	return m, a, b
-}
-
-// The repo filter is the same rule as the project chip: f narrows the board to
-// the chip's repo, and a session from the other one has no card left to sit
-// under.
-func TestFilteringToARepoEmptiesThePanel(t *testing.T) {
-	m, _, _ := repoBoard()
-
-	m = press(m, keyOf('f'))
-
-	if m.selectedID != "" {
-		t.Errorf("panel still shows %q, want it emptied with the card", m.selectedID)
-	}
-}
-
-// Only the hidden card is given up. A filter that keeps the selected session on
-// the board is not a change of what you are looking at.
-func TestFilteringToTheSelectedSessionsRepoKeepsIt(t *testing.T) {
-	m, a, _ := repoBoard()
-	m.activeRepo = "api"
-
-	m = press(m, keyOf('f'))
-
-	if m.selectedID != a.ID {
-		t.Errorf("selected %q, want %q kept: the filter is aimed at its own repo", m.selectedID, a.ID)
-	}
-}
-
-// The filter travels with the repo chip, so changing repo refilters the board --
-// and takes the panel with it just as pressing f would.
-func TestSwitchingRepoUnderAFilterEmptiesThePanel(t *testing.T) {
-	m, _, _ := repoBoard()
-	m.activeRepo, m.repoFilter = "api", "api"
-
-	m.setActiveRepo("web")
-
-	if m.selectedID != "" {
-		t.Errorf("panel still shows %q after the filter followed the chip", m.selectedID)
-	}
-}
-
-// Turning the filter off only ever puts cards back, and the one you were on is
-// among them.
-func TestClearingTheRepoFilterKeepsTheSelection(t *testing.T) {
-	m, a, _ := repoBoard()
-	m.activeRepo, m.repoFilter = "api", "api"
-
-	m = press(m, keyOf('f'))
-
-	if m.repoFilter != "" {
-		t.Fatalf("repo filter = %q, want it cleared", m.repoFilter)
-	}
-	if m.selectedID != a.ID {
-		t.Errorf("selected %q, want %q kept: clearing a filter hides nothing", m.selectedID, a.ID)
-	}
-}

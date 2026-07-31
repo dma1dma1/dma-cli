@@ -265,7 +265,6 @@ opening prompt.
 | `r` | Switch, add, or unregister repositories |
 | `p` | Choose a project filter |
 | `G` | Move the selected session to a project |
-| `f` | Filter to the active repository |
 | `R` | Refresh session and PR state |
 | `?` | Show the complete in-app help |
 | `q` | Quit; agents continue running |

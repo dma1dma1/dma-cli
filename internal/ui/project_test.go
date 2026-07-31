@@ -76,42 +76,6 @@ func TestSelectingAProjectSwitchesTheRepo(t *testing.T) {
 	}
 }
 
-// The repo filter is set from the chip, so it has to travel with it. A filter
-// left pointing at the repo you just switched away from shows an empty board,
-// which reads as sessions having vanished rather than as a stale filter.
-func TestTheRepoFilterFollowsTheProject(t *testing.T) {
-	cfg := twoRepos()
-	cfg.AddProject("frontend", "web")
-	m := testModel(cfg, sess("a", "frontend", core.LifecycleIdle, core.AgentIdle, "web"))
-	m.repoFilter = "api"
-	m.activeRepo = "api"
-
-	m.selectProject("frontend")
-
-	if m.repoFilter != "web" {
-		t.Errorf("repo filter = %q, want it to follow to web", m.repoFilter)
-	}
-	if len(m.visible()) != 1 {
-		t.Errorf("board shows %d sessions, want the project's one", len(m.visible()))
-	}
-}
-
-// A filter aimed somewhere other than the chip was set deliberately and is left
-// where the user put it.
-func TestAnIndependentRepoFilterIsLeftAlone(t *testing.T) {
-	cfg := twoRepos()
-	cfg.AddProject("frontend", "web")
-	m := testModel(cfg)
-	m.activeRepo = "api"
-	m.repoFilter = "web"
-
-	m.setActiveRepo("api")
-
-	if m.repoFilter != "web" {
-		t.Errorf("repo filter = %q, want it left on web", m.repoFilter)
-	}
-}
-
 // A project with no repo of its own must not clear the chip: the repo you were
 // last in is a better default than none, and projects predating the binding all
 // start unbound.
