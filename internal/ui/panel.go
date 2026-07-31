@@ -540,11 +540,9 @@ func (m *Model) selectProject(name string) {
 	if repo := m.cfg.ProjectRepo(name); repo != "" {
 		m.aimRepo(repo)
 	}
-	if m.selected() == nil {
-		if f := m.firstSession(); f != nil {
-			m.selectedID = f.ID
-		}
-	}
+	// A project the selected session is not in has just hidden its card, and the
+	// panel goes with it.
+	m.dropSelectionIfHidden()
 }
 
 // setActiveRepo aims new sessions at a repo, and takes it as the answer for the
@@ -573,6 +571,9 @@ func (m *Model) aimRepo(id string) {
 		m.repoFilter = id
 	}
 	m.activeRepo = id
+	// A filter that travelled has just refiltered the board, so the panel may be
+	// showing work from the repo left behind.
+	m.dropSelectionIfHidden()
 }
 
 // setSessionProject refiles one session, registering the project if it is new.
