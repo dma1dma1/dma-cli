@@ -163,6 +163,11 @@ type Config struct {
 	Groups           []Project `json:"groups"`
 	PollIntervalSecs int       `json:"poll_interval_secs"`
 	HookPort         int       `json:"hook_port"`
+	// NotifierHintShown records that the board has already said the platform's
+	// notifier is missing. The board works without it, so the hint is said once
+	// and then lives permanently in dma doctor -- repeating it every launch
+	// would be nagging about something the user may have decided to accept.
+	NotifierHintShown bool `json:"notifier_hint_shown,omitempty"`
 }
 
 const (
