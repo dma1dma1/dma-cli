@@ -131,6 +131,8 @@ In the board:
 4. Press `enter`.
 
 In the task input, `ctrl-v` attaches a clipboard image or pastes ordinary text.
+Press `ctrl-u` to start the task over: it clears the text and any attached
+images.
 Press `backspace` at the start of the input to remove the last attached image.
 
 Describe the task in as much detail as the agent needs. The whole description is
@@ -252,6 +254,7 @@ opening prompt.
 | `i` or `n` | Start composing a new task |
 | `t` | Type into the selected agent from the session panel |
 | `ctrl-v` | Paste an image or text into a task or live agent |
+| `ctrl-u` | Clear the task input while composing |
 | `a` | Attach to the selected tmux session |
 | `enter` or `d` | Review the selected session's diff |
 | `s` | Ask the agent to commit, push, and open a pull request |
