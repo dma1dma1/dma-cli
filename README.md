@@ -1,218 +1,310 @@
 # dma
 
-A terminal kanban board for running and monitoring parallel AI coding agent sessions.
+`dma` runs and monitors multiple AI coding-agent sessions from one terminal.
+Each task gets its own git worktree and persistent tmux session, while the board
+shows which agents need attention and the state of their GitHub pull requests.
 
-You run 3–10 coding agents at once. Each gets its own git worktree, cut from a freshly fetched `origin/<base>`. The board answers three questions at a glance:
+Use it when you want to run several Claude Code, Codex, or other command-line
+coding agents in parallel without manually creating worktrees, switching
+terminals, or checking every session for progress.
 
-1. Which session needs my attention right now?
-2. What is the state of each session's pull request?
-3. Which sessions belong together?
+Agents keep running when you quit the board.
 
-Agents run inside tmux, so they survive the board exiting. The TUI never owns a PTY.
-
-```
+```text
 ┏━ idle 2 · waiting on you ━━━━━┓ ╭─ active 1 · agent working ────╮ ╭─ pr open 1 · pushed ──────────╮ ╭─ merged · done ───────────────╮
 ┃ ▌ rate limiter                ┃ │ ▌ token refresh               │ │ ▌ session cookies             │ │   —                           │
 ┃ ▌ feat/rate-limiter           ┃ │ ▌ feat/token-refresh          │ │ ▌ #412 ✓ ci ✓ approved        │ │                               │
 ┃ ▌ ◆ needs you 8m              ┃ │ ▌ ● working 4m                │ │ ▌ ○ idle 1h20m                │ │                               │
 ┃ ▌ Bash(rm -rf build)          ┃ │ ▌ +212 −38                    │ │ ▌ +88 −12                     │ │                               │
-┃                               ┃ │                               │ │                               │ │                               │
-┃ ┃ audit logging               ┃ │                               │ │                               │ │                               │
-┃ ┃ ✓ done 2m                   ┃ │                               │ │                               │ │                               │
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ ╰───────────────────────────────╯ ╰───────────────────────────────╯ ╰───────────────────────────────╯
-╭─ audit logging · dma-cli-audit-logging ────────────────────────────────────────────────────────────────────────────────────────────╮
+╭─ rate limiter · dma-cli-rate-limiter ──────────────────────────────────────────────────────────────────────────────────────────────╮
 │  ▾ agent claude   ▾ repo dma-cli                                                                          ▾ project all projects  │
 │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│ ● Wrote internal/audit/log.go                                                                                                      │
-│   ran tests: 42 passed                                                                                                             │
-│ Done in 18s.                                                                                                                       │
+│ The agent's live terminal appears here.                                                                                            │
 │ ❯ press i to describe a task for a new agent session                                                                               │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-The panel at the bottom is always there: the selected session's live terminal, the three selectors that define a new session, and an input bar. Press `e` to expand it to the full screen, `a` to attach to it for real.
+## Support and requirements
 
-## Requirements
+`dma` supports macOS and Linux. Windows is not currently supported.
 
-| Binary | Used for |
+Required at runtime:
+
+| Tool | Purpose |
 |---|---|
-| `tmux` | hosting agent sessions |
-| `git` | worktrees, branches, diffs |
-| `gh` | pull request state (authenticated: `gh auth login`) |
+| `git` | Creates worktrees and manages branches and diffs |
+| `tmux` | Hosts persistent agent sessions |
+| A coding-agent CLI | `claude`, `codex`, or another configured command |
 
-`delta` is used for diff rendering when it is on `PATH`.
+Install and authenticate at least one coding-agent CLI before starting a
+session. `dma` includes profiles for Claude Code and Codex and uses Claude Code
+by default. If you only have Codex installed, select it with `A` before starting
+your first task.
 
-Run `dma doctor` to check all of these at once.
+For GitHub pull-request features, also install `gh` and authenticate it:
+
+```sh
+gh auth login
+```
+
+The board can run without `gh`, but PR status, push-and-open-PR, link, and merge
+features will not be available. `dma doctor` treats missing GitHub integration
+as an incomplete setup.
+
+Optional tools:
+
+| Tool | Purpose |
+|---|---|
+| `delta` | Improved diff rendering |
+| `notify-send` | Desktop notifications on Linux |
+| `wl-copy`, `xclip`, or `xsel` | Copying PR links on Linux |
+| `xdg-open` | Opening PRs in a browser on Linux |
 
 ## Install
+
+The source installation requires Go 1.26.5 or newer.
 
 ```sh
 go install github.com/dma1dma1/dma-cli/cmd/dma@latest
 ```
 
-Or from a clone:
+Make sure Go's binary directory is on your `PATH`. For a standard Go
+installation:
 
 ```sh
-go build -o ~/bin/dma ./cmd/dma
+export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
-## Quick start
+To build from a clone instead:
+
+```sh
+git clone https://github.com/dma1dma1/dma-cli.git
+cd dma-cli
+mkdir -p "$HOME/bin"
+go build -o "$HOME/bin/dma" ./cmd/dma
+```
+
+Add `$HOME/bin` to your `PATH` if it is not already there.
+
+Verify the installation:
+
+```sh
+command -v dma
+command -v claude || command -v codex
+dma doctor
+```
+
+## Start your first session
+
+Run `dma` from an existing git checkout:
 
 ```sh
 cd ~/code/my-project
 dma
 ```
 
-That's it. There is no setup step. The repo you are standing in is registered on first launch and becomes the default for new sessions, so `cd` is how you choose what to work on.
+No per-repository configuration is required. On first launch, `dma` registers
+the repository you are in and selects it for new sessions.
 
-Press `i`, type what you want the agent to do, press enter. The agent, repo and project it uses are whatever the three selectors at the bottom show. While composing, `ctrl-v` pastes an image from the system clipboard (or ordinary text when there is no image); press backspace at the start of the input to remove the last image.
+In the board:
 
-Press `r` at any time to switch repos, add another one, or unregister one.
+1. Press `A` if you want to change the selected agent.
+2. Press `i` and describe the task.
+3. Optionally press `ctrl-v` to attach an image from the clipboard.
+4. Press `enter`.
 
-### What gets set up for you
+In the task input, `ctrl-v` attaches a clipboard image or pastes ordinary text.
+Press `backspace` at the start of the input to remove the last attached image.
 
-Registration reads everything it needs from the checkout:
+`dma` fetches the configured base branch, creates a detached worktree under
+`~/.dma/worktrees`, prepares it, starts a tmux session, and launches the agent
+with your task.
 
-| | |
-|---|---|
-| `remote` | from `git remote get-url origin` |
-| `base_branch` | from `origin/HEAD`, falling back to `main`/`master` |
-| `worktree_root` | `~/.dma/worktrees/<id>`, namespaced per repo |
-| **bootstrap paths** | **detected — see below** |
+The agent is responsible for creating and naming its branch. Until it does, the
+card displays `no branch` and `s` cannot push or open a pull request.
 
-**Bootstrap** is the step that decides whether the tool is usable. A fresh worktree with no `node_modules` and no `.env` needs a dependency install and a hand-copied config file before the agent can do anything, and under time pressure you will skip creating the worktree instead.
+### Repository expectations
 
-So it's detected rather than configured. dma looks for dependency trees and env files that **git is ignoring** — anything git tracks already arrives with the worktree — and splits them:
+The checkout must be a git repository. An `origin` remote is strongly
+recommended:
 
-- **symlinked** (shared across worktrees): `node_modules`, `.venv`, `target`, `.gradle`, `vendor`, `Pods`, `.terraform`, package-manager caches — including per-package copies in a monorepo (`packages/*`, `apps/*`, `services/*`, …).
-- **copied** (each session needs its own): `.env`, `.env.local`, and friends.
+- The base branch is read from `origin/HEAD`, then falls back to `main` or
+  `master`.
+- New sessions start from a freshly fetched `origin/<base>` when available.
+- GitHub PR features require an origin that `dma` can identify as
+  `owner/repository`.
 
-On a pnpm monorepo that typically means ~40 symlinks and one copied `.env`, found in well under a second. The board tells you what it found:
+If fetching fails, `dma` warns and uses the last locally available ref so work
+can still start offline.
 
-```
+## Automatic worktree setup
+
+When a repository is registered, `dma` looks for ignored dependency trees and
+local configuration that a fresh worktree would otherwise be missing.
+
+It handles detected paths in two ways:
+
+- **Symlinked and shared:** dependency trees and caches such as `node_modules`,
+  `.venv`, `target`, `.gradle`, `vendor`, `Pods`, and `.terraform`.
+- **Copied per worktree:** local configuration such as `.env`, `.env.local`,
+  and related files.
+
+Detection also covers common monorepo directories such as `packages/*`,
+`apps/*`, and `services/*`. Tracked files are not bootstrapped because git
+already places them in every worktree.
+
+The registration notice summarizes what was detected:
+
+```text
 registered devops-copilot — shares .pnpm-store, .venv, node_modules +40 more, copies .env
 ```
 
-Everything is written to `~/.dma/config.json` and can be edited there. Bootstrapped paths are added to the repo's `.git/info/exclude`, so they never make a worktree read as dirty.
+Review this behavior before starting agents in repositories with sensitive
+configuration:
 
-## Keys
+- Copied `.env` files may contain secrets that the selected agent can access.
+- Symlinked dependency directories are shared, so changes made by one worktree
+  are visible to the others.
 
-**Board**
+Detected paths are stored in `~/.dma/config.json`. You can edit the repository's
+`bootstrap.symlink` and `bootstrap.copy` lists, or register a repository
+explicitly:
+
+```sh
+dma repo add --symlink node_modules,.venv --copy .env ~/code/my-project
+```
+
+Bootstrap paths and the Claude hook settings installed by `dma` are added to
+the repository's local git exclude file so they do not make worktrees appear
+dirty.
+
+## Agent permissions and profiles
+
+The built-in profiles are:
+
+```json
+[
+  {
+    "name": "claude",
+    "command": "claude --permission-mode auto",
+    "hooks": true
+  },
+  {
+    "name": "codex",
+    "command": "codex",
+    "image_argument": "--image {path}",
+    "hooks": false
+  }
+]
+```
+
+Claude Code is the default and starts with `--permission-mode auto` so parallel
+sessions can make progress without stopping at every ordinary permission
+prompt. Review whether that permission mode is appropriate for your environment
+before using it. You can change the command in `~/.dma/config.json`.
+
+Claude Code reports its state through hooks installed only in worktrees created
+by `dma`. Codex and custom profiles use process liveness and terminal activity,
+so their `working`, `idle`, and `needs you` states are less exact.
+
+You can add another agent by adding an entry to `agent_profiles`. The command
+runs inside the new worktree. The task is appended as a positional argument;
+use `{prompt}` in the command if it needs to appear somewhere else.
+
+For images attached to a new session, `image_argument` is repeated once per
+image and `{path}` is replaced with the shell-quoted path to its staged PNG.
+The built-in Codex profile uses `--image {path}`. Profiles without an
+`image_argument`, including Claude Code, receive the image paths in their
+opening prompt.
+
+## Everyday controls
 
 | Key | Action |
 |---|---|
-| `h` `j` `k` `l` | move between cards and columns |
-| `i` | focus the task input at the bottom |
-| `ctrl-v` | paste to the selected live agent without attaching |
-| `tab` | cycle board → input → agent → repo → project |
-| `a` | attach to the selected session's terminal |
-| `e` | expand the session panel to full screen |
-| `enter` `d` | review the diff |
-| `H` `L` | move a card to the previous/next column |
-| `G` | set the selected session's project |
-| `s` | commit and push the agent's branch, open a PR |
-| `o` | open the PR in your browser |
-| `y` | copy the PR link to the clipboard |
-| `m` | merge the PR — or add it to the merge queue, where the base branch has one |
-| `x` | prune the worktree and its branch |
-| `X` | prune every merged session the board is showing |
-| `D` | kill the agent, keep the worktree |
-| `R` | refresh PR and session state now |
-| `A` | pick the agent new sessions start with |
-| `r` | repositories: switch, add, unregister |
-| `p` | pick a project to filter the board |
-| `f` | filter to the active repo, or clear |
-| `?` | help |
-| `q` | quit — agents keep running |
+| `h` `j` `k` `l` | Move between cards and columns |
+| `i` or `n` | Start composing a new task |
+| `t` | Type into the selected agent from the session panel |
+| `ctrl-v` | Paste an image or text into a task or live agent |
+| `a` | Attach to the selected tmux session |
+| `e` | Expand the session panel |
+| `enter` or `d` | Review the selected session's diff |
+| `s` | Commit, push, and open a pull request |
+| `o` / `y` | Open or copy the pull-request link |
+| `m` | Merge the pull request or add it to the merge queue |
+| `x` | Prune one session's worktree and branch |
+| `X` | Prune the merged sessions currently shown |
+| `D` | Kill the agent but keep its worktree |
+| `A` | Choose the agent used for new sessions |
+| `r` | Switch, add, or unregister repositories |
+| `p` | Choose a project filter |
+| `G` | Move the selected session to a project |
+| `f` | Filter to the active repository |
+| `R` | Refresh session and PR state |
+| `?` | Show the complete in-app help |
+| `q` | Quit; agents continue running |
 
-**Task input** — `ctrl-v` adds a clipboard image (or pastes text), and `backspace` at the start removes the last image. `enter` starts an agent using the agent/repo/project shown in the selectors. `esc` returns to the board.
+When typing directly into the session panel or an attached tmux session, every
+key—including `esc`—goes to the agent. Press `ctrl-q` to return control to the
+board. While attached, the mouse wheel scrolls through the agent's history.
+Hold `shift`—or `option` in some macOS terminals—to select text. `dma` restores
+your tmux mouse setting when you detach.
 
-**Selectors** — `←` `→` change a value in place; `enter` opens the full list. Clicking a chip opens it too. From the board, `A` and `p` jump straight to the agent and project lists.
+## How the board is organized
 
-**Diff** — `tab` toggles working tree / branch diff, `j` `k` step between sessions, `esc` returns.
+| Column | Meaning |
+|---|---|
+| **idle** | The agent stopped, finished, or needs input |
+| **active** | The agent is working |
+| **pr open** | The branch has an open pull request |
+| **merged** | The pull request merged and the worktree can be pruned |
 
-**Attached** — every keystroke goes to the agent, including `esc`. `ctrl-q` detaches. While attached the tmux status line turns orange and says so. The mouse wheel scrolls back through the agent's output: tmux owns the mouse for the duration, which is what makes the wheel work for agents that draw inline (Codex writes its transcript into the pane's scrollback), and which means text selection needs `shift` — `⌥` in some macOS terminals. Your own tmux `mouse` setting is restored on detach.
+Cards move automatically as agent and GitHub state changes. Within a column,
+sessions needing attention sort first, followed by the longest time in state.
 
-## The four columns
+Projects are optional labels for grouping and filtering sessions. Selecting a
+project filters the board and makes new sessions join that project. A project
+also remembers the repository used for new work. The configuration retains the
+legacy JSON key `groups`, but the interface calls them projects.
 
-| Column | Owned by | Means |
-|---|---|---|
-| **idle** | the agent | not working — blocked on you, finished, or sitting there |
-| **active** | the agent | working right now; leave it alone |
-| **pr open** | git | branch pushed, PR exists |
-| **merged** | git | PR merged; the worktree is a prune candidate |
+## Configuration and state
 
-The first two move on their own as agents start and stop, so **idle is the column you act on** — everything waiting for you, whether that is a permission prompt or a finished diff.
-
-The last two are owned by durable git facts, and agent activity can never pull a card out of them: whether a process happens to be mid-tool-call says nothing about whether its PR is merged.
-
-A merge queue is why **merged** is not where `m` puts a card. Where the base branch has one, `m` hands the PR to the queue and the card reads `◌ queued` in **pr open** until the queue lands it — or drops it back out, which polling notices too. Only a PR that actually merged reaches the merged column.
-
-Because cards move by themselves, **selection is anchored to the session, not to a position.** When a card crosses columns the cursor follows it rather than landing on whatever took its place, and a card appearing above the cursor never shifts it.
-
-Within a column, `needs you` sorts first, then longest time in state. Time in state is always shown next to the badge — `needs you 8m` is the actionable signal, `needs you` alone is not. Past 15 minutes a blocked session escalates its color.
-
-### Where agent state comes from
-
-**Claude Code reports it exactly**, through lifecycle hooks. `dma` runs an HTTP listener on `127.0.0.1:<hook_port>` and writes a hook config into each worktree's `.claude/settings.local.json` at creation, so only agents this tool launched report to it and an unrelated Claude Code session elsewhere is untouched. Run `dma hooks print` to see what gets written.
-
-Hook responses are strictly passive — they report state and never return a blocking decision. A `Stop` hook that made the agent act would loop forever.
-
-**Codex and anything else is inferred**, from process liveness plus whether the pane is still changing. A pane quiet for 25 seconds means the turn ended; a pane whose tail looks like an approval request (`[y/n]`, `Allow …?`, a numbered choice list) means it needs you. This is deliberately coarse — pane text is a rendering of a UI, not a state machine, so the heuristic keys on structure rather than on wording that changes between releases.
-
-Entering `needs_you` raises a desktop notification either way. The point of the tool is not to be babysat.
-
-## Projects
-
-A project is an arbitrary label, chosen with the selector when you start a session or with `G` afterwards. Typing a label that does not exist creates it. The project selector filters the board to one project, and new sessions started while filtered join it.
-
-**A project remembers its repo.** Selecting a project moves the repo selector to that repo, so switching what you are working on is one choice rather than two kept in step by hand. A project takes its repo from wherever it was created — the repo selector if you named it from the chip, the card's own repo if you named it from a session — and the picker names each project's repo beside it.
-
-Changing the repo selector while a project is selected re-points that project at the new repo. That is the only way a binding changes, and it is how a project created before it had one, or work that has moved, gets corrected. With no project selected the repo selector is just the repo selector.
-
-A project that names no repo leaves the selector where it is. Sessions already running keep the repo they were started in whatever their project says later.
-
-## Multiple repos
-
-Press `r` for the repo list: `j`/`k` to move, `enter` to make one the default for new sessions, `a` to add another by path, `x` to unregister (which never touches the repo on disk, and unbinds any project that named it). In the compose bar, `tab` to the `repo` field and use `←`/`→` to pick — the base branch follows your choice, and so does the selected project's binding.
-
-One repo is the common case and stays uncluttered — the repo handle is not rendered on cards, and the compose bar hides the repo field entirely.
-
-With more than one repo registered, both appear, along with the `f` repo filter.
-
-**Swimlanes are always groups**, never repos. A group's sessions may sit in several repos — the group's own repo is only the default new ones start in, so a group that has worked in two places still shows both in one lane. A group is free text chosen at creation; typing a label that doesn't exist creates it.
-
-The join key between a worktree and its PR is the pair **`(repo_id, branch)`**, never the branch alone — two repos can each have a `feat/auth`. Worktree roots and tmux session names are namespaced per repo for the same reason. A session has no branch until its agent makes one, so PR polling starts from the moment that name is adopted.
-
-## Files
-
-```
-~/.dma/config.json   registered repos, agent profiles, groups, poll interval
-~/.dma/state.json    sessions (written atomically: temp file, then rename)
+```text
+~/.dma/config.json   repositories, profiles, projects, and polling settings
+~/.dma/state.json    sessions
 ```
 
-Set `DMA_HOME` to relocate both.
+Set `DMA_HOME` to relocate both files.
 
-### Config
+An example configuration, shown as valid JSON:
 
-```jsonc
+```json
 {
   "repos": [
     {
       "id": "my-project",
       "path": "/Users/you/code/my-project",
-      "remote": "you/my-project",          // read from origin at registration
+      "remote": "you/my-project",
       "base_branch": "main",
       "worktree_root": "/Users/you/.dma/worktrees/my-project",
       "bootstrap": {
-        "symlink": ["node_modules", ".venv"],
-        "copy": [".env"]
+        "symlink": [
+          "node_modules",
+          ".venv"
+        ],
+        "copy": [
+          ".env"
+        ]
       }
     }
   ],
   "default_repo": "my-project",
   "agent_profiles": [
-    { "name": "claude", "command": "claude --permission-mode auto", "hooks": true },
+    {
+      "name": "claude",
+      "command": "claude --permission-mode auto",
+      "hooks": true
+    },
     {
       "name": "codex",
       "command": "codex",
@@ -221,48 +313,56 @@ Set `DMA_HOME` to relocate both.
     }
   ],
   "default_profile": "claude",
-  "groups": [                              // known projects
-    { "name": "auth work", "repo": "my-project" }   // repo: where new sessions go
+  "groups": [
+    {
+      "name": "auth work",
+      "repo": "my-project"
+    }
   ],
   "poll_interval_secs": 45,
   "hook_port": 8787
 }
 ```
 
-`image_argument` is repeated for every image attached to a new session; `{path}` becomes the shell-quoted path of the staged PNG. The built-in Codex profile uses `--image {path}`. Profiles without `image_argument` receive the image paths in their opening prompt, which lets agents such as Claude Code read them directly.
-
-`hooks: false` puts a profile on the inferred-state path described above. Add any agent you like — the command is run inside the worktree's tmux session.
-
 ## Commands
 
+```text
+dma                    Open the board and register the current repository
+dma repo add <path>    Register a repository explicitly
+dma repo list          List registered repositories
+dma repo remove <id>   Unregister a repository
+dma ls                 List sessions without opening the board
+dma hooks print        Print the Claude hook configuration
+dma doctor             Check runtime tools and GitHub authentication
 ```
-dma                    open the board (registers the repo you are in)
-dma repo add <path>    register a repository explicitly
-dma repo list          list registered repositories
-dma repo remove <id>   unregister a repository
-dma ls                 list sessions without opening the TUI
-dma hooks print        print the hook config the board installs
-dma doctor             check required external tools
-```
 
-You normally need none of these — `cd` into a repo and run `dma`. `dma repo add` exists for scripting and for overriding detection with explicit `--symlink` / `--copy` lists.
+Unregistering a repository never modifies the repository itself. A repository
+with active session records must be pruned before it can be unregistered.
 
-## Design notes
+## Troubleshooting
 
-- **Exactly four columns.** At 100 characters wide, four columns leaves ~22 characters of card content. Additional axes become filters, never a fifth column.
-- **The input is always on screen**, so starting work is one key away and the board stays visible while you type — it should be obvious if a session for that work already exists.
-- **Cards are rows with a colored accent bar**, not nested boxes. Borders inside borders read as noise, and the bar carries the state signal more cheaply.
-- **There was a fifth idea, `review`, and it was cut.** It meant "diff ready, not pushed" but nothing filled it automatically, so it was manual bookkeeping in a tool whose premise is not doing bookkeeping. `idle` says the same thing from real evidence.
-- **A single click only selects.** Opening takes `enter` or a double click; misclicks on a dense board are frequent.
-- **`needs_you` cards sort first** within each column, then by time in state descending.
-- **A collapsed group keeps its rollup**, so collapsing can never hide the fact that something needs attention.
-- **PR polling lists open PRs only**, once per repo that has a live session. Asking GitHub for the full PR history with check rollups times out with a 502 on large repos; a tracked PR that leaves the open set is resolved individually instead.
-- **Only the selected session's pane is captured** for the preview. Capturing every pane every second would spawn a process per session per tick for output nobody is reading.
-- **Diffs are not parsed.** `git diff --color=always`, optionally piped through `delta`, rendered into a viewport. Untracked files are included explicitly — a new file is an agent's most common output and plain `git diff` omits it.
-- **Registration is a side effect, not a step.** Standing in a repo is a complete statement of intent; making someone declare it first is ceremony. Detection reads the checkout instead of asking.
-- **dma creates no branches.** A worktree starts detached at the tip of `origin/<base>`, fetched at that moment — a local base branch is whatever the last direct visit to the repo left behind, which on a repo driven through this tool is nothing. The agent names its own branch once it knows what the work turned out to be, and the board adopts whatever it finds there; a name derived from the task title would be a guess made at the moment of least information. Until then the card reads `no branch`, and `s` refuses to invent one.
-- **Teardown never forces.** A dirty worktree, commits sitting on no branch, or an unmerged branch each require a second, explicit confirmation.
+**`dma: command not found`**
 
-## Not in scope
+Add `$(go env GOPATH)/bin` or the directory containing your manually built
+binary to `PATH`.
 
-Remote/SSH access, PTY ownership, sandboxing, an agent-facing control API, test-gated merges, plugins or themes, multi-user, Windows.
+**The selected agent does not start**
+
+Confirm its command is installed and authenticated, then press `A` to select
+the intended profile. Profile commands can be edited in
+`~/.dma/config.json`.
+
+**PR status or actions are unavailable**
+
+Run `gh auth status`, confirm the repository has a GitHub `origin`, and inspect
+the repository's `remote` value with `dma repo list`.
+
+**The wrong files are shared or copied**
+
+Edit the repository's `bootstrap` lists in `~/.dma/config.json`, or unregister
+and add the repository again with explicit `--symlink` and `--copy` options.
+
+**A session is safe to remove**
+
+Press `x`. `dma` asks for additional confirmation before discarding uncommitted
+changes, commits on a detached HEAD, or an unmerged branch.
