@@ -16,17 +16,37 @@ import (
 var zoneMarker = regexp.MustCompile("\x1b\\[[0-9]+z")
 
 // rendered renders the model -- render() scans for zones itself -- and waits for
-// the zone manager's worker to publish what the scan found.
-func rendered(t *testing.T, m Model) {
+// the zone manager's worker to publish the zones the caller is about to read.
+//
+// It has to be told which ones, and it has to forget them first. The manager
+// publishes off a worker goroutine, and zones an earlier test's render published
+// are still there, so waiting on a zone that is already set -- any zone but the
+// one in question -- can return before this render has been scanned at all.
+func rendered(t *testing.T, m Model, want ...string) {
 	t.Helper()
+	if len(want) == 0 {
+		want = []string{zoneInput}
+	}
+	for _, id := range want {
+		zone.Clear(id)
+	}
 	m.render()
 	for i := 0; i < 500; i++ {
-		if !zone.Get(zoneInput).IsZero() {
+		if published(want) {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("zone manager never published the scanned zones")
+	t.Fatalf("zone manager never published %v", want)
+}
+
+func published(ids []string) bool {
+	for _, id := range ids {
+		if zone.Get(id).IsZero() {
+			return false
+		}
+	}
+	return true
 }
 
 func clickAt(x, y int) tea.MouseMsg {
@@ -50,7 +70,7 @@ func TestCardZoneCoversEveryLineFullWidth(t *testing.T) {
 	)
 	m.width, m.height = 140, 40
 	m.layoutSizes()
-	rendered(t, m)
+	rendered(t, m, zoneCard(m.sessions[0].ID))
 
 	widths := columnWidths(m.width)
 	rows := len(m.renderCard(m.sessions[0], false, widths[0]-4))
@@ -77,7 +97,7 @@ func TestClickAnywhereOnCardSelectsIt(t *testing.T) {
 	m.width, m.height = 140, 40
 	m.layoutSizes()
 	m.selectedID = b.ID
-	rendered(t, m)
+	rendered(t, m, zoneCard(a.ID))
 
 	z := zone.Get(zoneCard(a.ID))
 	if z.IsZero() {
