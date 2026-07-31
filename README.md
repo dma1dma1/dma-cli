@@ -238,25 +238,43 @@ Set `DMA_HOME` to relocate both.
 
 ### On PR open
 
-`on_pr_open` is a line typed into the agent the first time a pull request appears for its session — a slash command, or plain instructions. `{pr}` and `{url}` are substituted. Unset, the default, sends nothing.
+**Press `A`, then `o`.** That's the whole setup: shepherding is on for every repo that agent works in.
 
-```jsonc
-"on_pr_open": "/pr-shepherd {pr}"          // a command your agent knows
-"on_pr_open": "Watch PR {url} until CI is green and every review thread is resolved."
+```
+▸ claude    claude --permission-mode auto   state via hooks   on PR open: off  (o → /cdl-pr:pr-shepherd {pr})
+  codex     codex                    state via pane activity  on PR open: off  (o → Shepherd PR {url}: watch CI…)
+  ↑↓ choose · enter select · o shepherd PRs · O custom line · esc cancel
 ```
 
-It can be set in two places, and the more specific one wins:
+The command is **detected, not typed**. dma looks for a shepherd skill Claude Code can already run — installed plugin skills, marketplace skills, your own `~/.claude/skills` — and offers `/plugin:skill {pr}`. Nothing installed, or an agent that has no slash commands, gets the same request in words instead, so `o` always does something:
 
-| Where | Set it with | Means |
-|---|---|---|
-| `agent_profiles[].on_pr_open` | `o` in the agent selector's list | the default for that agent, in every repo |
-| `repos[].on_pr_open` | `o` in the repo list (`r`) | this repo instead — **absent** inherits the profile, **`""`** disables shepherding here |
+> Shepherd PR {url}: watch CI, fix what fails, resolve review threads, and report when it is mergeable.
 
-So the profile is how you say "always", and the repo is how you say "except here". A repo needing its own line sets one; a repo with nothing worth shepherding submits an empty one; `O` in the repo list clears the override so the repo follows its agent again.
+Making someone look up a plugin-qualified skill name in order to express "yes" is not configuration, it is a quiz. Detection is the same bargain bootstrap paths already make.
 
-Every repo's row shows the line in force and where it came from, so "off here" is never mistaken for "not configured". Switching a line on says how many open PRs it is about to pick up — turning it on with work already in flight starts a turn on each of them, which is worth knowing before it happens rather than after.
+#### Exceptions, per repo
 
-The same two fields are plain JSON in `~/.dma/config.json`, and `dma repo add` takes the repo one for scripting:
+In the repo list (`r`), `o` walks the repo through the three settings it can hold, and the row says which is in force:
+
+```
+▸ devops-copilot
+      ~/devops-copilot  ·  clouddatalabs/devops-copilot  ·  3 session(s)
+      shares .pnpm-store, node_modules +40 more, copies .env
+      on PR open: /cdl-pr:pr-shepherd {pr} — from claude     ← follows its agent
+```
+
+`o` → **off for this repo** → `o` → **on here** (with the detected command) → `o` → **follows its agent** again. So the profile is how you say "always" and the repo is how you say "except here", and neither needs typing.
+
+`O` in either list opens an editor, seeded with the line in force, for the line nobody could have detected. Switching a line on says how many open PRs it is about to pick up — turning it on with work already in flight starts a turn on each of them, which is worth knowing before it happens rather than after.
+
+#### The fields behind it
+
+| Where | Means |
+|---|---|
+| `agent_profiles[].on_pr_open` | the default for that agent, in every repo |
+| `repos[].on_pr_open` | this repo instead — **absent** inherits the profile, **`""`** disables shepherding here |
+
+`{pr}` and `{url}` are substituted. Both are plain JSON in `~/.dma/config.json`, and `dma repo add` takes the repo one for scripting:
 
 ```sh
 dma repo add --on-pr-open '/deploy-watch {pr}' ~/code/service   # this repo's own line

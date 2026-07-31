@@ -99,6 +99,11 @@ type Model struct {
 	hookEvents <-chan hooks.Event
 	hookURL    string
 
+	// shepherdSkill is the slash command a shepherd toggle turns on, found once
+	// at launch. Detection globs the plugin tree, and the repo list would
+	// otherwise re-run it on every one-second tick to label a row.
+	shepherdSkill string
+
 	statusText string
 	statusErr  bool
 	statusAt   time.Time
@@ -160,6 +165,7 @@ func New(opt Options) Model {
 		width:       120,
 		height:      36,
 	}
+	m.shepherdSkill = ops.FindShepherdSkill(ops.ClaudeHome())
 	if opt.Notice != "" {
 		m.statusText, m.statusAt = opt.Notice, time.Now()
 	}

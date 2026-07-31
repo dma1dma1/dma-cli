@@ -10,6 +10,7 @@ import (
 
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/ghx"
+	"github.com/dma1dma1/dma-cli/internal/ops"
 )
 
 // shepherdCfg configures the claude profile with an on-PR-open line.
@@ -204,14 +205,15 @@ func TestShepherdRepoCanOptInAlone(t *testing.T) {
 	}
 }
 
-// --- editing the line in the app ---
+// --- setting the line in the app ---
 
-// The agent list is where the default is set, so o there has to reach config and
-// be saved: a line that only lived in memory would be gone next launch.
-func TestEditProfileLineFromTheAgentList(t *testing.T) {
+// The whole point of the toggle: turning shepherding on for an agent, everywhere,
+// without typing a command name. o has to write a real line and save it.
+func TestToggleProfileLineFromTheAgentList(t *testing.T) {
 	t.Setenv("DMA_HOME", t.TempDir())
 	s := shepherdSess("a", 412)
 	m := testModel(shepherdCfg(""), s)
+	m.shepherdSkill = "/cdl-pr:pr-shepherd"
 
 	if m.shepherdCmdFor(s) != nil {
 		t.Fatal("shepherding was on before anything was configured")
@@ -221,50 +223,152 @@ func TestEditProfileLineFromTheAgentList(t *testing.T) {
 	m.dropdown.cursor = indexOf(m.dropdown.options, "claude")
 	mm, _ := m.keyDropdown("o")
 	m = mm.(Model)
-	if m.mode != modePrompt || m.prompt.kind != promptProfileShepherd {
-		t.Fatalf("o in the agent list did not open the editor: mode=%v kind=%v", m.mode, m.prompt.kind)
-	}
-	if m.prompt.target != "claude" {
-		t.Errorf("prompt target = %q, want claude", m.prompt.target)
-	}
 
-	m.prompt.input.SetValue("/pr-shepherd {pr}")
-	mm, _ = m.keyPrompt(tea.KeyPressMsg{}, "enter")
-	m = mm.(Model)
-
-	if got, _ := m.cfg.Profile("claude"); got.OnPROpen != "/pr-shepherd {pr}" {
-		t.Errorf("profile line = %q, want the edited line", got.OnPROpen)
+	if got, _ := m.cfg.Profile("claude"); got.OnPROpen != "/cdl-pr:pr-shepherd {pr}" {
+		t.Errorf("profile line = %q, want the detected command", got.OnPROpen)
+	}
+	if m.mode == modePrompt {
+		t.Error("the toggle opened a text prompt")
+	}
+	// The list stays open so the row reads back what just happened.
+	if !m.dropdown.open || m.dropdown.area != focusAgent {
+		t.Error("the agent list closed on toggle")
 	}
 	if m.shepherdCmdFor(s) == nil {
-		t.Error("the session was not armed by the edit")
+		t.Error("the session was not armed by the toggle")
 	}
 	saved, err := core.LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := saved.Profile("claude"); got.OnPROpen != "/pr-shepherd {pr}" {
-		t.Errorf("saved profile line = %q, want the edited line", got.OnPROpen)
+	if got, _ := saved.Profile("claude"); got.OnPROpen != "/cdl-pr:pr-shepherd {pr}" {
+		t.Errorf("saved profile line = %q, want the detected command", got.OnPROpen)
+	}
+
+	// And back off again, from the same key.
+	mm, _ = m.keyDropdown("o")
+	m = mm.(Model)
+	if got, _ := m.cfg.Profile("claude"); got.OnPROpen != "" {
+		t.Errorf("profile line = %q after a second toggle, want it cleared", got.OnPROpen)
 	}
 }
 
-// o in the repo list writes the override, and submitting it empty is a setting
-// rather than a cancellation -- that is the repo refusing its agent's line.
-func TestEditRepoLineFromTheRepoList(t *testing.T) {
+// An agent that cannot be handed a slash command still has to be switchable, or
+// "shepherd everything" would quietly mean "shepherd the Claude sessions".
+func TestToggleFallsBackToWordsForANonClaudeAgent(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	m := testModel(shepherdCfg(""))
+	m.shepherdSkill = "/cdl-pr:pr-shepherd"
+
+	m.toggleProfileShepherd("codex")
+
+	got, _ := m.cfg.Profile("codex")
+	if got.OnPROpen != ops.ShepherdFallback {
+		t.Errorf("codex line = %q, want the worded fallback", got.OnPROpen)
+	}
+}
+
+// With no skill installed there is no command to offer, and the toggle still has
+// to do something rather than write an empty line.
+func TestToggleFallsBackWithNoSkillInstalled(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	m := testModel(shepherdCfg(""))
+	m.shepherdSkill = ""
+
+	m.toggleProfileShepherd("claude")
+
+	got, _ := m.cfg.Profile("claude")
+	if got.OnPROpen != ops.ShepherdFallback {
+		t.Errorf("claude line = %q, want the worded fallback", got.OnPROpen)
+	}
+}
+
+// o in the repo list walks the three settings a repo can hold, so neither
+// exception needs typing.
+func TestCycleRepoShepherdFromTheRepoList(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	s := shepherdSess("a", 412)
+	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", nil), s)
+	m.shepherdSkill, m.mode = "/cdl-pr:pr-shepherd", modeRepos
+	m.repos.cursor = indexOfRepo(m.cfg, "r1")
+
+	// inherit -> off here
+	mm, _ := m.keyRepos("o")
+	m = mm.(Model)
+	r, _ := m.cfg.Repo("r1")
+	if r.OnPROpen == nil || *r.OnPROpen != "" {
+		t.Fatalf("first press gave %v, want off here", r.OnPROpen)
+	}
+	if m.shepherdCmdFor(s) != nil {
+		t.Error("a repo switched off was still armed")
+	}
+
+	// off here -> on here, with the detected command
+	mm, _ = m.keyRepos("o")
+	m = mm.(Model)
+	r, _ = m.cfg.Repo("r1")
+	if r.OnPROpen == nil || *r.OnPROpen != "/cdl-pr:pr-shepherd {pr}" {
+		t.Fatalf("second press gave %v, want the detected command", r.OnPROpen)
+	}
+
+	// on here -> follows its agent again
+	mm, _ = m.keyRepos("o")
+	m = mm.(Model)
+	r, _ = m.cfg.Repo("r1")
+	if r.OnPROpen != nil {
+		t.Fatalf("third press gave %q, want the override cleared", *r.OnPROpen)
+	}
+	if m.shepherdCmdFor(s) == nil {
+		t.Error("returning to inherit did not restore the agent's line")
+	}
+	if m.mode != modeRepos {
+		t.Error("cycling left the repo list")
+	}
+}
+
+// The typed line keeps a key, for the line nobody could have detected. It is
+// seeded so it is an edit rather than a blank field.
+func TestCustomLineEditorsAreOnTheShiftedKey(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", nil))
+	m.shepherdSkill, m.mode = "/cdl-pr:pr-shepherd", modeRepos
+	m.repos.cursor = indexOfRepo(m.cfg, "r1")
+
+	mm, _ := m.keyRepos("O")
+	rm := mm.(Model)
+	if rm.prompt.kind != promptRepoShepherd || rm.prompt.target != "r1" {
+		t.Fatalf("O in the repo list did not open the editor: kind=%v target=%q",
+			rm.prompt.kind, rm.prompt.target)
+	}
+	if got := rm.prompt.input.Value(); got != "/pr-shepherd {pr}" {
+		t.Errorf("repo editor seeded with %q, want the line in force", got)
+	}
+
+	m2 := testModel(shepherdCfg(""), nil...)
+	m2.shepherdSkill = "/cdl-pr:pr-shepherd"
+	m2.openDropdown(focusAgent)
+	m2.dropdown.cursor = indexOf(m2.dropdown.options, "claude")
+	mm2, _ := m2.keyDropdown("O")
+	am := mm2.(Model)
+	if am.prompt.kind != promptProfileShepherd || am.prompt.target != "claude" {
+		t.Fatalf("O in the agent list did not open the editor: kind=%v target=%q",
+			am.prompt.kind, am.prompt.target)
+	}
+	if got := am.prompt.input.Value(); got != "/cdl-pr:pr-shepherd {pr}" {
+		t.Errorf("agent editor seeded with %q, want the detected command", got)
+	}
+}
+
+// A submitted empty line in the repo editor is still "nothing here" -- esc is how
+// you back out, and o is how you get to the other two states.
+func TestRepoEditorSubmittedEmptyTurnsShepherdingOff(t *testing.T) {
 	t.Setenv("DMA_HOME", t.TempDir())
 	s := shepherdSess("a", 412)
 	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", nil), s)
 	m.mode, m.repos.cursor = modeRepos, indexOfRepo(m.cfg, "r1")
 
-	mm, _ := m.keyRepos("o")
+	mm, _ := m.keyRepos("O")
 	m = mm.(Model)
-	if m.prompt.kind != promptRepoShepherd || m.prompt.target != "r1" {
-		t.Fatalf("o in the repo list did not open the editor: kind=%v target=%q", m.prompt.kind, m.prompt.target)
-	}
-	// Seeded with the line in force, so editing an inherited one starts from it.
-	if got := m.prompt.input.Value(); got != "/pr-shepherd {pr}" {
-		t.Errorf("prompt seeded with %q, want the inherited line", got)
-	}
-
 	m.prompt.input.SetValue("")
 	mm, _ = m.keyPrompt(tea.KeyPressMsg{}, "enter")
 	m = mm.(Model)
@@ -278,24 +382,21 @@ func TestEditRepoLineFromTheRepoList(t *testing.T) {
 	}
 }
 
-// O is the only way back to inheriting, so it has to actually clear the field
-// rather than write an empty one.
-func TestClearRepoOverrideFromTheRepoList(t *testing.T) {
-	t.Setenv("DMA_HOME", t.TempDir())
-	off := ""
-	s := shepherdSess("a", 412)
-	m := testModel(shepherdRepoCfg("/pr-shepherd {pr}", &off), s)
-	m.mode, m.repos.cursor = modeRepos, indexOfRepo(m.cfg, "r1")
+// The agent row has to say what the toggle would turn on, or o is a key with an
+// unknown effect.
+func TestShepherdLabelNamesWhatTheToggleWouldDo(t *testing.T) {
+	m := testModel(shepherdCfg(""))
+	m.shepherdSkill = "/cdl-pr:pr-shepherd"
 
-	mm, _ := m.keyRepos("O")
-	m = mm.(Model)
-
-	r, _ := m.cfg.Repo("r1")
-	if r.OnPROpen != nil {
-		t.Fatalf("repo override = %q, want it cleared", *r.OnPROpen)
+	prof, _ := m.cfg.Profile("claude")
+	label := m.shepherdLabel(prof)
+	if !strings.Contains(label, "off") || !strings.Contains(label, "/cdl-pr:pr-shepherd") {
+		t.Errorf("label = %q, want it to name both the state and the offer", label)
 	}
-	if m.shepherdCmdFor(s) == nil {
-		t.Error("clearing the override did not restore the agent's line")
+
+	prof.OnPROpen = "/deploy-watch {pr}"
+	if got := m.shepherdLabel(prof); !strings.Contains(got, "/deploy-watch {pr}") {
+		t.Errorf("label = %q, want the configured line", got)
 	}
 }
 

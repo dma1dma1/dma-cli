@@ -7,13 +7,31 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
+	"github.com/dma1dma1/dma-cli/internal/ops"
 )
 
-// On-PR-open lines are edited in the app rather than only in config.json, for
-// the same reason repos are: deciding that a pull request should look after
-// itself is part of working, not setup. The agent selector holds the default and
-// the repo list holds the exception, which is where each is already being
-// looked at.
+// On-PR-open lines are set in the app rather than only in config.json, for the
+// same reason repos are: deciding that a pull request should look after itself is
+// part of working, not setup.
+//
+// And it is a toggle, not a text field. Asking someone to type
+// "/cdl-pr:pr-shepherd {pr}" makes them go and look up a plugin-qualified skill
+// name in order to express "yes" -- so the command is detected the way bootstrap
+// paths are, and o just switches it on. The editor stays on O for the rare line
+// nobody could have guessed.
+
+// shepherdDefault is the line a toggle turns on for an agent.
+//
+// Only a Claude Code profile can be handed a slash command, so anything else is
+// asked in words. A machine with no shepherd skill installed gets the same
+// words, which is why turning shepherding on always does something.
+func (m Model) shepherdDefault(profileName string) string {
+	prof, _ := m.cfg.Profile(profileName)
+	if prof.Hooks && m.shepherdSkill != "" {
+		return m.shepherdSkill + " {pr}"
+	}
+	return ops.ShepherdFallback
+}
 
 // shepherdSummary describes a repo's on-PR-open setting for the repo list.
 //
@@ -23,7 +41,7 @@ import (
 func (m Model) shepherdSummary(r core.Repo) string {
 	if r.OnPROpen != nil {
 		if strings.TrimSpace(*r.OnPROpen) == "" {
-			return "on PR open: nothing — off for this repo"
+			return "on PR open: off for this repo"
 		}
 		return "on PR open: " + strings.TrimSpace(*r.OnPROpen)
 	}
@@ -35,13 +53,48 @@ func (m Model) shepherdSummary(r core.Repo) string {
 	return fmt.Sprintf("on PR open: %s — from %s", line, agent)
 }
 
-// shepherdLabel annotates an agent in the selector with its default line.
+// shepherdLabel annotates an agent in the selector with its default line, and
+// when there is none, with the line o would turn on -- so the toggle can be
+// understood before it is pressed.
 func (m Model) shepherdLabel(p core.AgentProfile) string {
-	if strings.TrimSpace(p.OnPROpen) == "" {
-		return "no on-PR-open line"
+	if line := strings.TrimSpace(p.OnPROpen); line != "" {
+		return "on PR open: " + line
 	}
-	return "on PR open: " + strings.TrimSpace(p.OnPROpen)
+	return "on PR open: off  (o → " + truncate(m.shepherdDefault(p.Name), 44) + ")"
 }
+
+// toggleProfileShepherd switches an agent's default line on or off, using the
+// detected command when switching on.
+func (m *Model) toggleProfileShepherd(name string) tea.Cmd {
+	prof, ok := m.cfg.Profile(name)
+	if !ok {
+		return nil
+	}
+	if strings.TrimSpace(prof.OnPROpen) != "" {
+		return m.setProfileShepherd(name, "")
+	}
+	return m.setProfileShepherd(name, m.shepherdDefault(name))
+}
+
+// cycleRepoShepherd steps a repo through the three settings it can hold, so
+// neither exception needs typing: follows its agent, off here, on here.
+//
+// One key rather than two because the three are one decision, and the row names
+// which of them is in force -- a cycle whose state is invisible would be the
+// worse trade.
+func (m *Model) cycleRepoShepherd(r core.Repo) tea.Cmd {
+	switch {
+	case r.OnPROpen == nil:
+		off := ""
+		return m.setRepoShepherd(r.ID, &off)
+	case strings.TrimSpace(*r.OnPROpen) == "":
+		return m.setRepoShepherd(r.ID, ptrTo(m.shepherdDefault(m.cfg.DefaultProfile)))
+	default:
+		return m.setRepoShepherd(r.ID, nil)
+	}
+}
+
+func ptrTo(s string) *string { return &s }
 
 // setProfileShepherd writes an agent's default on-PR-open line. Empty clears it,
 // which is how an agent goes back to sending nothing anywhere.
@@ -117,6 +170,9 @@ func (m *Model) startRepoShepherdPrompt(r core.Repo) {
 	seed := m.cfg.PROpenLine(r.ID, m.cfg.DefaultProfile)
 	if r.OnPROpen != nil {
 		seed = strings.TrimSpace(*r.OnPROpen)
+	}
+	if seed == "" {
+		seed = m.shepherdDefault(m.cfg.DefaultProfile)
 	}
 	m.startPrompt(promptRepoShepherd, "on PR open in "+r.ID, seed, r.ID)
 	m.mode = modePrompt

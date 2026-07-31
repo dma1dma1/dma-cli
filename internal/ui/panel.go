@@ -499,7 +499,7 @@ func (m Model) viewDropdown(rows, width int) []string {
 		case focusProject:
 			hint = "  ↑↓ choose · enter select · x remove · esc cancel"
 		case focusAgent:
-			hint = "  ↑↓ choose · enter select · o on-PR-open line · esc cancel"
+			hint = "  ↑↓ choose · enter select · o shepherd PRs · O custom line · esc cancel"
 		}
 		out = append(out, st.Faint.Render(hint))
 	}

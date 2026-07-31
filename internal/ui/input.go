@@ -591,7 +591,7 @@ func (m Model) keyDropdown(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, m.removeProject()
 
-	case "o":
+	case "o", "O":
 		// The agent list is where an on-PR-open default belongs: the line is
 		// written in one agent's vocabulary, and this list is where the agents
 		// are. A repo's exception is set in the repo screen instead.
@@ -603,11 +603,25 @@ func (m Model) keyDropdown(key string) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.dropdown = dropdown{}
-		m.focus = focusBoard
-		m.startPrompt(promptProfileShepherd, "on PR open for "+name, prof.OnPROpen, name)
-		m.mode = modePrompt
-		return m, nil
+		if key == "O" {
+			m.dropdown = dropdown{}
+			m.focus = focusBoard
+			seed := prof.OnPROpen
+			if strings.TrimSpace(seed) == "" {
+				seed = m.shepherdDefault(name)
+			}
+			m.startPrompt(promptProfileShepherd, "on PR open for "+name, seed, name)
+			m.mode = modePrompt
+			return m, nil
+		}
+		// The list stays open and is rebuilt in place, so the row reads back what
+		// the toggle just did. Labels are resolved when a dropdown opens, so
+		// reopening it is what refreshes them.
+		cursor := m.dropdown.cursor
+		cmd := m.toggleProfileShepherd(name)
+		m.openDropdown(focusAgent)
+		m.dropdown.cursor = cursor
+		return m, cmd
 	}
 	return m, nil
 }

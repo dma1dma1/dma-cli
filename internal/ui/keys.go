@@ -30,7 +30,8 @@ func (m Model) hints() []hint {
 		case focusProject:
 			return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"x", "remove"}, {"esc", "cancel"}}
 		case focusAgent:
-			return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"o", "on-PR-open line"}, {"esc", "cancel"}}
+			return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"o", "shepherd PRs"},
+				{"O", "custom line"}, {"esc", "cancel"}}
 		}
 		return []hint{{"↑↓", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
 	}
@@ -60,7 +61,7 @@ func (m Model) hints() []hint {
 	case modeRepos:
 		return []hint{
 			{"j/k", "move"}, {"enter", "use for new sessions"}, {"a", "add repo"},
-			{"o/O", "on-PR-open line / inherit"}, {"x", "unregister"}, {"esc", "back"},
+			{"o", "shepherd PRs"}, {"O", "custom line"}, {"x", "unregister"}, {"esc", "back"},
 		}
 	}
 
@@ -141,15 +142,16 @@ var helpText = [][3]string{
 	{"Repositories", "", ""},
 	{"", "enter", "use this repo for new sessions"},
 	{"", "a", "add a repo by path (dependencies detected automatically)"},
-	{"", "o", "set this repo's on-PR-open line — submit it empty to shepherd nothing here"},
-	{"", "O", "clear the override, so the repo follows its agent's line again"},
+	{"", "o", "shepherding here: follows its agent → off → on → follows"},
+	{"", "O", "type a custom on-PR-open line for this repo"},
 	{"", "x", "unregister (the repo on disk is untouched)"},
 
 	{"On PR open", "", ""},
 	{"", "", "a line sent to the agent the first time a PR appears for its session"},
-	{"", "", "{pr} and {url} are filled in; sent once per PR, and only once it lands"},
-	{"", "o", "in the agent list: the default for that agent, in every repo"},
-	{"", "o", "in the repo list: this repo instead, or nothing here"},
+	{"", "", "the command is detected — o turns it on, no typing"},
+	{"", "o", "in the agent list (A): shepherd every repo this agent works in"},
+	{"", "o", "in the repo list (r): this repo's exception — off here, or on here"},
+	{"", "O", "either list: type a line instead. {pr} and {url} are filled in"},
 
 	{"Session panel", "", ""},
 	{"", "t / click", "aim the keyboard at the agent in the panel"},

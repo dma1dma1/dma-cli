@@ -121,17 +121,16 @@ func (m Model) keyRepos(key string) (tea.Model, tea.Cmd) {
 		if n == 0 {
 			return m, nil
 		}
-		m.startRepoShepherdPrompt(m.cfg.Repos[m.repos.cursor])
-		return m, nil
+		return m, m.cycleRepoShepherd(m.cfg.Repos[m.repos.cursor])
 
 	case "O":
-		// Separate from o rather than something o infers from an empty field: a
-		// repo refusing its agent's line and a repo that has not been configured
-		// are different settings, and one key cannot commit to both.
+		// The typed line is the rare case and gets the shifted key: the three
+		// settings o cycles are what a repo actually wants nearly every time.
 		if n == 0 {
 			return m, nil
 		}
-		return m, m.setRepoShepherd(m.cfg.Repos[m.repos.cursor].ID, nil)
+		m.startRepoShepherdPrompt(m.cfg.Repos[m.repos.cursor])
+		return m, nil
 
 	case "x":
 		if n == 0 {
