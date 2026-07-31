@@ -29,6 +29,36 @@ type Repo struct {
 	Bootstrap    Bootstrap `json:"bootstrap"`
 }
 
+// Project is a named grouping of sessions. It may also name the repo its work
+// happens in: selecting a project then aims new sessions at that repo, so
+// switching context is one choice rather than two remembered separately.
+//
+// The binding is a default, not a rule. Sessions already filed under a project
+// keep whatever repo they were started in, and the repo chip still overrides it
+// for the next session.
+type Project struct {
+	Name   string `json:"name"`
+	RepoID string `json:"repo,omitempty"`
+}
+
+// UnmarshalJSON also accepts the bare label a config written before projects
+// had repos would hold, so an existing groups list keeps working and gains an
+// empty binding rather than failing to parse.
+func (p *Project) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		*p = Project{Name: name}
+		return nil
+	}
+	type plain Project
+	var v plain
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*p = Project(v)
+	return nil
+}
+
 type AgentProfile struct {
 	Name    string `json:"name"`
 	Command string `json:"command"`
@@ -74,13 +104,15 @@ func shellQuote(s string) string {
 }
 
 type Config struct {
-	Repos            []Repo         `json:"repos"`
-	DefaultRepo      string         `json:"default_repo"`
-	AgentProfiles    []AgentProfile `json:"agent_profiles"`
-	DefaultProfile   string         `json:"default_profile"`
-	Groups           []string       `json:"groups"`
-	PollIntervalSecs int            `json:"poll_interval_secs"`
-	HookPort         int            `json:"hook_port"`
+	Repos          []Repo         `json:"repos"`
+	DefaultRepo    string         `json:"default_repo"`
+	AgentProfiles  []AgentProfile `json:"agent_profiles"`
+	DefaultProfile string         `json:"default_profile"`
+	// Groups is the project list. The key keeps its old name so a config written
+	// before projects were records still loads.
+	Groups           []Project `json:"groups"`
+	PollIntervalSecs int       `json:"poll_interval_secs"`
+	HookPort         int       `json:"hook_port"`
 }
 
 const (
@@ -127,7 +159,7 @@ func DefaultConfig() *Config {
 		Repos:            []Repo{},
 		AgentProfiles:    DefaultProfiles(),
 		DefaultProfile:   "claude",
-		Groups:           []string{},
+		Groups:           []Project{},
 		PollIntervalSecs: DefaultPollInterval,
 		HookPort:         DefaultHookPort,
 	}
@@ -284,34 +316,88 @@ func (c *Config) ProfileNames() []string {
 	return out
 }
 
-// AddGroup registers a group label if it is new, preserving display order.
-func (c *Config) AddGroup(g string) bool {
-	g = strings.TrimSpace(g)
-	if g == "" {
-		return false
-	}
-	for _, e := range c.Groups {
-		if e == g {
-			return false
+// Project looks up a registered project by name.
+func (c *Config) Project(name string) (Project, bool) {
+	for _, p := range c.Groups {
+		if p.Name == name {
+			return p, true
 		}
 	}
-	c.Groups = append(c.Groups, g)
+	return Project{}, false
+}
+
+// ProjectRepo is the repo a project aims new work at, empty when it is not
+// bound to one or is bound to a repo no longer registered.
+func (c *Config) ProjectRepo(name string) string {
+	p, ok := c.Project(name)
+	if !ok || p.RepoID == "" {
+		return ""
+	}
+	if _, ok := c.Repo(p.RepoID); !ok {
+		return ""
+	}
+	return p.RepoID
+}
+
+// AddProject registers a project if it is new, preserving display order. An
+// existing project keeps the repo it already has: registration is not the place
+// a binding changes, BindProject is.
+func (c *Config) AddProject(name, repoID string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if _, ok := c.Project(name); ok {
+		return false
+	}
+	c.Groups = append(c.Groups, Project{Name: name, RepoID: repoID})
 	return true
 }
 
-// RemoveGroup forgets a project label.
+// BindProject points a project at a repo, registering the project if it is new.
+// It reports whether anything changed, so callers can skip a config write.
+func (c *Config) BindProject(name, repoID string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for i := range c.Groups {
+		if c.Groups[i].Name != name {
+			continue
+		}
+		if c.Groups[i].RepoID == repoID {
+			return false
+		}
+		c.Groups[i].RepoID = repoID
+		return true
+	}
+	c.Groups = append(c.Groups, Project{Name: name, RepoID: repoID})
+	return true
+}
+
+// RemoveProject forgets a project.
 //
-// Sessions are deliberately left alone: the caller refuses to remove a label
+// Sessions are deliberately left alone: the caller refuses to remove a project
 // anything is still filed under, so a project cannot take its sessions'
 // grouping down with it.
-func (c *Config) RemoveGroup(g string) bool {
-	for i, e := range c.Groups {
-		if e == g {
+func (c *Config) RemoveProject(name string) bool {
+	for i, p := range c.Groups {
+		if p.Name == name {
 			c.Groups = append(c.Groups[:i], c.Groups[i+1:]...)
 			return true
 		}
 	}
 	return false
+}
+
+// UnbindRepo drops a repo from every project that named it, so unregistering a
+// repo cannot leave projects pointing at something that is gone.
+func (c *Config) UnbindRepo(repoID string) {
+	for i := range c.Groups {
+		if c.Groups[i].RepoID == repoID {
+			c.Groups[i].RepoID = ""
+		}
+	}
 }
 
 func expandHome(p string) string {

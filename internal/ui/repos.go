@@ -111,7 +111,7 @@ func (m Model) keyRepos(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		r := m.cfg.Repos[m.repos.cursor]
-		m.activeRepo = r.ID
+		m.setActiveRepo(r.ID)
 		m.mode = modeBoard
 		// The repo selector on the board already reads back the active repo.
 		return m, nil
@@ -142,6 +142,9 @@ func (m *Model) removeRepo(id string) tea.Cmd {
 		}
 	}
 	m.cfg.Repos = out
+	// Projects that worked here no longer point anywhere, and saying so is
+	// better than leaving a binding that silently does nothing.
+	m.cfg.UnbindRepo(id)
 	if m.cfg.DefaultRepo == id {
 		m.cfg.DefaultRepo = ""
 		if len(m.cfg.Repos) > 0 {

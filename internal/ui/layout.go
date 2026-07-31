@@ -147,10 +147,10 @@ func (m Model) stepSession(dir int) *core.Session {
 func (m Model) projects() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, g := range m.cfg.Groups {
-		if g != "" && !seen[g] {
-			seen[g] = true
-			out = append(out, g)
+	for _, p := range m.cfg.Groups {
+		if p.Name != "" && !seen[p.Name] {
+			seen[p.Name] = true
+			out = append(out, p.Name)
 		}
 	}
 	for _, s := range m.sessions {

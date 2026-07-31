@@ -204,22 +204,94 @@ func TestLaunchCommandPassesThePromptAsOneArgument(t *testing.T) {
 func TestGroupsAddAndRemove(t *testing.T) {
 	c := DefaultConfig()
 
-	if !c.AddGroup("auth") || !c.AddGroup("infra") {
-		t.Fatalf("adding new groups reported no change: %q", c.Groups)
+	if !c.AddProject("auth", "api") || !c.AddProject("infra", "") {
+		t.Fatalf("adding new projects reported no change: %v", c.Groups)
 	}
-	if c.AddGroup("auth") {
-		t.Errorf("adding a group twice reported a change: %q", c.Groups)
+	if c.AddProject("auth", "web") {
+		t.Errorf("adding a project twice reported a change: %v", c.Groups)
 	}
-	if c.AddGroup("  ") {
-		t.Errorf("blank group was registered: %q", c.Groups)
+	if c.AddProject("  ", "api") {
+		t.Errorf("blank project was registered: %v", c.Groups)
 	}
-	if !c.RemoveGroup("auth") {
-		t.Fatalf("removing a known group reported no change: %q", c.Groups)
+	if !c.RemoveProject("auth") {
+		t.Fatalf("removing a known project reported no change: %v", c.Groups)
 	}
-	if c.RemoveGroup("auth") {
-		t.Errorf("removing an unknown group reported a change: %q", c.Groups)
+	if c.RemoveProject("auth") {
+		t.Errorf("removing an unknown project reported a change: %v", c.Groups)
 	}
-	if len(c.Groups) != 1 || c.Groups[0] != "infra" {
-		t.Errorf("groups = %q, want [infra]", c.Groups)
+	if len(c.Groups) != 1 || c.Groups[0].Name != "infra" {
+		t.Errorf("projects = %v, want [infra]", c.Groups)
+	}
+}
+
+// A project's repo is what makes switching project enough to switch context, so
+// it has to survive a round trip through the config file.
+func TestProjectRepoIsStored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DMA_HOME", dir)
+
+	c := DefaultConfig()
+	c.Repos = []Repo{{ID: "api", Path: dir, BaseBranch: "main"}}
+	c.AddProject("auth", "api")
+	if err := SaveConfig(c); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if repo := got.ProjectRepo("auth"); repo != "api" {
+		t.Errorf("reloaded project repo = %q, want api", repo)
+	}
+}
+
+// A config written before projects had repos is a list of bare strings. It has
+// to keep loading, since the alternative is a user losing their projects to an
+// upgrade.
+func TestProjectsLoadFromBareLabels(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DMA_HOME", dir)
+
+	if err := os.WriteFile(ConfigPath(), []byte(`{"groups":["auth","infra"]}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(c.Groups) != 2 || c.Groups[0].Name != "auth" || c.Groups[1].Name != "infra" {
+		t.Fatalf("projects = %v, want auth and infra", c.Groups)
+	}
+	if repo := c.ProjectRepo("auth"); repo != "" {
+		t.Errorf("migrated project claims repo %q, want none", repo)
+	}
+}
+
+// Binding is how a project learns where its work happens after the fact, and
+// rebinding to the repo it already names is not a change worth a config write.
+func TestBindProject(t *testing.T) {
+	c := DefaultConfig()
+	c.Repos = []Repo{{ID: "api"}, {ID: "web"}}
+
+	if !c.BindProject("auth", "api") {
+		t.Fatal("binding an unknown project reported no change")
+	}
+	if c.BindProject("auth", "api") {
+		t.Error("rebinding to the same repo reported a change")
+	}
+	if !c.BindProject("auth", "web") || c.ProjectRepo("auth") != "web" {
+		t.Errorf("project repo = %q, want web", c.ProjectRepo("auth"))
+	}
+}
+
+// A binding outliving the repo it names would send new sessions nowhere, so it
+// reads as unbound rather than as a repo that does not exist.
+func TestProjectRepoIgnoresUnregisteredRepos(t *testing.T) {
+	c := DefaultConfig()
+	c.AddProject("auth", "gone")
+
+	if repo := c.ProjectRepo("auth"); repo != "" {
+		t.Errorf("project repo = %q, want none for an unregistered repo", repo)
 	}
 }
