@@ -66,22 +66,92 @@ func TestBoardStopsGrowingBeforeItCrowdsThePanel(t *testing.T) {
 	}
 }
 
-// A capped column has to say what is off screen at each end, or it reads as a
-// column that simply holds fewer cards than it does.
-func TestScrolledColumnCountsWhatIsOffEachEnd(t *testing.T) {
+// A capped column has to show it scrolls, or it reads as a column that simply
+// holds fewer cards than it does.
+func TestScrolledColumnDrawsAScrollbar(t *testing.T) {
 	m, ids := crowdedBoard(t, 12)
+	idle := core.LifecycleIdle.ColumnIndex()
 
-	if body := boardText(m); !strings.Contains(body, "↓") {
-		t.Fatalf("column at the top said nothing about the cards below:\n%s", body)
+	_, bar := m.columnRows(m.columns()[idle], idle, m.findSelected(), columnWidths(m.contentWidth())[idle], boardHeight(m))
+	if bar == nil {
+		t.Fatal("column at the top of a 12-card list drew no scrollbar")
 	}
-	m.scrollColumn(core.LifecycleIdle.ColumnIndex(), 2)
+	if bar.Total != 12 || bar.Offset != 0 || bar.Visible >= bar.Total {
+		t.Errorf("scrollbar reads %+v, want all 12 cards with only some on screen", *bar)
+	}
+	if body := boardText(m); !strings.Contains(body, "█") {
+		t.Fatalf("no thumb drawn for a column that does not fit:\n%s", body)
+	}
+
+	m.scrollColumn(idle, 2)
 	body := boardText(m)
-	if !strings.Contains(body, "↑ 2 more") {
-		t.Errorf("scrolled column did not count the 2 cards above it:\n%s", body)
-	}
 	if strings.Contains(body, ids[0]) {
 		t.Errorf("card %s is above the scroll offset but still drawn:\n%s", ids[0], body)
 	}
+	_, bar = m.columnRows(m.columns()[idle], idle, m.findSelected(), columnWidths(m.contentWidth())[idle], boardHeight(m))
+	if bar == nil || bar.Offset != 2 {
+		t.Errorf("scrollbar did not follow the column to offset 2: %+v", bar)
+	}
+}
+
+// A column whose cards all fit has nothing to scroll, and a bar there would be
+// noise claiming otherwise.
+func TestColumnThatFitsDrawsNoScrollbar(t *testing.T) {
+	m := testModel(nil, sess("a", "", core.LifecycleIdle, core.AgentIdle, "r"))
+	m.width, m.height = 140, 40
+	m.layoutSizes()
+	m.syncColumnScroll()
+
+	if body := boardText(m); strings.Contains(body, "█") {
+		t.Errorf("board with one card drew a scrollbar:\n%s", body)
+	}
+}
+
+// The thumb has to mean something: it starts at the top, ends at the bottom, and
+// is sized to the share of the column on screen.
+func TestScrollbarThumbTracksThePosition(t *testing.T) {
+	rows := 10
+	top := (&Scrollbar{Total: 20, Visible: 5, Offset: 0}).glyphs(rows)
+	bottom := (&Scrollbar{Total: 20, Visible: 5, Offset: 15}).glyphs(rows)
+	for name, got := range map[string][]string{"top": top, "bottom": bottom} {
+		if len(got) != rows {
+			t.Fatalf("%s bar is %d rows, want %d", name, len(got), rows)
+		}
+	}
+	if !strings.Contains(top[0], "█") {
+		t.Errorf("column at offset 0 did not put the thumb at the top: %v", top)
+	}
+	if !strings.Contains(bottom[rows-1], "█") {
+		t.Errorf("column at its last card did not put the thumb at the bottom: %v", bottom)
+	}
+	if got := thumbLen(top); got != rows*5/20 {
+		t.Errorf("thumb is %d rows for a quarter of the column on screen, want %d", got, rows*5/20)
+	}
+	if thumbLen(bottom) != thumbLen(top) {
+		t.Errorf("thumb changed length when the column scrolled: %d then %d", thumbLen(top), thumbLen(bottom))
+	}
+	// Nothing to scroll, nothing to draw.
+	if got := (&Scrollbar{Total: 5, Visible: 5}).glyphs(rows); got != nil {
+		t.Errorf("a fully visible list drew a bar: %v", got)
+	}
+}
+
+// thumbLen counts the filled rows of a rendered scrollbar.
+func thumbLen(bar []string) int {
+	n := 0
+	for _, g := range bar {
+		if strings.Contains(g, "█") {
+			n++
+		}
+	}
+	return n
+}
+
+// boardHeight is the rows the board is drawn in, which the column helpers take
+// as their height.
+func boardHeight(m Model) int {
+	h, _, _ := m.splitHeights()
+	return h
 }
 
 // Every card must be reachable with the keyboard alone: stepping the cursor onto
@@ -125,13 +195,18 @@ func TestColumnWillNotScrollPastItsLastCard(t *testing.T) {
 	m, ids := crowdedBoard(t, 12)
 	last := ids[len(ids)-1]
 
-	m.scrollColumn(core.LifecycleIdle.ColumnIndex(), 99)
+	idle := core.LifecycleIdle.ColumnIndex()
+	m.scrollColumn(idle, 99)
 	body := boardText(m)
 	if !strings.Contains(body, last) {
 		t.Errorf("scrolling to the end left the last card %s off screen:\n%s", last, body)
 	}
-	if strings.Contains(body, "↓") {
-		t.Errorf("column scrolled past its last card:\n%s", body)
+	_, bar := m.columnRows(m.columns()[idle], idle, m.findSelected(), columnWidths(m.contentWidth())[idle], boardHeight(m))
+	if bar == nil {
+		t.Fatal("the column still does not fit; it should still have a scrollbar")
+	}
+	if bar.Offset+bar.Visible != bar.Total {
+		t.Errorf("column scrolled to %+v, which does not end on its last card", *bar)
 	}
 }
 

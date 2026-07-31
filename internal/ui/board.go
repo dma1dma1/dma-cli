@@ -71,7 +71,7 @@ func (m Model) viewBoard(height int) string {
 
 	rendered := make([]string, 4)
 	for i := range core.Columns {
-		rows := m.columnRows(cols[i], i, selPos, widths[i], height)
+		rows, bar := m.columnRows(cols[i], i, selPos, widths[i], height)
 
 		b := Box{
 			Title:    core.Columns[i].Title(),
@@ -81,6 +81,7 @@ func (m Model) viewBoard(height int) string {
 			Width:    widths[i],
 			Height:   height,
 			Focused:  m.focus == focusBoard && selPos.col == i,
+			Scroll:   bar,
 		}
 		if n := len(cols[i]); n > 0 {
 			b.Title = fmt.Sprintf("%s %d", b.Title, n)
@@ -94,15 +95,21 @@ func (m Model) viewBoard(height int) string {
 }
 
 // columnRows stacks one column's cards from its scroll offset, keeping only the
-// ones that fit whole and counting the rest off each end.
+// ones that fit whole, and returns the scrollbar for the frame to draw when some
+// were left off.
+//
+// The frame carries the overflow, not the column: a card counted off in words
+// ("3 more") says something is missing without saying the column is a thing you
+// can scroll, and it spends an interior row saying it. The bar rides in the
+// frame's padding, so that row goes to a card instead.
 //
 // Cards are dropped rather than clipped mid-card because the box clips by line:
 // a card cut in half loses the end of its click zone, which leaves it visible
 // but unclickable. That is also why the column scrolls by whole cards rather
 // than by rows.
-func (m Model) columnRows(col []*core.Session, colIndex int, sel cardPos, width, height int) []string {
+func (m Model) columnRows(col []*core.Session, colIndex int, sel cardPos, width, height int) ([]string, *Scrollbar) {
 	if len(col) == 0 {
-		return []string{"", m.styles.Faint.Render("  —")}
+		return []string{"", m.styles.Faint.Render("  —")}, nil
 	}
 
 	avail := max(height-2, 1) // two rows go to the frame
@@ -110,19 +117,20 @@ func (m Model) columnRows(col []*core.Session, colIndex int, sel cardPos, width,
 	shown := m.columnFit(col, off, width, avail)
 
 	var rows []string
-	if off > 0 {
-		rows = append(rows, m.styles.Faint.Render(fmt.Sprintf("  ↑ %d more", off)))
-	}
 	for j := off; j < off+shown; j++ {
 		rows = append(rows, m.renderCard(col[j], sel.col == colIndex && sel.row == j, width-4)...)
 		rows = append(rows, "")
 	}
-	// The count below takes the blank row that ended the last card, so it costs
-	// the column nothing it was not already spending.
-	if below := len(col) - off - shown; below > 0 {
-		rows[len(rows)-1] = m.styles.Faint.Render(fmt.Sprintf("  ↓ %d more", below))
+	if shown >= len(col) {
+		return rows, nil
 	}
-	return rows
+	return rows, &Scrollbar{
+		Total:   len(col),
+		Visible: shown,
+		Offset:  off,
+		Track:   m.styles.P.Border,
+		Thumb:   m.styles.P.Muted,
+	}
 }
 
 // columnFit reports how many of col's cards, starting at offset, can be drawn
@@ -130,20 +138,12 @@ func (m Model) columnRows(col []*core.Session, colIndex int, sel cardPos, width,
 // column shows: the renderer and the scroll arithmetic both go through it, so
 // they cannot disagree about which card is on screen.
 func (m Model) columnFit(col []*core.Session, offset, width, avail int) int {
-	used := 0
-	if offset > 0 {
-		used++ // the row the count above needs
-	}
-	shown := 0
+	used, shown := 0, 0
 	for j := offset; j < len(col); j++ {
-		limit := avail
-		if j < len(col)-1 {
-			limit-- // reserve the row the count below would need
-		}
 		h := m.cardHeight(col[j], width)
 		// The first card is kept even when it cannot fit: a clipped card beats an
 		// empty column.
-		if used+h > limit && shown > 0 {
+		if used+h > avail && shown > 0 {
 			break
 		}
 		used += h

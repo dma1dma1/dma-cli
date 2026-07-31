@@ -138,8 +138,8 @@ func TestClickAtEndOfInputRowFocusesInput(t *testing.T) {
 	}
 }
 
-// A card that cannot be drawn whole is replaced by a count, because the box
-// clips by line and half a card carries no click zone.
+// A card that cannot be drawn whole is dropped and reported by the scrollbar,
+// because the box clips by line and half a card carries no click zone.
 func TestShortColumnReportsHiddenCardsInsteadOfClippingOne(t *testing.T) {
 	var sessions []*core.Session
 	for _, id := range []string{"one", "two", "three", "four"} {
@@ -148,11 +148,14 @@ func TestShortColumnReportsHiddenCardsInsteadOfClippingOne(t *testing.T) {
 	m := testModel(nil, sessions...)
 	m.width, m.height = 140, 40
 
-	// Nine rows of interior fits one card plus the overflow note.
-	rows := m.columnRows(m.columns()[core.LifecycleIdle.ColumnIndex()], 0, cardPos{}, columnWidths(m.width)[0], 9)
+	// Nine rows of interior is not enough for four cards.
+	rows, bar := m.columnRows(m.columns()[core.LifecycleIdle.ColumnIndex()], 0, cardPos{}, columnWidths(m.width)[0], 9)
 	body := zoneMarker.ReplaceAllString(strings.Join(rows, "\n"), "")
-	if !strings.Contains(body, "more") {
+	if bar == nil {
 		t.Fatalf("short column dropped cards without saying so:\n%s", body)
+	}
+	if bar.Total != len(sessions) {
+		t.Errorf("scrollbar counted %d cards, want %d", bar.Total, len(sessions))
 	}
 	kept := 0
 	for _, s := range sessions {

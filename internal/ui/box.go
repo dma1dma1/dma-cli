@@ -20,6 +20,56 @@ type Box struct {
 	Height int
 	// Focused thickens the frame so the pane taking keystrokes is obvious.
 	Focused bool
+	// Scroll, when set, draws a scrollbar down the right-hand padding column.
+	Scroll *Scrollbar
+}
+
+// Scrollbar describes how much of a longer list a box is showing, so the frame
+// can draw the position as a bar.
+//
+// It is the affordance that says the box scrolls at all: a body that simply
+// stops at the fold reads as a body holding fewer items than it does, however
+// carefully the ones off screen are counted in words.
+type Scrollbar struct {
+	// The three counts are in whatever unit the body scrolls by -- cards, for
+	// the board's columns.
+	Total   int
+	Visible int
+	Offset  int
+	// Track colors the groove, Thumb the part of the list on screen.
+	Track color.Color
+	Thumb color.Color
+}
+
+// glyphs is the bar drawn down one cell, a glyph per interior row, or nil when
+// the whole list is on screen and there is nothing to say.
+//
+// The thumb is as long as the share of the list on screen, floored at one cell
+// so a very long column still shows something, and it reaches the bottom of the
+// track exactly when the last item is drawn.
+func (s *Scrollbar) glyphs(rows int) []string {
+	if s == nil || rows <= 0 || s.Total <= 0 || s.Visible >= s.Total {
+		return nil
+	}
+	length := clamp(rows*s.Visible/s.Total, 1, rows)
+	start := 0
+	// The thumb travels the rows it does not fill, over the items off screen.
+	if span := s.Total - s.Visible; span > 0 {
+		start = clamp((s.Offset*(rows-length)+span/2)/span, 0, rows-length)
+	}
+
+	// A dotted groove: a solid one sits a cell from the frame's own line and the
+	// pair reads as a doubled border rather than as a scrollbar.
+	track := lipgloss.NewStyle().Foreground(s.Track).Render("┊")
+	thumb := lipgloss.NewStyle().Foreground(s.Thumb).Render("█")
+	out := make([]string, rows)
+	for i := range out {
+		out[i] = track
+		if i >= start && i < start+length {
+			out[i] = thumb
+		}
+	}
+	return out
 }
 
 // Render frames body. Body lines are padded to the interior width and clipped
@@ -52,8 +102,16 @@ func (b Box) Render(body string) string {
 			lines = append(lines, "")
 		}
 	}
-	for _, l := range lines {
-		out = append(out, edge.Render(v)+" "+pad(l, inner)+" "+edge.Render(v))
+	// The bar takes the right-hand padding cell rather than a column of its own,
+	// so a scrolling box is exactly as wide as a still one and the cards inside
+	// keep every cell they had.
+	bar := b.Scroll.glyphs(len(lines))
+	for i, l := range lines {
+		right := " "
+		if i < len(bar) {
+			right = bar[i]
+		}
+		out = append(out, edge.Render(v)+" "+pad(l, inner)+right+edge.Render(v))
 	}
 	out = append(out, edge.Render(bl+strings.Repeat(h, w-2)+br))
 	return strings.Join(out, "\n")
