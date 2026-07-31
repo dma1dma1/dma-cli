@@ -467,6 +467,20 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	case "ctrl+v":
 		return m, readClipboardCmd()
 
+	case "ctrl+u":
+		// Start the task over in one keystroke, images included: what the box
+		// holds is one composed task, and half-clearing it would leave an
+		// attachment to notice and remove separately. The composer wraps onto as
+		// many rows as the task needs, so the shell's kill-to-line-start is not
+		// the same thing -- a pasted task has to be cleared row by row otherwise.
+		if m.input.Value() == "" && len(m.pendingImages) == 0 {
+			return m, nil
+		}
+		m.input.SetValue("")
+		m.pendingImages = nil
+		m.layoutSizes()
+		return m, nil
+
 	case "backspace":
 		// The very start of the task, which in a field that wraps means the first
 		// row as well as the first column -- backspace anywhere else in the text is
