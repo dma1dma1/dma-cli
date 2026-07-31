@@ -345,9 +345,20 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 	}
 	switch key {
 	case "s":
-		m.startPrompt(promptPRTitle, "PR title", s.Title, s.ID)
-		m.mode = modePrompt
-		return m, nil
+		if !s.TmuxAlive {
+			return m, errStatus(fmt.Errorf("terminal for this session is not running"))
+		}
+		// The agent is about to work and repaint, and the prober must not read
+		// that as output it produced on its own.
+		m.typedAt[s.ID] = now()
+		// The request never passes through panel focus, so nothing has readied a
+		// modal composer for it. Sequence, not batch: the mode has to change
+		// before the request arrives.
+		send := tea.Sequence(insertModeCmd(s), askShipCmd(s))
+		// Sequenced rather than inlined into the return: startEcho mutates m, and
+		// Go does not order that against copying m into the return value.
+		cmd := tea.Batch(send, m.startEcho())
+		return m, cmd
 
 	case "o":
 		return m, m.prLink(s, linkOpen)
@@ -407,7 +418,7 @@ func (m Model) prLink(s *core.Session, action linkAction) tea.Cmd {
 // failing that the remote to ask GitHub for it.
 func (m Model) prLinkTarget(s *core.Session) (url, remote string, err error) {
 	if !s.HasPR() {
-		return "", "", fmt.Errorf("no PR for %q yet — press s to push and open one", s.Title)
+		return "", "", fmt.Errorf("no PR for %q yet — press s to ask the agent to open one", s.Title)
 	}
 	if s.PRURL != "" {
 		return s.PRURL, "", nil

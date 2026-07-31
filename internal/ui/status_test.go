@@ -88,11 +88,6 @@ func TestOrdinaryActionsPostNothing(t *testing.T) {
 			_, cmd := m.handleTeardown(teardownMsg{id: "a"})
 			return cmd
 		}},
-		{"a PR opening", func() tea.Cmd {
-			m := testModel(nil, branchSess("a", "r1", "feat-a", core.LifecycleActive))
-			_, cmd := m.handleShipped(shippedMsg{id: "a", number: 42})
-			return cmd
-		}},
 		{"refreshing with R", func() tea.Cmd {
 			m := testModel(nil, sess("a", "", core.LifecycleIdle, core.AgentIdle, "r1"))
 			_, cmd := m.keyBoard("R")

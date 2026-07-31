@@ -17,7 +17,6 @@ type promptKind int
 const (
 	promptNone promptKind = iota
 	promptNewProject
-	promptPRTitle
 	promptAddRepo
 )
 
@@ -73,16 +72,6 @@ func (m Model) keyPrompt(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 			m.selectProject(val)
 			m.rebuild()
 			return m, nil
-
-		case promptPRTitle:
-			s := core.FindByID(m.sessions, p.target)
-			if s == nil {
-				return m, nil
-			}
-			if val == "" {
-				val = s.Title
-			}
-			return m, shipCmd(m.cfg, s, val)
 
 		case promptAddRepo:
 			if val == "" {
