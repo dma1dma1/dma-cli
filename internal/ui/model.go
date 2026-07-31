@@ -99,9 +99,11 @@ type Model struct {
 	hookEvents <-chan hooks.Event
 	hookURL    string
 
-	statusText string
-	statusErr  bool
-	statusAt   time.Time
+	// notice is what the notice line is currently carrying: a failure, or the
+	// one line a launch left behind. noticeErr picks the style between the two.
+	notice    string
+	noticeErr bool
+	noticeAt  time.Time
 
 	// lastPreviewCols/Rows are the size agents were last told to render at, so a
 	// resize is only issued when it actually changes.
@@ -161,7 +163,7 @@ func New(opt Options) Model {
 		height:      36,
 	}
 	if opt.Notice != "" {
-		m.statusText, m.statusAt = opt.Notice, time.Now()
+		m.notice, m.noticeAt = opt.Notice, time.Now()
 	}
 	for i, r := range m.cfg.Repos {
 		if r.ID == m.activeRepoID() {
@@ -214,7 +216,7 @@ func (m *Model) dropSelectionIfHidden() {
 
 func (m *Model) save() {
 	if err := core.SaveSessions(m.sessions); err != nil {
-		m.statusText, m.statusErr, m.statusAt = "save state: "+err.Error(), true, time.Now()
+		m.notice, m.noticeErr, m.noticeAt = "save state: "+err.Error(), true, time.Now()
 	}
 }
 
@@ -425,8 +427,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffView.SetContent(content)
 		return m, nil
 
-	case statusMsg:
-		m.statusText, m.statusErr, m.statusAt = msg.text, msg.isErr, time.Now()
+	case noticeMsg:
+		m.notice, m.noticeErr, m.noticeAt = msg.text, true, time.Now()
 		return m, nil
 
 	case clipboardMsg:
@@ -616,15 +618,12 @@ func (m Model) handleMerged(msg mergedMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.outcome {
 	case ghx.MergeQueued, ghx.MergeAlreadyQueued:
+		// Nothing is posted either way. The card stays in the PR column and now
+		// reads "queued", which says both that the merge did not land and where
+		// the PR went.
 		s.PRQueued = true
 		m.save()
-		// Worth the footer even though the card now reads "queued": you pressed
-		// merge and nothing merged, which is the one outcome the board should not
-		// leave you to infer from a label.
-		if msg.outcome == ghx.MergeAlreadyQueued {
-			return m, status(fmt.Sprintf("PR #%d is already in the merge queue", s.PRNumber))
-		}
-		return m, status(fmt.Sprintf("PR #%d added to the merge queue", s.PRNumber))
+		return m, nil
 	}
 	s.PRState = core.PRMerged
 	s.Lifecycle = core.LifecycleMerged
@@ -841,13 +840,13 @@ func (m Model) render() string {
 	if inputH > 0 {
 		parts = append(parts, m.viewInputBox(inputH))
 	}
-	parts = append(parts, m.statusBar())
+	parts = append(parts, m.footer()...)
 
 	return zone.Scan(m.place(lipgloss.JoinVertical(lipgloss.Left, parts...)))
 }
 
-// frame wraps a full-screen sub-view with the status bar, so every mode has the
-// same footer.
+// frame wraps a full-screen sub-view with the footer, so every mode has the
+// same one.
 //
 // The body is clipped to the rows and columns it was given. Sub-views lay
 // themselves out to a comfortable size rather than to a tiny window, and content
@@ -855,13 +854,14 @@ func (m Model) render() string {
 // place that says which key gets you out.
 func (m Model) frame(body string) string {
 	lines := strings.Split(body, "\n")
-	if avail := max(m.height-1, 1); len(lines) > avail {
+	footer := m.footer()
+	if avail := max(m.height-len(footer), 1); len(lines) > avail {
 		lines = lines[:avail]
 	}
 	for i, l := range lines {
 		lines[i] = truncate(l, m.contentWidth())
 	}
-	lines = append(lines, m.statusBar())
+	lines = append(lines, footer...)
 	return m.place(strings.Join(lines, "\n"))
 }
 
@@ -890,8 +890,36 @@ func (m Model) place(block string) string {
 	return strings.Join(lines, "\n")
 }
 
-// statusBar is the single bottom line: a transient message when there is one,
-// otherwise the keys for the current focus.
+// noticeTTL is how long a notice stays on screen before the row it occupies
+// goes back to the view above it.
+const noticeTTL = 10 * time.Second
+
+func (m Model) noticeActive() bool {
+	return m.notice != "" && time.Since(m.noticeAt) < noticeTTL
+}
+
+// footer is the bottom of every mode: the shortcut bar, with the notice line
+// above it when something has been posted.
+//
+// The two are separate rows on purpose. A message that borrows the bottom line
+// takes the keymap off the screen for as long as it is up, and the keymap is
+// what the user is looking at -- so the message pays for itself with a row of
+// its own instead, out of the view above.
+func (m Model) footer() []string {
+	if !m.noticeActive() {
+		return []string{m.statusBar()}
+	}
+	st := m.styles.Status
+	if m.noticeErr {
+		st = m.styles.Error
+	}
+	w := m.contentWidth()
+	line := lipgloss.NewStyle().Width(w).Render(st.Render(truncate(" "+m.notice, w)))
+	return []string{line, m.statusBar()}
+}
+
+// statusBar is the bottom line: the keys for the current focus, or the one
+// question a confirm or prompt is waiting on.
 func (m Model) statusBar() string {
 	st := m.styles
 	w := m.contentWidth()
@@ -911,15 +939,6 @@ func (m Model) statusBar() string {
 			st.KeyDesc.Render("   enter · esc")
 		return lipgloss.NewStyle().Width(w).Render(truncate(line, w))
 	}
-	if m.statusText != "" && time.Since(m.statusAt) < 10*time.Second {
-		text := st.Status
-		if m.statusErr {
-			text = st.Error
-		}
-		return lipgloss.NewStyle().Width(w).
-			Render(text.Render(truncate(" "+m.statusText, w)))
-	}
-
 	var line string
 	if m.repoFilter != "" {
 		line += st.RepoTag.Render("[repo:" + m.repoFilter + "] ")
@@ -947,7 +966,7 @@ func (m Model) viewHelp() string {
 		lines = append(lines, fmt.Sprintf("    %s  %s",
 			st.KeyHint.Render(padRight(row[1], 12)), st.KeyDesc.Render(row[2])))
 	}
-	footer := []string{
+	tail := []string{
 		"",
 		"  " + st.Faint.Render("hook listener: "+m.hookURL),
 		"  " + st.Faint.Render("press any key to return"),
@@ -955,11 +974,11 @@ func (m Model) viewHelp() string {
 	// The keymap is longer than a short window. Clip the list rather than let the
 	// frame clip the whole view, so the line naming the key that closes this
 	// screen is never the one that falls off the bottom of it.
-	if avail := max(m.height-1-len(footer), 1); len(lines) > avail {
+	if avail := max(m.height-len(m.footer())-len(tail), 1); len(lines) > avail {
 		lines = lines[:avail-1]
 		lines = append(lines, "  "+st.Faint.Render("… more keys below — grow the window to read them"))
 	}
-	return strings.Join(append(lines, footer...), "\n")
+	return strings.Join(append(lines, tail...), "\n")
 }
 
 func padRight(s string, n int) string {

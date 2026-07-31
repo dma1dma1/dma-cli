@@ -52,8 +52,8 @@ func TestPruneMergedWithNothingMergedSaysSo(t *testing.T) {
 	if mm.(Model).mode == modeConfirm {
 		t.Fatal("X asked about pruning nothing")
 	}
-	msg, ok := drainStatus(t, cmd)
-	if !ok || !msg.isErr {
+	msg, ok := drainNotice(t, cmd)
+	if !ok {
 		t.Fatalf("X said nothing about having no merged sessions: %+v", msg)
 	}
 }
@@ -73,7 +73,7 @@ func TestBulkTeardownFailureKeepsTheCard(t *testing.T) {
 	if len(m.sessions) != 1 {
 		t.Errorf("the failed session left the board: %d sessions remain", len(m.sessions))
 	}
-	msg, ok := drainStatus(t, cmd)
+	msg, ok := drainNotice(t, cmd)
 	if !ok || !strings.Contains(msg.text, "done") {
 		t.Errorf("the failure did not name the session: %+v", msg)
 	}
@@ -95,7 +95,7 @@ func TestPlainTeardownFailureIsReported(t *testing.T) {
 	m := testModel(nil, sess("done", "", core.LifecycleMerged, core.AgentIdle, "r"))
 
 	_, cmd := m.handleTeardown(teardownMsg{id: "done", err: errors.New("tmux is gone")})
-	if msg, ok := drainStatus(t, cmd); !ok || !msg.isErr {
+	if msg, ok := drainNotice(t, cmd); !ok {
 		t.Errorf("a failed prune said nothing: %+v", msg)
 	}
 }

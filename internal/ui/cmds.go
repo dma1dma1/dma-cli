@@ -137,10 +137,9 @@ type captureMsg struct {
 	content string
 }
 
-type statusMsg struct {
-	text  string
-	isErr bool
-}
+// noticeMsg is something that went wrong, on its way to the notice line. There
+// is no neutral form: an action that worked says so by changing the board.
+type noticeMsg struct{ text string }
 
 type attachDoneMsg struct{ err error }
 
@@ -254,7 +253,7 @@ func sendKeyCmd(s *core.Session, fk forwardedKey) tea.Cmd {
 			err = tmuxx.SendKey(ctx, sess.TmuxSession, fk.arg)
 		}
 		if err != nil {
-			return statusMsg{text: fmt.Sprintf("send to %s: %v", sess.Title, err), isErr: true}
+			return noticeMsg{text: fmt.Sprintf("send to %s: %v", sess.Title, err)}
 		}
 		return nil
 	}
@@ -269,7 +268,7 @@ func sendPasteCmd(s *core.Session, text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, text); err != nil {
-			return statusMsg{text: fmt.Sprintf("paste to %s: %v", sess.Title, err), isErr: true}
+			return noticeMsg{text: fmt.Sprintf("paste to %s: %v", sess.Title, err)}
 		}
 		return nil
 	}
@@ -481,21 +480,21 @@ func prQueueCmd(remote, sessionID string, number int) tea.Cmd {
 
 // linkCmd opens a PR in the browser or puts its address on the clipboard.
 //
-// Opening announces nothing: the browser coming to the front is the feedback.
-// Copying has no visible effect at all, so it is one of the few actions that
-// has to spend the footer to say it happened.
+// Neither announces itself: the browser coming to the front is the feedback for
+// one, and the clipboard holding the link is the feedback for the other. Only
+// the failures reach the notice line.
 func linkCmd(url string, action linkAction) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if action == linkCopy {
 			if err := link.Copy(ctx, url); err != nil {
-				return statusMsg{text: "copy link: " + err.Error(), isErr: true}
+				return noticeMsg{text: "copy link: " + err.Error()}
 			}
-			return statusMsg{text: "copied " + url}
+			return nil
 		}
 		if err := link.Open(ctx, url); err != nil {
-			return statusMsg{text: "open link: " + err.Error(), isErr: true}
+			return noticeMsg{text: "open link: " + err.Error()}
 		}
 		return nil
 	}
@@ -606,22 +605,13 @@ func expandPath(p string) string {
 	return p
 }
 
-// status announces work the board cannot show on its own -- something in
-// flight, or something that went wrong. It is deliberately not used to confirm
-// an action whose result is already visible on a card: the message takes the
-// footer away from the shortcut bar for ten seconds, and the shortcuts are what
-// the user is looking at.
-func status(text string) tea.Cmd {
-	return func() tea.Msg { return statusMsg{text: text} }
-}
-
 // errText is errStatus for a failure that is not an error value in hand -- a
 // step that failed inside an operation that otherwise succeeded, or a message
 // already formatted with the context the bare error lacks.
 func errText(text string) tea.Cmd {
-	return func() tea.Msg { return statusMsg{text: text, isErr: true} }
+	return func() tea.Msg { return noticeMsg{text: text} }
 }
 
 func errStatus(err error) tea.Cmd {
-	return func() tea.Msg { return statusMsg{text: err.Error(), isErr: true} }
+	return func() tea.Msg { return noticeMsg{text: err.Error()} }
 }
