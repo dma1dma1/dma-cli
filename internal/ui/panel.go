@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
@@ -233,7 +234,7 @@ func (m Model) viewPanel(height int) string {
 		// panel showing it are visibly one pair rather than two blues that happen
 		// to be near each other.
 		Accent: st.P.Focus,
-		Border: st.P.Border,
+		Border: m.panelBorder(),
 		Width:  m.contentWidth(),
 		Height: height,
 		// While the input has its own box that box is the focused one; two bold
@@ -241,6 +242,26 @@ func (m Model) viewPanel(height int) string {
 		Focused: m.focus != focusBoard && !m.inputDetached(),
 	}
 	return b.Render(strings.Join(rows, "\n"))
+}
+
+// panelBorder colors the panel's frame, and it colors it only for the one focus
+// that swallows the keyboard: the live agent.
+//
+// A thickened frame was carrying that on its own and could not. The board already
+// thickens the column holding the selected card, so heavy edges read as "this is
+// the current thing" rather than "what you type goes in here", and a focused chip
+// thickens this same frame -- leaving the two states, one of which eats every
+// keystroke, telling themselves apart by a few words of subtitle. The focus color
+// is what the rest of the UI already spends on "this one has it", and around the
+// whole panel it is visible from anywhere on screen.
+//
+// Chip focus keeps the plain frame: the focused chip is inverted in that color
+// itself, which says where the keyboard went without claiming the agent has it.
+func (m Model) panelBorder() color.Color {
+	if m.focus == focusPreview {
+		return m.styles.P.Focus
+	}
+	return m.styles.P.Border
 }
 
 // viewInputBox renders the task input in its own frame, which is what it gets
