@@ -210,8 +210,12 @@ prompt. Review whether that permission mode is appropriate for your environment
 before using it. You can change the command in `~/.dma/config.json`.
 
 Claude Code reports its state through hooks installed only in worktrees created
-by `dma`. Codex and custom profiles use process liveness and terminal activity,
-so their `working`, `idle`, and `needs you` states are less exact.
+by `dma`. Codex and custom profiles are read off their terminal instead, in this
+order of trust: the agent's own interrupt hint (`esc to interrupt`) says a turn
+is running, a menu with a selection marker on one row or a line naming a key to
+press means `needs you`, and for an agent that shows neither, a pane quiet for 25
+seconds means the turn ended. It is a good signal rather than an exact one — a
+turn shorter than one poll can pass unnoticed.
 
 You can add another agent by adding an entry to `agent_profiles`. The command
 runs inside the new worktree. The task is appended as a positional argument;
@@ -254,6 +258,12 @@ key—including `esc`—goes to the agent. Press `ctrl-q` to return control to t
 board. While attached, the mouse wheel scrolls through the agent's history.
 Hold `shift`—or `option` in some macOS terminals—to select text. `dma` restores
 your tmux mouse setting when you detach.
+
+If the agent's composer is modal—Codex with `tui.vim_mode_default`, which returns
+to normal mode after every message it sends—`dma` puts it back into insert mode
+when you hand it the keyboard, so a sentence typed into the panel arrives as text
+rather than as vim commands. Nothing is sent to an agent that is not modal, or
+while a dialog is open, so answering a prompt with `1` or `y` still works.
 
 ## How the board is organized
 

@@ -1,19 +1,32 @@
 // Package probe infers agent state for agents that cannot report it.
 //
 // Claude Code reports state through lifecycle hooks, which is exact. Codex and
-// anything else launched in a tmux session has no such channel, so state is
-// inferred from process liveness, whether the pane is still changing, and
-// whether the agent is showing its interrupt hint.
+// anything else launched in a tmux session has no such channel, so state is read
+// off the pane instead, in this order of trust:
+//
+//  1. the interrupt hint, which an agent shows for exactly as long as it has a
+//     turn to interrupt -- the closest thing to a statement of state on offer;
+//  2. a dialog, which is a menu with a selection marker on it or a line naming
+//     the key it wants pressed;
+//  3. whether the pane is still changing, for agents that show neither.
+//
+// Quiescence is last for a reason. A pane changes for reasons that have nothing
+// to do with the agent -- attaching hands the window to the real terminal and
+// detaching pins it back, and either reflows every line on screen -- so once an
+// agent has been seen to advertise its turns, its hint is believed over the
+// pixels. An agent that never advertises one still gets the coarse treatment.
 //
 // This is deliberately a fallback. Pane text is a rendering of the agent's UI,
-// not a state machine, so the heuristic is kept coarse: "is it still producing
-// output" is durable, while matching on specific words is not.
+// not a state machine, so nothing here matches on product wording, which changes
+// between releases: only on punctuation, structure, and the idioms a terminal
+// agent has to use to tell a user which key to press.
 package probe
 
 import (
 	"context"
 	"crypto/sha256"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,7 +42,8 @@ const IdleAfter = 25 * time.Second
 // SettleAfter is the same question asked of an agent that shows an interrupt
 // hint while it works, where the hint's absence already argues the turn is
 // over. The pane still has to hold still, because the hint is not on screen for
-// every frame of a turn: Codex replaces it with the message it is streaming.
+// every frame of a turn: Codex drops it while an approval dialog is up, and
+// again while a tool result draws.
 //
 // A live turn was sampled to size this. The longest the pane stayed
 // byte-identical mid-turn was 1.3s -- an agent that is working repaints at
@@ -48,21 +62,39 @@ const SettleAfter = 3 * time.Second
 // still each time they do.
 const TypingWindow = 3 * time.Second
 
-// promptPatterns match the shapes an approval or input request takes across
-// agents. They are intentionally about punctuation and structure rather than
-// specific product wording, which changes between releases.
+// promptPatterns match lines that only a dialog draws: a key the user is being
+// asked to press, or a question posed as the whole line. They are about
+// punctuation and structure rather than specific product wording, which changes
+// between releases.
+//
+// Every one of them has to be a line an agent would not print while narrating
+// its own work, because a false "needs you" is worse than a late one: it moves a
+// card to the front of the board and raises a desktop notification for a session
+// nobody has to look at. That rules out matching a phrase anywhere in a line --
+// "allow: GET, HEAD" and "I'll ask before I approve anything, ok?" are both
+// ordinary output -- so the question forms are anchored to the start of the line
+// and have to end there too.
 var promptPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\[y/n\]`),
-	regexp.MustCompile(`\[Y/n\]`),
-	regexp.MustCompile(`\[y/N\]`),
-	regexp.MustCompile(`\(y/n\)`),
-	regexp.MustCompile(`(?i)\ballow\b.*\?`),
-	regexp.MustCompile(`(?i)\bapprove\b.*\?`),
-	regexp.MustCompile(`(?i)do you want to (proceed|continue|allow)`),
-	regexp.MustCompile(`(?i)press enter to (continue|confirm)`),
-	regexp.MustCompile(`(?i)waiting for (your )?(input|approval|confirmation)`),
-	regexp.MustCompile(`(?i)^\s*❯?\s*\d\.\s`), // numbered choice list
+	regexp.MustCompile(`\[[yY]/[nN]\]`),
+	regexp.MustCompile(`\([yY]/[nN]\)`),
+	regexp.MustCompile(`(?i)^(?:allow|approve)\b[^?]{0,80}\?$`),
+	regexp.MustCompile(`(?i)^(?:do you want|would you like) to\b[^?]{0,80}\?$`),
+	regexp.MustCompile(`(?i)press (?:enter|return) to (?:continue|confirm)`),
+	regexp.MustCompile(`(?i)waiting for (?:your )?(?:input|approval|confirmation)`),
 }
+
+// selectMarker is the glyph an agent draws on the row its selection sits on:
+// Codex uses "›", Claude Code "❯". It is the whole difference between a menu and
+// a numbered list, so it is matched exactly rather than lumped in with the
+// bullets and borders cleanLine strips.
+const selectMarker = `[❯›▸▶→>]`
+
+// choiceOption matches one row of a select dialog -- a number, a separator and
+// some text -- and choiceMarker the one row of it that is selected.
+var (
+	choiceOption = regexp.MustCompile(`^(?:` + selectMarker + `\s*)?\d{1,2}[.)]\s+\S`)
+	choiceMarker = regexp.MustCompile(`^` + selectMarker + `\s*\d{1,2}[.)]\s`)
+)
 
 // busyPatterns match the affordance an agent shows while a turn is in flight.
 // A terminal agent that can be interrupted has to say which key does it, so the
@@ -79,9 +111,10 @@ var busyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(interrupt|cancel|stop)\b.{0,16}\bwith (esc|escape|ctrl[-+ ]?c)\b`),
 }
 
-// tailLines is how far up the pane a live hint or prompt can be. Both sit just
-// above the composer; matching the whole screen would fire on anything the
-// agent merely printed earlier.
+// tailLines is how many lines of content up the pane a live hint or dialog can
+// be. Both sit just above the composer, but a dialog is several lines tall and
+// carries its question above its options, so the window has to be deep enough to
+// hold all of one.
 const tailLines = 12
 
 // State is one probe result.
@@ -135,6 +168,16 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session, typedAt time.Time) 
 	now := time.Now()
 	h := sha256.Sum256([]byte(content))
 	prev, seen := p.last[s.ID]
+	if !seen {
+		// First sight of this session -- the board has just started, or the
+		// session has just been created. There is no earlier frame to compare
+		// against, so nothing can yet be said about whether the pane is
+		// changing, and the state the board already holds is the only honest
+		// answer. Inferring one from a zero-length quiet window instead is what
+		// made every Codex card report "working" the moment dma opened, and
+		// "done" 25 seconds later.
+		prev = sample{previous: s.AgentState}
+	}
 
 	changedAt := now
 	if seen && prev.hash == h {
@@ -156,54 +199,95 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session, typedAt time.Time) 
 // the session looked like last time.
 func classify(content string, quiet time.Duration, typing bool, prev sample, seen bool) (core.AgentState, string, bool) {
 	busy := isBusy(content)
-	sawBusy := busy || (seen && prev.sawBusy)
+	sawBusy := busy || prev.sawBusy
 
-	// An approval prompt outranks activity: the pane may still be animating a
-	// spinner, and still be showing an interrupt hint, while it waits.
-	if detail, ok := awaitingInput(content); ok {
+	// A dialog outranks activity: the pane may still be animating a spinner, and
+	// still be showing an interrupt hint, while it waits on a keypress.
+	if detail, ok := awaitingInput(content, busy); ok {
 		return core.AgentNeedsYou, detail, sawBusy
 	}
 	if busy {
 		return core.AgentWorking, "", sawBusy
 	}
-
-	// The user is typing into the composer and the agent is not offering to be
-	// interrupted, so the pane is changing because of them. Composing a message
-	// for an idle agent is not the agent working, and moving the card to active
-	// while someone types at it gets the board exactly backwards.
-	if typing {
-		return settled(prev, seen), "", sawBusy
+	// The dialog this session was blocked on has left the screen, so it is not
+	// blocked any more -- whoever answered it, and whatever the pane does next.
+	// Without this a "needs you" badge outlives the question that raised it,
+	// because every later frame just reports the state before it.
+	if prev.previous == core.AgentNeedsYou {
+		return core.AgentIdle, "", sawBusy
 	}
 
-	// How long the pane has to be still before it counts as finished. An agent
-	// that advertises its turns is not advertising one now, so quiescence is
-	// only being asked to rule out a gap mid-turn, and can be much shorter.
-	quietFor := IdleAfter
 	if sawBusy {
-		quietFor = SettleAfter
+		// This agent announces its own turns, so the hint -- not the pane
+		// changing -- is what starts one. Plenty changes a pane while the agent
+		// does nothing at all: attaching hands the window to the real terminal
+		// and detaching pins it back, and either reflows every line on screen.
+		// Reading a reflow as output is what walked an untouched card from idle
+		// to working to done every time someone opened the session.
+		if prev.previous != core.AgentWorking {
+			return held(prev), "", sawBusy
+		}
+		// Ending a turn still waits for the pane to hold still, because the hint
+		// is not on screen for every frame of one and a gap mid-turn must not
+		// read as finished.
+		if quiet < SettleAfter {
+			return core.AgentWorking, "", sawBusy
+		}
+		return core.AgentDone, "", sawBusy
 	}
-	if quiet < quietFor {
+
+	// Nothing has ever advertised a turn on this pane, so pane quiescence is all
+	// there is to go on -- and quiescence needs a second frame to measure.
+	if !seen {
+		return held(prev), "", sawBusy
+	}
+	// The user is typing into the composer, so the pane is changing because of
+	// them. Composing a message for an idle agent is not the agent working, and
+	// moving the card to active while someone types at it gets the board exactly
+	// backwards.
+	if typing {
+		return settled(prev), "", sawBusy
+	}
+	if quiet < IdleAfter {
 		return core.AgentWorking, "", sawBusy
 	}
-	return settled(prev, seen), "", sawBusy
+	return settled(prev), "", sawBusy
 }
 
 // settled names the state of an agent that has stopped producing output: it
-// finished a turn if it was working, and is otherwise just sitting there.
-func settled(prev sample, seen bool) core.AgentState {
-	if !seen {
-		return core.AgentIdle
-	}
+// finished a turn if it was working, and otherwise keeps whatever it had.
+func settled(prev sample) core.AgentState {
 	if prev.previous == core.AgentWorking {
 		return core.AgentDone
+	}
+	return held(prev)
+}
+
+// held is the state a session keeps when a frame taught the probe nothing. It is
+// deliberately not settled(): a turn cannot have finished on the strength of an
+// observation that was never made.
+func held(prev sample) core.AgentState {
+	if prev.previous == "" {
+		return core.AgentIdle
 	}
 	return prev.previous
 }
 
 // isBusy reports whether the agent is showing its interrupt hint, which it does
 // only while a turn is in flight.
+//
+// A line that is also asking for a keypress does not count, however much it
+// reads like a hint. Codex closes an approval dialog with "Press enter to
+// confirm or esc to cancel": the escape it offers cancels the question, not a
+// turn, and taking that for activity would leave a blocked session sitting in the
+// active column.
 func isBusy(content string) bool {
-	return matchesTail(content, busyPatterns) != ""
+	for _, line := range tail(content) {
+		if matches(line, busyPatterns) && !matches(line, promptPatterns) {
+			return true
+		}
+	}
+	return false
 }
 
 // Forget drops remembered state for sessions that no longer exist.
@@ -215,52 +299,148 @@ func (p *Prober) Forget(keep map[string]bool) {
 	}
 }
 
-// awaitingInput looks for an approval or input request near the end of the pane,
-// where a live prompt would be.
-func awaitingInput(content string) (string, bool) {
-	line := matchesTail(content, promptPatterns)
-	if line == "" {
-		return "", false
+// awaitingInput looks for a request for input near the end of the pane, where a
+// live dialog would be, and names it for the badge.
+//
+// busy is whether the agent is advertising a turn in flight, which decides
+// whether a menu counts. Mid-turn, numbered lines are the agent writing a list;
+// only an agent with nothing in flight is plausibly holding a menu open. The
+// wording patterns above need no such help -- nothing prints them by accident --
+// so they still answer while a turn runs.
+func awaitingInput(content string, busy bool) (string, bool) {
+	lines := tail(content)
+	// A menu is asked about first because it carries the better answer: the
+	// question a dialog poses reads on a card, where the key it wants pressed
+	// does not.
+	if !busy {
+		if q, ok := choicePrompt(lines); ok {
+			return truncate(q, 60), true
+		}
 	}
-	return truncate(line, 60), true
+	if line := matchAny(lines, promptPatterns); line != "" {
+		return truncate(line, 60), true
+	}
+	return "", false
 }
 
-// matchesTail returns the last line of the pane's tail matching any pattern, or
-// "" for none. Only the tail is searched: a hint or prompt is live where the
-// agent is drawing now, and matching the whole screen would fire on anything it
-// merely printed earlier.
-func matchesTail(content string, patterns []*regexp.Regexp) string {
-	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
-	start := max(len(lines)-tailLines, 0)
-	for i := len(lines) - 1; i >= start; i-- {
-		line := strings.TrimSpace(stripANSI(lines[i]))
-		if line == "" {
+// choicePrompt reports whether the tail holds a select-one dialog: numbered
+// options on consecutive lines, exactly one of them carrying a selection marker.
+//
+// The marker is the whole signal, because agents render a list they wrote the
+// same way they render options -- Codex answers with "• 1. Use Ctrl-b d to
+// detach" above "  2. Rename windows with Ctrl-b ," -- and matching numbered
+// lines alone put every session that replied with a list into "needs you".
+// Insisting on exactly one marked row is what keeps a quoted or bulleted list,
+// where every row carries the same prefix, from reading as a selection.
+func choicePrompt(lines []string) (string, bool) {
+	// The run nearest the bottom is the live one; a footer like "Press enter to
+	// confirm" sits below the options, so the search starts under it.
+	end := len(lines)
+	for end > 0 && !choiceOption.MatchString(lines[end-1]) {
+		end--
+	}
+	start := end
+	for start > 0 && choiceOption.MatchString(lines[start-1]) {
+		start--
+	}
+	if end-start < 2 {
+		return "", false
+	}
+
+	marked := ""
+	for _, line := range lines[start:end] {
+		if !choiceMarker.MatchString(line) {
 			continue
 		}
-		for _, re := range patterns {
-			if re.MatchString(line) {
-				return line
-			}
+		if marked != "" {
+			return "", false
+		}
+		marked = line
+	}
+	if marked == "" {
+		return "", false
+	}
+	return question(lines[:start], marked), true
+}
+
+// question names what a dialog is asking. The options themselves are the
+// fallback: a menu's own rows say less than the line that posed it, and a real
+// dialog puts that line just above them.
+func question(above []string, marked string) string {
+	for i := len(above) - 1; i >= 0 && i >= len(above)-4; i-- {
+		if strings.HasSuffix(above[i], "?") {
+			return above[i]
+		}
+	}
+	return marked
+}
+
+// matchAny returns the last of lines matching any pattern, or "" for none.
+func matchAny(lines []string, patterns []*regexp.Regexp) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if matches(lines[i], patterns) {
+			return lines[i]
 		}
 	}
 	return ""
+}
+
+func matches(line string, patterns []*regexp.Regexp) bool {
+	for _, re := range patterns {
+		if re.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// tail returns the end of the pane, cleaned for matching. Only the tail is
+// looked at: a hint or dialog is live where the agent is drawing now, and
+// matching the whole screen would fire on anything it merely printed earlier.
+//
+// Blank lines are dropped rather than counted, which is what makes the window a
+// fixed amount of content instead of a fixed number of rows. Agents space their
+// output out -- Codex puts a blank line between every block, and pads the rest of
+// the pane below the composer -- so a dozen rows off the bottom of the screen can
+// hold as little as two lines of a dialog.
+func tail(content string) []string {
+	rows := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	lines := make([]string, 0, tailLines)
+	for i := len(rows) - 1; i >= 0 && len(lines) < tailLines; i-- {
+		if line := cleanLine(rows[i]); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	slices.Reverse(lines)
+	return lines
+}
+
+// cleanLine reduces one captured row to the text a pattern should see: no
+// styling, no surrounding space, and none of the bullets and box borders agents
+// draw around their own output.
+//
+// Selection markers survive on purpose. They are the one piece of decoration
+// that carries meaning, and stripping them with the rest would leave a menu
+// indistinguishable from a list.
+func cleanLine(s string) string {
+	s = strings.TrimSpace(stripANSI(s))
+	s = strings.TrimLeft(s, "│┃▌|•∙·*✔✗⚠■◆●⏺ ")
+	s = strings.TrimRight(s, "│┃▌| ")
+	return strings.TrimSpace(s)
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
+// truncate shortens a line for the badge, counting characters rather than bytes:
+// the lines it is given are full of glyphs an agent drew, and cutting one in
+// half would leave a replacement character in the notification.
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return string(r[:n-1]) + "…"
 }

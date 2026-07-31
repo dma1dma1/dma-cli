@@ -1,9 +1,15 @@
 package ui
 
 import (
+	"context"
+	"regexp"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/dma1dma1/dma-cli/internal/core"
+	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
 // This file translates a Bubble Tea keypress into what tmux send-keys wants, so
@@ -125,4 +131,87 @@ func tmuxKey(k tea.Key) (fk forwardedKey, ok bool) {
 		return forwardedKey{arg: prefix.String() + base}, true
 	}
 	return forwardedKey{}, false
+}
+
+// --- modal composers ---
+
+// composerNormalMode matches the mode a modal composer reports in its own status
+// line. Codex draws "Vim: Normal" there when its composer is in vim's normal
+// mode, and "Vim: Insert" when a typed letter is text.
+//
+// The marker is the only thing that has to be recognized here, and it answers
+// two questions at once: whether this agent's composer is modal at all, and
+// which mode it is in. An agent that draws no marker is not modal, so nothing is
+// sent to it -- and neither is anything sent while a dialog is open, since the
+// composer is not on screen for a Codex approval prompt and the marker goes with
+// it. Keystrokes then reach the dialog, which is what answering one needs.
+// It is anchored to the end of the status line, where the mode is drawn. That
+// costs nothing and rules out an agent that merely wrote the words: a stray "A"
+// in the middle of somebody's prompt is a worse failure than this quietly
+// stopping if Codex ever appends another segment after the mode.
+var composerNormalMode = regexp.MustCompile(`(?i)\bvim:\s*normal$`)
+
+// paneStyling matches one terminal escape sequence. The pane is captured with
+// its styling so the panel can render it, and Codex colors the mode marker, so
+// the styling has to come off before the marker can be read.
+var paneStyling = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+
+// insertKey puts a modal composer into insert mode with the cursor after
+// everything already typed there -- vim's "append at end of line". Plain "i"
+// would insert wherever normal mode happens to have left the cursor, which for
+// somebody about to type a message is the wrong end of their own draft.
+const insertKey = "A"
+
+// insertModeCmd puts a modal composer into insert mode before the panel starts
+// forwarding keystrokes to it.
+//
+// Codex can be configured with a vim composer (`tui.vim_mode_default`), and it
+// returns to normal mode after every message it submits. The panel forwards what
+// the user types one key at a time, so in normal mode a sentence is executed
+// rather than typed: "Run the tests" enters replace mode, undoes an edit,
+// deletes to end of line and substitutes a character, and what arrives in the
+// composer is neither the message nor nothing.
+//
+// This runs on the transition into panel focus -- not per keystroke -- because it
+// is the one moment the keyboard changes hands, and because a mid-word capture
+// that read the mode wrongly would type a stray "A" into the user's own
+// sentence. For the same reason the pane is captured fresh here rather than read
+// from the panel's last frame, which can be a second old.
+func insertModeCmd(s *core.Session) tea.Cmd {
+	if s == nil || !s.TmuxAlive {
+		return nil
+	}
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		pane, err := tmuxx.CapturePane(ctx, sess.TmuxSession, 0)
+		if err != nil || !inNormalMode(pane.Content) {
+			return nil
+		}
+		// Best effort, and silent: the panel still works if this does not land,
+		// and an error about a mode the user never asked about would be noise.
+		_ = tmuxx.SendText(ctx, sess.TmuxSession, insertKey)
+		return nil
+	}
+}
+
+// inNormalMode reports whether the pane shows a modal composer sitting in normal
+// mode, where what the user types next would be read as commands.
+//
+// Only the last line of content is read, because that is the status line: an
+// agent draws its composer and status under everything it has said, so the mode
+// is on the bottom row whatever else is on screen -- and a marker anywhere else
+// is not a marker.
+func inNormalMode(content string) bool {
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(paneStyling.ReplaceAllString(lines[i], ""))
+		if line == "" {
+			continue
+		}
+		return composerNormalMode.MatchString(line)
+	}
+	return false
 }
