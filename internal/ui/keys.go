@@ -53,6 +53,13 @@ func (m Model) hints() []hint {
 	}
 
 	switch m.mode {
+	case modeHelp:
+		// The help screen types into its search box, so the bar has to say so:
+		// the keys named on the board's row would all land in the query instead.
+		return []hint{
+			{"type", "search the keymap"}, {"ctrl-u", "clear"},
+			{"esc", "clear / back"}, {"enter", "back"},
+		}
 	case modeDiff:
 		return []hint{
 			{"j/k", "move"}, {"h/l", "tree/diff"}, {"n/p", "next/prev file"},
@@ -112,7 +119,7 @@ var helpText = [][3]string{
 	{"", "A", "pick the agent new sessions start with"},
 	{"", "r", "repositories: switch, add, unregister"},
 	{"", "p", "pick the project: filters the board, and new sessions join it"},
-	{"", "?", "this help"},
+	{"", "?", "this help — type in it to search the keymap"},
 	{"", "q", "quit — agents keep running"},
 
 	{"Task input", "", ""},
