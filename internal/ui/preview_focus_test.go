@@ -225,6 +225,50 @@ func TestClickOnPreviewFocusesIt(t *testing.T) {
 	}
 }
 
+// Once the preview owns input it behaves like the attached terminal for the
+// other common input gesture too: the wheel reads tmux history rather than
+// falling through to the board behind it.
+func TestWheelScrollsFocusedPreviewHistory(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.preview = "older output\nlatest output"
+	m.focus = focusPreview
+	m.layoutSizes()
+	rendered(t, m)
+
+	z := zone.Get(zonePreview)
+	if z.IsZero() {
+		t.Fatal("no zone recorded for the preview body")
+	}
+	x, y := (z.StartX+z.EndX)/2, (z.StartY+z.EndY)/2
+	next, cmd := m.handleMouse(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelUp})
+	m = next.(Model)
+	if m.previewScroll != 3 {
+		t.Errorf("wheel left preview scroll at %d, want 3", m.previewScroll)
+	}
+	if cmd == nil {
+		t.Error("wheel scheduled no history capture")
+	}
+
+	next, _ = m.handleMouse(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
+	if got := next.(Model).previewScroll; got != 0 {
+		t.Errorf("wheel down left preview scroll at %d, want live position", got)
+	}
+}
+
+func TestTypingInScrolledPreviewReturnsToLivePane(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.focus = focusPreview
+	m.previewScroll = 12
+
+	next, cmd := m.handleKey(keyOf('x'))
+	if got := next.(Model).previewScroll; got != 0 {
+		t.Errorf("typing left preview scroll at %d, want live position", got)
+	}
+	if cmd == nil {
+		t.Error("typing produced no command for the agent")
+	}
+}
+
 // panelBottomEdge is the panel's closing frame line: all frame and no title, so
 // two focus states can be compared on how the box is drawn rather than on the
 // words in its top edge.

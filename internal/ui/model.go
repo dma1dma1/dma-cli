@@ -87,6 +87,11 @@ type Model struct {
 	// the content and only ever set together with it, so the caret cannot be
 	// drawn onto a frame it does not belong to.
 	previewCursor tmuxx.Cursor
+	// previewScroll is how many lines above the live pane the panel is showing.
+	// It belongs to the preview rather than tmux copy mode: the panel is a
+	// captured view, and scrolling it must not change how the real pane receives
+	// the next forwarded key.
+	previewScroll int
 
 	// echoUntil is how long the panel keeps re-reading the pane at echoInterval
 	// after a forwarded keystroke; echoing says whether that ticker is running,
@@ -218,6 +223,7 @@ func (m Model) selected() *core.Session {
 func (m *Model) selectSession(s *core.Session) {
 	m.selectedID, m.deselected = s.ID, false
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
+	m.previewScroll = 0
 	m.unpinScroll()
 }
 
@@ -225,6 +231,7 @@ func (m *Model) selectSession(s *core.Session) {
 func (m *Model) clearSelection() {
 	m.selectedID, m.deselected = "", true
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
+	m.previewScroll = 0
 }
 
 // dropSelectionIfHidden empties the panel when a filter has just taken the
@@ -384,14 +391,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// capture in the same moment buys nothing.
 			return m, previewTickCmd()
 		}
-		return m, tea.Batch(previewTickCmd(), previewCmd(m.selected()))
+		return m, tea.Batch(previewTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
 
 	case echoTickMsg:
 		if !now().Before(m.echoUntil) {
 			m.echoing = false
 			return m, nil
 		}
-		return m, tea.Batch(echoTickCmd(), previewCmd(m.selected()))
+		return m, tea.Batch(echoTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
 
 	case probeTickMsg:
 		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.typedAt))
@@ -420,8 +427,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleProbe(msg)
 
 	case previewMsg:
-		if msg.id == m.selectedID {
+		// Captures are asynchronous. A result requested before a later wheel
+		// event must not pull the preview back to an older position.
+		if msg.id == m.selectedID && msg.requestedScroll == m.previewScroll {
 			m.preview, m.previewCursor = msg.content, msg.cursor
+			m.previewScroll = msg.actualScroll
 		}
 		return m, nil
 
@@ -738,7 +748,7 @@ func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
 			dirty = true
 		}
 		// The probe already paid for a capture; reuse it as the preview.
-		if st.Content != "" && s.ID == m.selectedID {
+		if st.Content != "" && s.ID == m.selectedID && m.previewScroll == 0 {
 			m.preview, m.previewCursor = st.Content, st.Cursor
 		}
 	}

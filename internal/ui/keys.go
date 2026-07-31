@@ -151,6 +151,7 @@ var helpText = [][3]string{
 	{"Session panel", "", ""},
 	{"", "t / click", "aim the keyboard at the agent in the panel"},
 	{"", "ctrl-q", "hand the keyboard back to the board (or click off the panel)"},
+	{"", "wheel", "scroll the agent's history"},
 	{"", "", "every other key, Escape and ctrl-c included, goes to the agent"},
 	{"", "", "for full mouse and redraw fidelity, attach with a instead"},
 

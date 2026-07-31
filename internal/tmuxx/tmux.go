@@ -281,6 +281,49 @@ func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
 	return Pane{Content: content, Cursor: cur}, nil
 }
 
+// CapturePaneAt returns the pane viewport scroll lines above its live position.
+// The actual offset is returned as well, since tmux clamps a request at the
+// oldest line in its history.
+//
+// This is deliberately independent of tmux copy mode. The board is only a
+// captured view of the pane, not a tmux client, and entering copy mode here
+// would leave the real session there too -- the next key forwarded from the
+// panel would no longer have the same behavior as typing into the live agent.
+func CapturePaneAt(ctx context.Context, name string, scroll int) (Pane, int, error) {
+	if scroll <= 0 {
+		pane, err := CapturePane(ctx, name, 0)
+		return pane, 0, err
+	}
+
+	out, err := run(ctx, "list-panes", "-t", windowTarget(name),
+		"-F", "#{pane_height} #{history_size}")
+	if err != nil {
+		return Pane{}, 0, err
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	var height, history int
+	if _, err := fmt.Sscanf(line, "%d %d", &height, &history); err != nil {
+		return Pane{}, 0, fmt.Errorf("tmux pane history %q: %w", line, err)
+	}
+
+	scroll = min(scroll, history)
+	if scroll == 0 {
+		pane, err := CapturePane(ctx, name, 0)
+		return pane, 0, err
+	}
+	// capture-pane numbers the live screen from 0 and its history backwards
+	// from -1. Moving the whole height-row viewport up by scroll therefore
+	// shifts both ends of the capture range by that amount.
+	content, err := run(ctx, "capture-pane", "-p", "-e", "-t", name,
+		"-S", strconv.Itoa(-scroll), "-E", strconv.Itoa(height-1-scroll))
+	if err != nil {
+		return Pane{}, 0, err
+	}
+	// A history view has no meaningful application cursor: tmux's cursor still
+	// describes the live screen below it.
+	return Pane{Content: content}, scroll, nil
+}
+
 // PaneCursor reports the cursor tmux is holding for a pane.
 //
 // It is a separate query because capture-pane returns cells and nothing else:

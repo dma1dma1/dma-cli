@@ -32,9 +32,11 @@ type probeTickMsg time.Time
 // previewMsg carries recent terminal output for the panel, with the cursor
 // position belonging to that same frame.
 type previewMsg struct {
-	id      string
-	content string
-	cursor  tmuxx.Cursor
+	id              string
+	content         string
+	cursor          tmuxx.Cursor
+	requestedScroll int
+	actualScroll    int
 }
 
 // probeMsg carries inferred state for agents that cannot report their own.
@@ -222,6 +224,13 @@ func resizeSessionsCmd(sessions []*core.Session, cols, rows int) tea.Cmd {
 // previewCmd captures the selected session's pane for display. Nothing is
 // inferred from this text; state comes from hooks or the prober.
 func previewCmd(s *core.Session) tea.Cmd {
+	return previewCmdAt(s, 0)
+}
+
+// previewCmdAt captures a history viewport without putting the real tmux pane
+// into copy mode. requestedScroll travels with the result so a slow capture
+// from an older wheel position cannot overwrite a newer one.
+func previewCmdAt(s *core.Session, requestedScroll int) tea.Cmd {
 	if s == nil {
 		return nil
 	}
@@ -229,8 +238,11 @@ func previewCmd(s *core.Session) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		pane, _ := tmuxx.CapturePane(ctx, sess.TmuxSession, 0)
-		return previewMsg{id: sess.ID, content: pane.Content, cursor: pane.Cursor}
+		pane, actual, _ := tmuxx.CapturePaneAt(ctx, sess.TmuxSession, requestedScroll)
+		return previewMsg{
+			id: sess.ID, content: pane.Content, cursor: pane.Cursor,
+			requestedScroll: requestedScroll, actualScroll: actual,
+		}
 	}
 }
 
