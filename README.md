@@ -210,8 +210,12 @@ prompt. Review whether that permission mode is appropriate for your environment
 before using it. You can change the command in `~/.dma/config.json`.
 
 Claude Code reports its state through hooks installed only in worktrees created
-by `dma`. Codex and custom profiles use process liveness and terminal activity,
-so their `working`, `idle`, and `needs you` states are less exact.
+by `dma`. Codex and custom profiles are read off their terminal instead, in this
+order of trust: the agent's own interrupt hint (`esc to interrupt`) says a turn
+is running, a menu with a selection marker on one row or a line naming a key to
+press means `needs you`, and for an agent that shows neither, a pane quiet for 25
+seconds means the turn ended. It is a good signal rather than an exact one — a
+turn shorter than one poll can pass unnoticed.
 
 You can add another agent by adding an entry to `agent_profiles`. The command
 runs inside the new worktree. The task is appended as a positional argument;
