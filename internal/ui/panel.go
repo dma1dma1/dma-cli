@@ -39,7 +39,10 @@ const (
 	zoneProjectChip = "chip:project"
 	zonePreview     = "panel:preview"
 	zoneInput       = "panel:input"
+	zoneDiffTree    = "diff:tree"
 )
+
+func zoneDiffRow(i int) string { return fmt.Sprintf("diff:row:%d", i) }
 
 // projectNew is the sentinel row that invents a project rather than selecting
 // one. Labels are free text and a dropdown cannot take text, so this row hands

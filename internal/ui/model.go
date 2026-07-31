@@ -102,6 +102,33 @@ type Model struct {
 
 	diffView viewport.Model
 	diffMode gitx.DiffMode
+	// diffFiles is the file tree beside the diff. The diff pane renders one row
+	// of it at a time, so a session with fifty changed files costs one file's
+	// worth of git rather than fifty.
+	diffFiles fileTree
+	// diffCache holds rendered diffs by cacheKey. Stepping back to a file you
+	// have already read should not spend a git process on it again; the cache is
+	// dropped whole on a refresh, so it can never outlive the work it describes.
+	diffCache map[string]string
+	// diffContent is what the pane is showing, kept beside the viewport because
+	// the hunk rows are worked out by searching the rendered text and the
+	// viewport does not hand its content back.
+	diffContent string
+	// diffHunks is the structure of the diff on screen: where each separate
+	// change in the file starts and ends. diffHunkRows is the row each one landed
+	// on once rendered, which is what } and { scroll to.
+	diffHunks     []gitx.Hunk
+	diffHunkRows  []int
+	diffHunkCache map[string][]gitx.Hunk
+	// diffTreeFocus routes j/k to the tree rather than the diff.
+	diffTreeFocus bool
+	// diffTreeHidden gives the whole width to the diff. A narrow window starts
+	// out this way, since a tree pane and a diff cannot both be legible in 80
+	// columns.
+	diffTreeHidden bool
+	// diffSideBySide asks delta for two columns. Without delta there is only one
+	// layout git can produce, so the toggle says so rather than silently failing.
+	diffSideBySide bool
 
 	hookEvents <-chan hooks.Event
 	hookURL    string
@@ -249,8 +276,49 @@ func (m *Model) layoutSizes() {
 	m.setInputPrompt()
 	m.input.MaxHeight = m.inputRowsMax()
 	m.input.SetWidth(m.inputWidth())
-	m.diffView.SetWidth(max(m.contentWidth()-4, 20))
-	m.diffView.SetHeight(max(m.height-6, 5))
+	m.diffView.SetWidth(m.diffPaneWidth())
+	m.diffView.SetHeight(m.diffPaneHeight())
+}
+
+// diffTreeWidth is the width of the file tree pane, zero when it is not drawn.
+//
+// A fixed width rather than a share of the window: the rows are file names, and
+// a pane that grew with the terminal would spend the extra cells on whitespace
+// the diff needs more. Below the cutoff neither pane would be readable, so the
+// tree gives way entirely.
+func (m Model) diffTreeWidth() int {
+	if m.diffTreeHidden || m.contentWidth() < diffTreeMinTotal {
+		return 0
+	}
+	return diffTreeCols
+}
+
+const (
+	// diffTreeCols is wide enough for a nested file name plus its counts.
+	diffTreeCols = 32
+	// diffTreeMinTotal is the narrowest window that still leaves a usable diff
+	// beside the tree.
+	diffTreeMinTotal = 100
+)
+
+// diffPaneWidth is the interior width of the diff pane, which is also what delta
+// is told to render into: too wide and every line wraps one cell early, too
+// narrow and the side-by-side columns do not line up with the frame.
+func (m Model) diffPaneWidth() int {
+	inner := m.contentWidth() - 4
+	if treeW := m.diffTreeWidth(); treeW > 0 {
+		inner -= treeW + diffDividerCols
+	}
+	return max(inner, 20)
+}
+
+// diffDividerCols is the width of the rule between the panes, " │ ".
+const diffDividerCols = 3
+
+func (m Model) diffPaneHeight() int {
+	// Four rows go to the frame and the chip row, two more to the notice line
+	// and the shortcut bar.
+	return max(m.height-6, 5)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -329,11 +397,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.typedAt))
 
 	case pollTickMsg:
+		// Hoisted out of the batch: refreshDiff drops the rendered-diff cache, and
+		// that has to happen to the model being returned rather than to a copy
+		// made while the arguments were being evaluated.
+		diff := m.refreshDiff()
 		return m, tea.Batch(
 			pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
 			pollPRsCmd(m.cfg, m.sessions),
 			observeCmd(m.sessions),
-			m.refreshDiff(),
+			diff,
 			// A resize normally arrives as a signal, but this program hands the
 			// terminal to tmux and takes it back, so asking outright is the cheap
 			// way to be sure a resize missed in between does not leave the board
@@ -442,6 +514,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case changedFilesMsg:
+		if msg.id != m.selectedID || msg.mode != m.diffMode {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m, errStatus(msg.err)
+		}
+		m.diffFiles.setFiles(msg.files)
+		return m, m.showSelectedFile()
+
 	case diffMsg:
 		if msg.id != m.selectedID {
 			return m, nil
@@ -453,7 +535,31 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(content) == "" {
 			content = "(no changes)"
 		}
-		m.diffView.SetContent(content)
+		if m.diffCache == nil {
+			m.diffCache = map[string]string{}
+		}
+		m.diffCache[msg.key] = content
+		// A render that finished after the cursor moved on is worth keeping but
+		// not worth showing: the pane already holds the file it moved to.
+		if msg.key == m.diffKey() {
+			m.setDiffContent(content)
+		}
+		return m, nil
+
+	case hunksMsg:
+		if msg.err != nil || msg.id != m.selectedID {
+			return m, nil
+		}
+		if m.diffHunkCache == nil {
+			m.diffHunkCache = map[string][]gitx.Hunk{}
+		}
+		m.diffHunkCache[msg.key] = msg.hunks
+		// Same as a late diff: worth filing, only worth showing if it is still
+		// the file on screen.
+		if msg.key == m.hunkKey() {
+			m.diffHunks = msg.hunks
+			m.syncHunkRows()
+		}
 		return m, nil
 
 	case noticeMsg:
@@ -488,14 +594,105 @@ func (m *Model) syncAgentSize() tea.Cmd {
 	return resizeSessionsCmd(m.sessions, cols, rows)
 }
 
-func (m Model) refreshDiff() tea.Cmd {
+// openDiff enters the review view with the file tree in focus, because picking
+// which change to read is the first thing to do in it.
+func (m *Model) openDiff() tea.Cmd {
+	m.mode = modeDiff
+	m.diffTreeFocus = m.diffTreeWidth() > 0
+	return m.refreshDiff()
+}
+
+// refreshDiff re-lists the files and re-renders the current one, discarding
+// everything already rendered. It is what opening the view, switching session,
+// and switching mode all go through.
+func (m *Model) refreshDiff() tea.Cmd {
 	if m.mode != modeDiff {
 		return nil
 	}
-	if s := m.selected(); s != nil {
-		return diffCmd(s, m.diffMode)
+	s := m.selected()
+	if s == nil {
+		return nil
 	}
-	return nil
+	// The caches describe a diff as it was; a refresh exists because that may
+	// have changed underneath them.
+	m.diffCache = map[string]string{}
+	m.diffHunkCache = map[string][]gitx.Hunk{}
+	m.diffHunks, m.diffHunkRows = nil, nil
+	m.setDiffContent("")
+	files := changedFilesCmd(s, m.diffMode)
+	return tea.Batch(files, m.showSelectedFile())
+}
+
+// diffOpts is how the diff pane wants its content rendered.
+func (m Model) diffOpts() gitx.DiffOpts {
+	return gitx.DiffOpts{Width: m.diffPaneWidth(), SideBySide: m.diffSideBySide}
+}
+
+// diffKey identifies the render the pane should be showing. Everything that
+// changes the output is in it: which session, which range, which row, and which
+// layout.
+func (m Model) diffKey() string {
+	target := m.diffFiles.target()
+	return fmt.Sprintf("%s|%d|%v|%v|%s|%d", m.selectedID, m.diffMode,
+		m.diffSideBySide, target.Untracked, target.Path, m.diffPaneWidth())
+}
+
+// hunkKey identifies a file's structure. The layout it is rendered in does not
+// change where its changes are, so neither the width nor the columns are in it.
+func (m Model) hunkKey() string {
+	target := m.diffFiles.target()
+	return fmt.Sprintf("%s|%d|%v|%s", m.selectedID, m.diffMode, target.Untracked, target.Path)
+}
+
+// showSelectedFile puts the row under the tree cursor into the diff pane,
+// rendering it only if it has not been rendered already.
+func (m *Model) showSelectedFile() tea.Cmd {
+	s := m.selected()
+	if s == nil {
+		return nil
+	}
+
+	var cmds []tea.Cmd
+	key := m.diffKey()
+	if cached, ok := m.diffCache[key]; ok {
+		m.setDiffContent(cached)
+	} else {
+		cmds = append(cmds, diffCmd(s, m.diffMode, m.diffFiles.target(), m.diffOpts(), key))
+	}
+
+	// Hunks are per file: a directory's diff spans several, and jumping between
+	// changes in a list of unrelated files is not a thing to want.
+	m.diffHunks, m.diffHunkRows = nil, nil
+	if row, ok := m.diffFiles.selected(); ok && !row.dir {
+		hunkKey := m.hunkKey()
+		if cached, ok := m.diffHunkCache[hunkKey]; ok {
+			m.diffHunks = cached
+			m.syncHunkRows()
+		} else {
+			cmds = append(cmds, hunksCmd(s, m.diffMode, m.diffFiles.target(), hunkKey))
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// setDiffContent puts a rendered diff in the pane, back at the top, and works
+// out where its hunks landed.
+func (m *Model) setDiffContent(content string) {
+	m.diffContent = content
+	m.diffView.SetContent(content)
+	m.diffView.SetYOffset(0)
+	m.syncHunkRows()
+}
+
+// syncHunkRows works out where each hunk landed in the diff now on screen. The
+// content and the hunks arrive from two separate git calls, so this runs after
+// either of them and does nothing until both are in.
+func (m *Model) syncHunkRows() {
+	if len(m.diffHunks) == 0 {
+		m.diffHunkRows = nil
+		return
+	}
+	m.diffHunkRows = hunkRows(m.diffContent, m.diffHunks)
 }
 
 // --- hooks and probing ---

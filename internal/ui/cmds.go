@@ -132,7 +132,26 @@ type killedMsg struct {
 type diffMsg struct {
 	id      string
 	content string
-	err     error
+	// key identifies which file, mode and layout this render is of, so a diff
+	// that arrives after the cursor has moved on is filed and not drawn.
+	key string
+	err error
+}
+
+// changedFilesMsg carries the file list the tree is built from.
+type changedFilesMsg struct {
+	id    string
+	mode  gitx.DiffMode
+	files []gitx.ChangedFile
+	err   error
+}
+
+// hunksMsg carries the structure of one file's diff.
+type hunksMsg struct {
+	id    string
+	key   string
+	hunks []gitx.Hunk
+	err   error
 }
 
 type captureMsg struct {
@@ -563,15 +582,44 @@ func killCmd(s *core.Session) tea.Cmd {
 	}
 }
 
-// diffCmd renders the diff by shelling out to git (and delta when present)
-// rather than parsing and re-rendering it here.
-func diffCmd(s *core.Session, mode gitx.DiffMode) tea.Cmd {
+// changedFilesCmd lists the paths a session's diff touches. It is cheap enough
+// to run on every open and mode switch: two plumbing commands and a read of the
+// untracked files, with no patch text rendered at all.
+func changedFilesCmd(s *core.Session, mode gitx.DiffMode) tea.Cmd {
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		files, err := gitx.ChangedFiles(ctx, sess.WorktreePath, sess.BaseBranch, mode)
+		return changedFilesMsg{id: sess.ID, mode: mode, files: files, err: err}
+	}
+}
+
+// diffCmd renders one target's diff by shelling out to git (and delta when
+// present) rather than parsing and re-rendering it here.
+//
+// Rendering one file at a time is what the file tree buys: the whole diff of a
+// session an agent has been working in for an hour is a lot of text to colorize
+// for a pane showing forty lines of it.
+func diffCmd(s *core.Session, mode gitx.DiffMode, target gitx.DiffTarget, opts gitx.DiffOpts, key string) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := gitx.Diff(ctx, sess.WorktreePath, sess.BaseBranch, mode)
-		return diffMsg{id: sess.ID, content: out, err: err}
+		out, err := gitx.Diff(ctx, sess.WorktreePath, sess.BaseBranch, mode, target, opts)
+		return diffMsg{id: sess.ID, content: out, key: key, err: err}
+	}
+}
+
+// hunksCmd reads the structure of one file's diff: a plain patch from git,
+// parsed. No delta and no colors, so it is cheap next to rendering.
+func hunksCmd(s *core.Session, mode gitx.DiffMode, target gitx.DiffTarget, key string) tea.Cmd {
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		hunks, err := gitx.Hunks(ctx, sess.WorktreePath, sess.BaseBranch, mode, target)
+		return hunksMsg{id: sess.ID, key: key, hunks: hunks, err: err}
 	}
 }
 
