@@ -276,24 +276,6 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		m.openDropdown(focusAgent)
 		return m, nil
 
-	case "f":
-		if !m.cfg.MultiRepo() {
-			return m, nil
-		}
-		// The footer carries a [repo:x] tag while a filter is on, and the board
-		// visibly changes, so the state is already on screen either way.
-		// Clearing the filter only ever puts cards back, so the selection is left
-		// alone; switching it on can hide the selected one, and the panel does not
-		// stay on a card the board no longer shows.
-		if m.repoFilter != "" {
-			m.repoFilter = ""
-			m.rebuild()
-			return m, nil
-		}
-		m.repoFilter = m.activeRepoID()
-		m.dropSelectionIfHidden()
-		return m, nil
-
 	case "X":
 		return m.pruneMerged()
 

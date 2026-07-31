@@ -79,9 +79,6 @@ func (m Model) hints() []hint {
 		// would cost more of the bar than the pair of PR keys already does.
 		{"A/r/p", "agent/repo/project"},
 	}
-	if m.cfg.MultiRepo() {
-		h = append(h, hint{"f", "repo filter"})
-	}
 	return append(h, hint{"?", "help"}, hint{"q", "quit"})
 }
 
@@ -108,7 +105,6 @@ var helpText = [][3]string{
 	{"", "A", "pick the agent new sessions start with"},
 	{"", "r", "repositories: switch, add, unregister"},
 	{"", "p", "pick the project: filters the board, and new sessions join it"},
-	{"", "f", "filter to the active repo, or clear"},
 	{"", "?", "this help"},
 	{"", "q", "quit — agents keep running"},
 

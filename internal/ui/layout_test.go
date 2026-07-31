@@ -150,20 +150,6 @@ func TestProjectFilterNarrowsBoard(t *testing.T) {
 	}
 }
 
-func TestRepoFilterNarrowsBoard(t *testing.T) {
-	cfg := core.DefaultConfig()
-	cfg.Repos = []core.Repo{{ID: "api"}, {ID: "web"}}
-	m := testModel(cfg,
-		sess("a", "", core.LifecycleIdle, core.AgentIdle, "api"),
-		sess("b", "", core.LifecycleIdle, core.AgentIdle, "web"),
-	)
-	m.repoFilter = "web"
-	vis := m.visible()
-	if len(vis) != 1 || vis[0].ID != "b" {
-		t.Fatalf("filtered board shows %v, want [b]", idsOf(vis))
-	}
-}
-
 func TestMoveHSkipsEmptyColumns(t *testing.T) {
 	m := testModel(nil,
 		sess("a", "", core.LifecycleIdle, core.AgentIdle, "r"),

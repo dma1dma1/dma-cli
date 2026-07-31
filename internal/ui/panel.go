@@ -689,7 +689,7 @@ func (m *Model) selectProject(name string) {
 	// A project with no repo leaves the chip where it is rather than clearing
 	// it: the last repo used is a better guess than none at all.
 	if repo := m.cfg.ProjectRepo(name); repo != "" {
-		m.aimRepo(repo)
+		m.activeRepo = repo
 	}
 	// A project the selected session is not in has just hidden its card, and the
 	// panel goes with it.
@@ -704,27 +704,13 @@ func (m *Model) selectProject(name string) {
 // repo while a project is selected is the plainest way to say where that
 // project's work happens now, and it costs a keystroke that was already spent.
 func (m *Model) setActiveRepo(id string) {
-	m.aimRepo(id)
+	m.activeRepo = id
 	if m.projectFilter == "" {
 		return
 	}
 	if m.cfg.BindProject(m.projectFilter, id) {
 		_ = core.SaveConfig(m.cfg)
 	}
-}
-
-// aimRepo points the chip at a repo, taking an active repo filter along with
-// it. The filter is set from the chip in the first place (f), so leaving it
-// behind on a repo you have just switched away from empties the board and reads
-// as sessions having disappeared.
-func (m *Model) aimRepo(id string) {
-	if m.repoFilter != "" && m.repoFilter == m.activeRepoID() {
-		m.repoFilter = id
-	}
-	m.activeRepo = id
-	// A filter that travelled has just refiltered the board, so the panel may be
-	// showing work from the repo left behind.
-	m.dropSelectionIfHidden()
 }
 
 // setSessionProject refiles one session, registering the project if it is new.

@@ -52,10 +52,8 @@ type Model struct {
 	// is selected, and switching project would get its blank panel filled back in
 	// on the next poll.
 	deselected bool
-	// repoFilter and projectFilter both reset on launch rather than persisting:
-	// a filter you forgot you set is a board that silently lies about what is
-	// running.
-	repoFilter    string
+	// projectFilter resets on launch rather than persisting: a filter you forgot
+	// you set is a board that silently lies about what is running.
 	projectFilter string
 
 	// colScroll is the index of the first card each column draws, so a column
@@ -206,11 +204,11 @@ func (m *Model) clearSelection() {
 // selected card off the board.
 //
 // The panel does not outlive the card it belongs to. Selection is held as an id
-// and the filters do not touch it, so changing one used to leave the previous
-// project or repo's agent running in the panel with no card above it to explain
-// why -- which reads as the filter not having taken. Every filter change lands on
-// the empty panel instead, the same place a board with no sessions starts from,
-// and the next move or click picks from what the board is showing now.
+// and the filter does not touch it, so changing it used to leave the previous
+// project's agent running in the panel with no card above it to explain why --
+// which reads as the filter not having taken. Every filter change lands on the
+// empty panel instead, the same place a board with no sessions starts from, and
+// the next move or click picks from what the board is showing now.
 //
 // Widening a filter is not a change to land on: the card is still there, and
 // blanking the panel under it would throw away the user's place for nothing.
@@ -1033,11 +1031,7 @@ func (m Model) statusBar() string {
 			st.KeyDesc.Render("   enter · esc")
 		return lipgloss.NewStyle().Width(w).Render(truncate(line, w))
 	}
-	var line string
-	if m.repoFilter != "" {
-		line += st.RepoTag.Render("[repo:" + m.repoFilter + "] ")
-	}
-	line += m.hintLine(m.hints())
+	line := m.hintLine(m.hints())
 	return lipgloss.NewStyle().Width(w).Render(truncate(" "+line, w))
 }
 
