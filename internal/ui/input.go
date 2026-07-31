@@ -232,13 +232,6 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "e":
-		// Expand the session panel to the whole screen and back. The agents are
-		// resized to match, so the expanded view is genuinely more room rather
-		// than the same narrow render in a bigger frame.
-		m.previewFull = !m.previewFull
-		return m, tea.Batch(m.syncAgentSize(), previewCmd(m.selected()))
-
 	case "a":
 		s := m.selected()
 		if s == nil {

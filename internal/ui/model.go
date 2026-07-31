@@ -84,8 +84,7 @@ type Model struct {
 
 	// preview is the selected session's recent terminal output, refreshed on a
 	// timer. Display only.
-	preview     string
-	previewFull bool
+	preview string
 	// previewCursor is where that frame's terminal cursor sat. It is kept beside
 	// the content and only ever set together with it, so the caret cannot be
 	// drawn onto a frame it does not belong to.

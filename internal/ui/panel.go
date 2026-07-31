@@ -158,9 +158,6 @@ func borrowRows(boardH, panelH, n int) (int, int) {
 // which is the layout the agents are sized to.
 func (m Model) baseHeights() (boardH, panelH int) {
 	avail := max(m.height-1, 3)
-	if m.previewFull {
-		return 0, avail
-	}
 	// The panel holds the input and the live output, so on a screen too short
 	// for both it is the board that goes.
 	maxBoard := avail - minPanelHeight
@@ -289,9 +286,6 @@ func (m Model) panelTitle() (string, string) {
 	sub := s.TmuxSession
 	if !s.TmuxAlive {
 		sub += " (not running)"
-	}
-	if m.previewFull {
-		sub += " · e to shrink"
 	}
 	// While the agent has the keyboard the way out is the one thing the frame must
 	// say: every other key is going to the agent, so a user who wants the board
