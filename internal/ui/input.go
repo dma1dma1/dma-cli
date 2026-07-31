@@ -254,6 +254,14 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		m.openDropdown(focusProject)
 		return m, nil
 
+	case "A":
+		// Shifted because "a" attaches. Switching agent is a per-task decision
+		// made right before pressing i, so it needs to be one key from the board
+		// rather than a tab walk or a click on the chip.
+		m.focus = focusAgent
+		m.openDropdown(focusAgent)
+		return m, nil
+
 	case "f":
 		if !m.cfg.MultiRepo() {
 			return m, nil
