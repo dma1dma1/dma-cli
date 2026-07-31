@@ -35,8 +35,8 @@ func TestPreviewFocusDoesNotRunBoardBindings(t *testing.T) {
 	m.focus = focusPreview
 
 	// Each of these does something drastic on the board -- quit, open help, jump to
-	// the input, expand the panel. None may fire while the agent has the keyboard.
-	for _, r := range []rune{'q', '?', 'i', 'e', 'd', 'x', 'r', 'p', 'a', 't'} {
+	// the input, open the diff. None may fire while the agent has the keyboard.
+	for _, r := range []rune{'q', '?', 'i', 'd', 'x', 'r', 'p', 'a', 't'} {
 		next := press(m, keyOf(r))
 		if next.quitting {
 			t.Errorf("%q quit the program while the panel had focus", r)

@@ -66,7 +66,6 @@ func (m Model) hints() []hint {
 		{"i", "new task"},
 		{"t", "type to agent"},
 		{"a", "attach"},
-		{"e", "expand"},
 		{"d", "diff"},
 		{"s", "ship"},
 		// One entry for the pair: the bar is already long enough that a second
@@ -95,7 +94,6 @@ var helpText = [][3]string{
 	{"", "ctrl-v", "paste to the selected live agent without attaching"},
 	{"", "tab", "cycle board → agent panel → input → agent → repo → project"},
 	{"", "a", "attach to the selected session's terminal"},
-	{"", "e", "expand the session panel to full screen"},
 	{"", "enter / d", "review the diff"},
 	{"", "H L", "move a card to the previous/next column"},
 	{"", "G", "move the selected session to a project"},

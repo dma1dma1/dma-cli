@@ -238,7 +238,6 @@ opening prompt.
 | `t` | Type into the selected agent from the session panel |
 | `ctrl-v` | Paste an image or text into a task or live agent |
 | `a` | Attach to the selected tmux session |
-| `e` | Expand the session panel |
 | `enter` or `d` | Review the selected session's diff |
 | `s` | Ask the agent to commit, push, and open a pull request |
 | `o` / `y` | Open or copy the pull-request link |
