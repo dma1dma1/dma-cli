@@ -134,6 +134,9 @@ func (m Model) keyPreview(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) 
 	if !ok {
 		return m, nil
 	}
+	// Typing means returning to the live terminal, just as leaving scrollback in
+	// an attached tmux client does before interacting with the application.
+	m.previewScroll = 0
 	// This keystroke is about to change the pane, and the prober must not read
 	// that change as the agent producing output.
 	m.typedAt[s.ID] = now()
@@ -559,6 +562,7 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, errStatus(fmt.Errorf("terminal for this session is not running"))
 		}
+		m.previewScroll = 0
 		m.typedAt[s.ID] = now()
 		return m, tea.Batch(sendPasteCmd(s, msg.Content), m.startEcho())
 	}
@@ -847,9 +851,15 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.MouseWheelMsg:
 		// Scroll routes by zone: in the review view, whichever of the two panes
-		// the pointer is over; otherwise the column under the pointer.
+		// the pointer is over; in a focused session panel, the agent's history;
+		// otherwise the column under the pointer.
 		if m.mode == modeDiff {
 			return m.diffWheel(msg)
+		}
+		if m.focus == focusPreview {
+			if z := zone.Get(zonePreview); z != nil && z.InBounds(msg) {
+				return m.previewWheel(msg)
+			}
 		}
 		return m.handleWheel(msg)
 	case tea.MouseClickMsg:
@@ -859,6 +869,24 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m.handleClick(msg)
 	}
 	return m, nil
+}
+
+// previewWheel moves through tmux history while the panel has the keyboard.
+// Three lines makes a wheel notch useful without making short prompts easy to
+// skip over. The capture itself clamps at the oldest history line.
+func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	const linesPerNotch = 3
+	delta := 0
+	switch msg.Mouse().Button {
+	case tea.MouseWheelUp:
+		delta = linesPerNotch
+	case tea.MouseWheelDown:
+		delta = -linesPerNotch
+	default:
+		return m, nil
+	}
+	m.previewScroll = max(m.previewScroll+delta, 0)
+	return m, previewCmdAt(m.selected(), m.previewScroll)
 }
 
 // diffWheel scrolls the file tree when the pointer is over it, and the diff

@@ -341,3 +341,51 @@ func TestCapturePaneReportsCursor(t *testing.T) {
 		t.Error("capture already contains a reverse-video cell; the overlay would double up")
 	}
 }
+
+// A panel is not a tmux client, so its scrollback is captured by range rather
+// than by entering copy mode. This pins the range arithmetic against a real
+// pane and verifies requests stop at the oldest retained line.
+func TestCapturePaneAtScrollsHistory(t *testing.T) {
+	if !Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	name := "dma-scroll-" + strings.ReplaceAll(t.Name(), "/", "-")
+	if err := NewSession(ctx, name, os.TempDir(), 80, 8); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+	if err := SendLiteral(ctx, name, "seq 1 30; sleep 20"); err != nil {
+		t.Fatalf("fill pane history: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	pane, actual, err := CapturePaneAt(ctx, name, 3)
+	if err != nil {
+		t.Fatalf("CapturePaneAt: %v", err)
+	}
+	if actual != 3 {
+		t.Fatalf("actual scroll = %d, want 3", actual)
+	}
+	for _, want := range []string{"21", "22", "28"} {
+		if !strings.Contains(pane.Content, want) {
+			t.Errorf("scrolled capture missing %q:\n%s", want, pane.Content)
+		}
+	}
+	if strings.Contains(pane.Content, "30") {
+		t.Errorf("scrolled capture still contains live bottom:\n%s", pane.Content)
+	}
+	if pane.Cursor.Visible {
+		t.Error("history capture exposed the live pane cursor")
+	}
+
+	_, actual, err = CapturePaneAt(ctx, name, 999)
+	if err != nil {
+		t.Fatalf("CapturePaneAt(oldest): %v", err)
+	}
+	if actual >= 999 {
+		t.Errorf("scroll request was not clamped: actual=%d", actual)
+	}
+}
