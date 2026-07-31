@@ -104,10 +104,11 @@ type Model struct {
 	echoUntil time.Time
 	echoing   bool
 
-	// typedAt is when each session last had a keystroke forwarded to it. The
-	// prober needs it to tell the user's typing apart from the agent's output:
-	// both change the pane, and only one of them means the agent is working.
-	typedAt map[string]time.Time
+	// touchedAt is when dma last did something to each session's terminal: sent a
+	// keystroke or a paste, forwarded a wheel event, or resized it. The prober
+	// needs it to tell the board's own doing apart from the agent's output -- both
+	// change the pane, and only one of them means the agent is working.
+	touchedAt map[string]time.Time
 
 	diffView viewport.Model
 	diffMode gitx.DiffMode
@@ -187,7 +188,7 @@ func New(opt Options) Model {
 		sessions:    opt.Sessions,
 		styles:      styles,
 		prober:      probe.New(),
-		typedAt:     map[string]time.Time{},
+		touchedAt:   map[string]time.Time{},
 		mode:        modeBoard,
 		focus:       focusBoard,
 		hookEvents:  opt.HookEvents,
@@ -405,7 +406,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(echoTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
 
 	case probeTickMsg:
-		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.typedAt))
+		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt))
 
 	case pollTickMsg:
 		// Hoisted out of the batch: refreshDiff drops the rendered-diff cache, and
@@ -606,7 +607,31 @@ func (m *Model) syncAgentSize() tea.Cmd {
 		return nil
 	}
 	m.lastPreviewCols, m.lastPreviewRows = cols, rows
+	m.touchAll()
 	return resizeSessionsCmd(m.sessions, cols, rows)
+}
+
+// attach hands the terminal to one session, recording the handover. Attaching
+// releases the window to the real terminal and detaching pins it back to the
+// preview size, and either reflow rewrites the pane -- which is a change the
+// prober would otherwise have to read as the agent writing.
+func (m Model) attach(s *core.Session) tea.Cmd {
+	m.touchedAt[s.ID] = now()
+	return attachCmd(s)
+}
+
+// touchAll records that dma is about to reflow every agent, so the prober reads
+// the redraw that follows as the resize it is.
+//
+// A resize rewrites every line on a pane, which looks exactly like an agent that
+// has just written a screenful. Sizing the terminals is the first thing the board
+// does on startup, so without this every probe-driven card announced a turn on
+// launch and finished it 25 seconds later.
+func (m *Model) touchAll() {
+	at := now()
+	for _, s := range m.sessions {
+		m.touchedAt[s.ID] = at
+	}
 }
 
 // openDiff enters the review view with the file tree in focus, because picking
@@ -988,6 +1013,9 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 		note = errText(strings.Join(msg.res.Warnings, "; "))
 	}
 	cols, rows := m.previewDims()
+	// The size this session is about to be given reflows whatever its agent has
+	// already drawn, so the resize is recorded like every other one dma issues.
+	m.touchedAt[s.ID] = now()
 	var preview tea.Cmd
 	if watching {
 		// Only the session on the panel is ever captured, and a capture for any

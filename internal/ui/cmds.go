@@ -344,12 +344,12 @@ func readClipboardCmd() tea.Cmd {
 // running a hook-capable agent are skipped: their own reports are exact, and a
 // heuristic could only contradict them.
 //
-// typedAt is read and pruned here rather than inside the command, because the
+// touchedAt is read and pruned here rather than inside the command, because the
 // map belongs to the model and the command runs on another goroutine.
-func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, typedAt map[string]time.Time) tea.Cmd {
+func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touchedAt map[string]time.Time) tea.Cmd {
 	var targets []*core.Session
 	keep := map[string]bool{}
-	typed := map[string]time.Time{}
+	touched := map[string]time.Time{}
 	for _, s := range sessions {
 		keep[s.ID] = true
 		if prof, ok := cfg.Profile(s.AgentProfile); ok && prof.Hooks {
@@ -357,12 +357,12 @@ func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, typed
 		}
 		copied := *s
 		targets = append(targets, &copied)
-		typed[s.ID] = typedAt[s.ID]
+		touched[s.ID] = touchedAt[s.ID]
 	}
 	p.Forget(keep)
-	for id := range typedAt {
+	for id := range touchedAt {
 		if !keep[id] {
-			delete(typedAt, id)
+			delete(touchedAt, id)
 		}
 	}
 	if len(targets) == 0 {
@@ -373,7 +373,7 @@ func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, typed
 		defer cancel()
 		states := make([]probe.State, 0, len(targets))
 		for _, s := range targets {
-			states = append(states, p.Probe(ctx, s, typed[s.ID]))
+			states = append(states, p.Probe(ctx, s, touched[s.ID]))
 		}
 		return probeMsg{states: states}
 	}

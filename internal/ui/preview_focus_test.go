@@ -278,8 +278,38 @@ func TestWheelGoesToFocusedMouseAwarePreview(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("application wheel scheduled no forwarded event")
 	}
-	if m.typedAt["a"].IsZero() {
+	if m.touchedAt["a"].IsZero() {
 		t.Error("application wheel was not recorded as user input")
+	}
+}
+
+// An agent that draws inline is scrolled through tmux history instead, and that
+// gesture has to be recorded too. Whether the wheel reaches the application is a
+// detail of how the agent renders -- capability is re-read on every capture and
+// re-checked at send time -- so a scroll that turns out to repaint the pane must
+// not come back as a turn the user never started.
+func TestWheelThroughHistoryIsRecordedToo(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.preview = "Codex inline transcript"
+	m.previewMouseSGR = false
+	m.focus = focusPreview
+	m.layoutSizes()
+	rendered(t, m, zonePreview)
+
+	z := zone.Get(zonePreview)
+	next, cmd := m.handleMouse(tea.MouseWheelMsg{
+		X: (z.StartX + z.EndX) / 2, Y: (z.StartY + z.EndY) / 2,
+		Button: tea.MouseWheelUp,
+	})
+	m = next.(Model)
+	if m.previewScroll == 0 {
+		t.Error("wheel over an inline agent moved no history offset")
+	}
+	if cmd == nil {
+		t.Fatal("wheel over an inline agent scheduled no capture")
+	}
+	if m.touchedAt["a"].IsZero() {
+		t.Error("scrolling was not recorded, so the prober can read the next frame as work")
 	}
 }
 

@@ -56,24 +56,24 @@ func TestForwardedKeyIsAttributedToTheUser(t *testing.T) {
 
 	before := time.Now()
 	next := press(m, keyOf('x'))
-	if next.typedAt["a"].Before(before) {
+	if next.touchedAt["a"].Before(before) {
 		t.Error("keystroke was not recorded against the session it was sent to")
 	}
 }
 
 // The record is dropped with the session, so the map does not grow for the life
 // of the process.
-func TestProbeForgetsTypingForDeadSessions(t *testing.T) {
+func TestProbeForgetsTouchesForDeadSessions(t *testing.T) {
 	m := testModel(nil, liveSess("a"))
-	m.typedAt["a"] = time.Now()
-	m.typedAt["gone"] = time.Now()
+	m.touchedAt["a"] = time.Now()
+	m.touchedAt["gone"] = time.Now()
 
-	probeCmd(m.prober, m.cfg, m.sessions, m.typedAt)
-	if _, ok := m.typedAt["gone"]; ok {
-		t.Error("kept a typing record for a session that no longer exists")
+	probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt)
+	if _, ok := m.touchedAt["gone"]; ok {
+		t.Error("kept a touch record for a session that no longer exists")
 	}
-	if _, ok := m.typedAt["a"]; !ok {
-		t.Error("dropped the typing record for a live session")
+	if _, ok := m.touchedAt["a"]; !ok {
+		t.Error("dropped the touch record for a live session")
 	}
 }
 

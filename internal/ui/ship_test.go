@@ -19,7 +19,7 @@ func TestShipKeyIsAttributedToTheUser(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("s produced no command; nothing was sent to the agent")
 	}
-	if got.typedAt["a"].Before(before) {
+	if got.touchedAt["a"].Before(before) {
 		t.Error("the request was not recorded against the session, so the prober will read the reply as unprompted output")
 	}
 	if !got.echoing {

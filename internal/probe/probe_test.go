@@ -85,7 +85,7 @@ const codexTrust = `> You are in ~/.dma/worktrees/dma-cli/hello
 func TestClassifyWorkingWhileInterruptHintShows(t *testing.T) {
 	// Quiet long enough to be called idle on pane changes alone: the hint is
 	// what keeps it working.
-	state, _, sawBusy := classify(codexWorking, IdleAfter+time.Minute, false, sample{}, false)
+	state, _, sawBusy := classify(codexWorking, IdleAfter+time.Minute, true, sample{}, false)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working while the agent offers to be interrupted", state)
 	}
@@ -98,7 +98,7 @@ func TestClassifyWorkingWhileInterruptHintShows(t *testing.T) {
 // active column waiting out a 25s quiescence window.
 func TestClassifyDoneAsSoonAsTheHintGoes(t *testing.T) {
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
-	state, _, _ := classify(codexDone, SettleAfter, false, prev, true)
+	state, _, _ := classify(codexDone, SettleAfter, true, prev, true)
 	if state != core.AgentDone {
 		t.Errorf("state = %q, want done once the interrupt hint is gone", state)
 	}
@@ -107,7 +107,7 @@ func TestClassifyDoneAsSoonAsTheHintGoes(t *testing.T) {
 // A repaint between turns must not read as a finished turn.
 func TestClassifyWaitsOutARepaintBeforeSettling(t *testing.T) {
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
-	state, _, _ := classify(codexDone, SettleAfter/2, false, prev, true)
+	state, _, _ := classify(codexDone, SettleAfter/2, true, prev, true)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working until the pane holds still", state)
 	}
@@ -117,10 +117,10 @@ func TestClassifyWaitsOutARepaintBeforeSettling(t *testing.T) {
 // than being called done the moment it pauses.
 func TestClassifyFallsBackToQuiescenceWithoutAHint(t *testing.T) {
 	prev := sample{previous: core.AgentWorking}
-	if state, _, _ := classify("some agent output\n", IdleAfter-time.Second, false, prev, true); state != core.AgentWorking {
+	if state, _, _ := classify("some agent output\n", IdleAfter-time.Second, true, prev, true); state != core.AgentWorking {
 		t.Errorf("state = %q, want working: nothing says this agent is finished", state)
 	}
-	if state, _, _ := classify("some agent output\n", IdleAfter, false, prev, true); state != core.AgentDone {
+	if state, _, _ := classify("some agent output\n", IdleAfter, true, prev, true); state != core.AgentDone {
 		t.Errorf("state = %q, want done after the pane has been quiet", state)
 	}
 }
@@ -133,30 +133,65 @@ func TestClassifyIgnoresARedrawOnAnIdlePane(t *testing.T) {
 	for _, was := range []core.AgentState{core.AgentIdle, core.AgentDone} {
 		prev := sample{previous: was, sawBusy: true}
 		// quiet is 0: the pane changed between this frame and the last.
-		if state, _, _ := classify(codexDone, 0, false, prev, true); state != was {
+		if state, _, _ := classify(codexDone, 0, true, prev, true); state != was {
 			t.Errorf("state = %q after a redraw, want %q left alone", state, was)
 		}
 	}
 }
 
-// Typing at an idle agent is the user working, not the agent. The pane changes
-// under either, so the keystrokes dma forwarded are what tell them apart.
-func TestClassifyTypingAtAnIdleAgentIsNotWork(t *testing.T) {
-	prev := sample{previous: core.AgentDone}
-	// quiet is 0: the character just landed in the composer.
-	state, _, _ := classify("some agent output\n", 0, true, prev, true)
-	if state != core.AgentDone {
-		t.Errorf("state = %q, want the session left alone while the user types at it", state)
+// Scrolling, typing or resizing changes a pane for a reason that is dma's, not
+// the agent's. What has to be attributed is the whole gap since the last sample,
+// because the change happened somewhere inside it: at four seconds a sample, an
+// action is routinely older than a fixed few seconds by the time its frame is
+// read.
+func TestCausedAttributesWhatTheBoardDid(t *testing.T) {
+	now := time.Now()
+	probed := now.Add(-probeGap)
+	cases := []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{"never touched", time.Time{}, false},
+		{"just now", now, true},
+		{"mid-gap, older than any fixed window", probed.Add(probeGap / 2), true},
+		{"just before the last sample, redraw still in flight", probed.Add(-ActionGrace / 2), true},
+		{"long before the last sample", probed.Add(-time.Minute), false},
+	}
+	for _, tc := range cases {
+		if got := caused(tc.at, probed); got != tc.want {
+			t.Errorf("%s: caused = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
-// The same keystrokes against an agent that is mid-turn must not talk the board
-// out of active: the hint says the agent is busy, whoever else is typing.
-func TestClassifyTypingDoesNotMaskAWorkingAgent(t *testing.T) {
+// probeGap stands in for the board's sampling interval, which is deliberately
+// longer than ActionGrace: the mismatch between the two is what the fixed window
+// got wrong.
+const probeGap = 4 * time.Second
+
+// An agent that is mid-turn keeps its badge whoever else is touching the pane:
+// the hint says it is busy, and nothing about a keystroke contradicts that.
+func TestClassifyKeepsAWorkingAgentThroughALocalChange(t *testing.T) {
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
-	state, _, _ := classify(codexWorking, 0, true, prev, true)
+	// quiet is inherited, so it is long: the last change was the user's, not a
+	// turn's. The hint is what has to keep the badge.
+	state, _, _ := classify(codexWorking, IdleAfter+time.Minute, true, prev, true)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working: the agent is still offering to be interrupted", state)
+	}
+}
+
+// A pane nobody has ever seen move cannot be mid-turn, however young the clock
+// is. The clock starts when the board starts watching, so the sample right after
+// startup is always inside IdleAfter -- and reading that as output is a turn
+// announced for a session that has done nothing at all.
+func TestClassifyNeedsAChangeBeforeCallingItWork(t *testing.T) {
+	for _, was := range []core.AgentState{core.AgentIdle, core.AgentDone} {
+		prev := sample{previous: was}
+		if state, _, _ := classify("some agent output\n", 0, false, prev, true); state != was {
+			t.Errorf("state = %q on a pane that has never moved, want %q kept", state, was)
+		}
 	}
 }
 
@@ -166,7 +201,7 @@ func TestClassifyTypingDoesNotMaskAWorkingAgent(t *testing.T) {
 // finish it 25 seconds later.
 func TestClassifyKeepsTheKnownStateOnFirstSight(t *testing.T) {
 	for _, was := range []core.AgentState{core.AgentIdle, core.AgentDone, core.AgentWorking} {
-		state, _, _ := classify(codexDone, 0, false, sample{previous: was}, false)
+		state, _, _ := classify(codexDone, 0, true, sample{previous: was}, false)
 		if state != was {
 			t.Errorf("state = %q on first sight, want %q kept until there is a baseline", state, was)
 		}
@@ -177,7 +212,7 @@ func TestClassifyKeepsTheKnownStateOnFirstSight(t *testing.T) {
 // to release the badge, or "needs you" outlives the question that raised it.
 func TestClassifyClearsNeedsYouOnceTheDialogGoes(t *testing.T) {
 	prev := sample{previous: core.AgentNeedsYou, sawBusy: true}
-	state, detail, _ := classify(codexDone, 0, false, prev, true)
+	state, detail, _ := classify(codexDone, 0, true, prev, true)
 	if state != core.AgentIdle {
 		t.Errorf("state = %q, want idle: there is no dialog on the pane", state)
 	}
@@ -190,7 +225,7 @@ func TestClassifyClearsNeedsYouOnceTheDialogGoes(t *testing.T) {
 // their own prompts.
 func TestClassifyPrefersNeedsYouOverTheHint(t *testing.T) {
 	content := codexWorking + "\n  Do you want to proceed? [y/n]\n"
-	state, detail, _ := classify(content, 0, false, sample{}, false)
+	state, detail, _ := classify(content, 0, true, sample{}, false)
 	if state != core.AgentNeedsYou {
 		t.Fatalf("state = %q, want needs_you", state)
 	}
@@ -427,6 +462,86 @@ func TestProbeIgnoresAReflowAfterATurn(t *testing.T) {
 		if got := probe(); got != core.AgentDone {
 			t.Errorf("probe after a resize to %dx%d = %q, want done left alone", size[0], size[1], got)
 		}
+	}
+}
+
+// The reported flap, for an agent that has never shown an interrupt hint and so
+// has nothing but its pane to go on: scrolling a Codex session walked it from
+// idle to working. Any gesture dma passes on does this -- a wheel event an agent
+// scrolls its own transcript for, a keystroke landing in the composer, a resize --
+// and the sample after the gesture is the half that used to be missed, because a
+// pane that changed within IdleAfter read as a turn however that change got there.
+func TestProbeIgnoresAChangeTheBoardCaused(t *testing.T) {
+	ctx, name := livePane(t, 100, 30)
+	p := New()
+	s := &core.Session{ID: "s1", TmuxSession: name, AgentState: core.AgentIdle}
+	probe := func(actedAt time.Time) core.AgentState {
+		got := p.Probe(ctx, s, actedAt)
+		s.AgentState = got.Agent
+		return got.Agent
+	}
+	write := func(line string) {
+		if err := tmuxx.SendLiteral(ctx, name, "clear; printf '%s\\n' '"+line+"'"); err != nil {
+			t.Fatalf("write to pane: %v", err)
+		}
+		time.Sleep(700 * time.Millisecond)
+	}
+
+	write("› Use /skills to list available skills")
+	probe(time.Time{}) // the baseline every later frame is compared against
+
+	// The gesture, and the frame it produced. dma acts and the pane answers a
+	// moment later, which is the ordinary case: the redraw is read at the next
+	// sample, not the instant it lands.
+	acted := time.Now()
+	write("› Use /skills to list available skills · scrolled")
+	if got := probe(acted); got != core.AgentIdle {
+		t.Fatalf("probe right after the gesture = %q, want idle left alone", got)
+	}
+	// The sample after it. The action is stale now and the pane has held still
+	// since, so there is nothing left that could pass for a turn.
+	if got := probe(acted); got != core.AgentIdle {
+		t.Errorf("probe one sample later = %q, want idle: nothing has happened since", got)
+	}
+}
+
+// The exemption is for what dma did, not for whatever the pane does next: an
+// agent that starts writing after the gesture is working, and has to say so.
+func TestProbeStillSeesOutputAfterAGesture(t *testing.T) {
+	ctx, name := livePane(t, 100, 30)
+	p := New()
+	s := &core.Session{ID: "s1", TmuxSession: name, AgentState: core.AgentIdle}
+
+	if err := tmuxx.SendLiteral(ctx, name, "clear; printf 'idle\\n'"); err != nil {
+		t.Fatalf("write to pane: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	p.Probe(ctx, s, time.Time{})
+
+	acted := time.Now()
+	if err := tmuxx.SendLiteral(ctx, name, "clear; printf 'the composer, echoed\\n'"); err != nil {
+		t.Fatalf("write to pane: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if got := p.Probe(ctx, s, acted); got.Agent != core.AgentIdle {
+		t.Fatalf("probe after the gesture = %q, want idle", got.Agent)
+	}
+
+	// A sample taken well after the action, with the pane still. This is what
+	// retires the action as an explanation: what dma did is older than the window
+	// the next change could have happened in.
+	time.Sleep(ActionGrace + 500*time.Millisecond)
+	p.Probe(ctx, s, acted)
+
+	// Now the pane changes again, and nothing accounts for it but the agent. The
+	// board is still holding the same stale action, because it only ever remembers
+	// the last one.
+	if err := tmuxx.SendLiteral(ctx, name, "clear; printf 'the agent, writing\\n'"); err != nil {
+		t.Fatalf("write to pane: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if got := p.Probe(ctx, s, acted); got.Agent != core.AgentWorking {
+		t.Errorf("probe after real output = %q, want working", got.Agent)
 	}
 }
 
