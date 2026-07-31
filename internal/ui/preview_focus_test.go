@@ -222,3 +222,66 @@ func TestClickOnPreviewFocusesIt(t *testing.T) {
 		t.Errorf("clicking the agent's output left focus at %d", got)
 	}
 }
+
+// emptyColumnPoint is the middle of a column holding no cards -- board space that
+// is inside the frame and on no click target of its own.
+func emptyColumnPoint(t *testing.T, m Model, col int) (int, int) {
+	t.Helper()
+	z := zone.Get(zoneColumn(col))
+	if z.IsZero() {
+		t.Fatalf("no zone recorded for column %d", col)
+	}
+	return (z.StartX + z.EndX) / 2, (z.StartY + z.EndY) / 2
+}
+
+// The other half of click-to-focus: a click on the board hands the keyboard back.
+// Without this the panel keeps every keystroke after the pointer has plainly left
+// it, and ctrl-q is the only way out of a mode the user already tried to leave.
+func TestClickOffPreviewReleasesFocus(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.preview = "● Hello! What can I help you with?"
+	m.focus = focusPreview
+	m.layoutSizes()
+	rendered(t, m)
+
+	// The session is active, so the merged column is empty board.
+	x, y := emptyColumnPoint(t, m, core.LifecycleMerged.ColumnIndex())
+	if got := clickModel(m, x, y).focus; got != focusBoard {
+		t.Errorf("clicking empty board left focus at %d, want the board", got)
+	}
+}
+
+// The task input has the same contract: clicking away stops the caret blinking in
+// a box that is no longer taking what you type.
+func TestClickOffInputReleasesFocus(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.focus = focusInput
+	m.input.Focus()
+	m.layoutSizes()
+	rendered(t, m)
+
+	x, y := emptyColumnPoint(t, m, core.LifecycleMerged.ColumnIndex())
+	next := clickModel(m, x, y)
+	if next.focus != focusBoard {
+		t.Errorf("clicking empty board left focus at %d, want the board", next.focus)
+	}
+	if next.input.Focused() {
+		t.Error("the task input kept the caret after the click left it")
+	}
+}
+
+// The expanded panel is the exception: with no board on screen, the cells that
+// hit nothing are its own frame and chip row, and losing the keyboard to a click
+// on the frame of the thing you are typing into is the bug in reverse.
+func TestClickOnFrameKeepsFocusWhilePanelExpanded(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.preview = "● Hello! What can I help you with?"
+	m.previewFull = true
+	m.focus = focusPreview
+	m.layoutSizes()
+	rendered(t, m)
+
+	if got := clickModel(m, 0, 0).focus; got != focusPreview {
+		t.Errorf("clicking the expanded panel's frame left focus at %d, want the panel", got)
+	}
+}

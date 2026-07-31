@@ -772,8 +772,12 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+		// Clicking outside an open list dismisses it, and dismissing it leaves the
+		// board in charge -- the same place committing a choice lands.
 		m.dropdown = dropdown{}
-		return m, nil
+		m.focus = focusBoard
+		cmd := m.onFocusChange()
+		return m, cmd
 	}
 
 	for _, c := range []struct {
@@ -823,6 +827,25 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.selectSession(s)
 		m.lastClickID, m.lastClickAt = s.ID, now()
 		return m, previewCmd(s)
+	}
+
+	// A click that hit none of the targets above -- the header, the status bar,
+	// the empty rows under a column's last card -- still says something: the
+	// keyboard is no longer aimed where it was. Clicking into the panel is the
+	// gesture that hands keystrokes to the agent, so clicking away has to be the
+	// gesture that takes them back. Leaving focus where it was means every key
+	// keeps going to the agent from a pointer that has visibly left it, and
+	// ctrl-q becomes the only way out of a mode the user already tried to leave.
+	//
+	// Not while the panel is expanded: there is no board on screen to click back
+	// to, so the only cells that miss every target are the frame and the chip
+	// row, and a click landing there is a miss rather than a departure.
+	if m.focus != focusBoard && !m.previewFull {
+		m.focus = focusBoard
+		// Not inlined into the return: onFocusChange blurs the input through a
+		// pointer, and Go does not order that against copying m into the result.
+		cmd := m.onFocusChange()
+		return m, cmd
 	}
 	return m, nil
 }
