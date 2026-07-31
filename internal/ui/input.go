@@ -277,12 +277,40 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		m.rebuild()
 		return m, nil
 
+	case "X":
+		return m.pruneMerged()
+
 	case "R":
 		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
 			probeCmd(m.prober, m.cfg, m.sessions, m.typedAt), status("refreshing…"))
 	}
 
 	return m.sessionAction(key)
+}
+
+// pruneMerged clears out the merged column in one keystroke. Merged work is
+// the one state where teardown is routine rather than a judgement call, and
+// clearing it a card at a time is the most repetitive thing on the board.
+//
+// It follows the filters, so what X prunes is the merged column as it is on
+// screen -- pruning cards a repo or project filter is hiding would be a
+// surprise no confirm could undo.
+func (m Model) pruneMerged() (tea.Model, tea.Cmd) {
+	var merged []*core.Session
+	for _, s := range m.visible() {
+		if s.Lifecycle == core.LifecycleMerged {
+			merged = append(merged, s)
+		}
+	}
+	if len(merged) == 0 {
+		return m, errStatus(fmt.Errorf("no merged sessions to prune"))
+	}
+	noun := "sessions"
+	if len(merged) == 1 {
+		noun = "session"
+	}
+	return m.askConfirm(fmt.Sprintf("Prune worktrees and branches for %d merged %s?", len(merged), noun),
+		func(mm *Model) tea.Cmd { return teardownAllCmd(mm.cfg, merged) })
 }
 
 // sessionAction handles keys that mean the same thing wherever you are.

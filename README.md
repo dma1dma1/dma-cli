@@ -114,6 +114,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `y` | copy the PR link to the clipboard |
 | `m` | merge the PR — or add it to the merge queue, where the base branch has one |
 | `x` | prune the worktree and its branch |
+| `X` | prune every merged session the board is showing |
 | `D` | kill the agent, keep the worktree |
 | `R` | refresh PR and session state now |
 | `A` | pick the agent new sessions start with |

@@ -113,8 +113,11 @@ type prQueueMsg struct {
 }
 
 type teardownMsg struct {
-	id  string
-	err error
+	id string
+	// bulk marks a teardown that came from X rather than x, which changes how a
+	// failure is answered: one question was already asked for the whole batch.
+	bulk bool
+	err  error
 }
 
 type killedMsg struct {
@@ -488,12 +491,27 @@ func prLinkCmd(remote, sessionID string, number int, action linkAction) tea.Cmd 
 }
 
 func teardownCmd(cfg *core.Config, s *core.Session, force bool) tea.Cmd {
+	return teardownOne(cfg, s, force, false)
+}
+
+// teardownAllCmd prunes several sessions, one after another rather than at
+// once: teardown runs git against the shared repo, and concurrent worktree
+// removals and prunes on one repo race for the same lock.
+func teardownAllCmd(cfg *core.Config, sessions []*core.Session) tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(sessions))
+	for _, s := range sessions {
+		cmds = append(cmds, teardownOne(cfg, s, false, true))
+	}
+	return tea.Sequence(cmds...)
+}
+
+func teardownOne(cfg *core.Config, s *core.Session, force, bulk bool) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		err := ops.Teardown(ctx, cfg, &sess, ops.TeardownOptions{Force: force})
-		return teardownMsg{id: sess.ID, err: err}
+		return teardownMsg{id: sess.ID, bulk: bulk, err: err}
 	}
 }
 

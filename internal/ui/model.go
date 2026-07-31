@@ -678,6 +678,13 @@ func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		s := core.FindByID(m.sessions, msg.id)
+		// The recoveries below are per-session questions, and a bulk prune has
+		// several teardowns behind it: asking one would hide the next, and the
+		// answer would land on whichever card the confirm happened to hold. So a
+		// session that needs a decision keeps its card, and x asks there.
+		if msg.bulk {
+			return m, errText(fmt.Sprintf("%s: %v", nameOf(s), msg.err))
+		}
 		switch e := msg.err.(type) {
 		case *ops.DirtyError:
 			return m.askConfirm(fmt.Sprintf("%s has uncommitted changes. Discard and prune?", nameOf(s)),
