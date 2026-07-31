@@ -125,16 +125,3 @@ func TestPRSyncStoresTheLink(t *testing.T) {
 		t.Errorf("PRURL = %q, want the polled address", s.PRURL)
 	}
 }
-
-// Opening a PR from the board is the one moment the link is certainly wanted,
-// and it arrives with the PR itself rather than a poll interval later.
-func TestShippingStoresTheLink(t *testing.T) {
-	s := branchSess("a", "r1", "feat-a", core.LifecycleActive)
-	m := testModel(nil, s)
-
-	m.handleShipped(shippedMsg{id: "a", branch: "feat-a", number: 42,
-		url: "https://github.com/owner/name/pull/42"})
-	if s.PRURL != "https://github.com/owner/name/pull/42" {
-		t.Errorf("PRURL = %q, want the address gh printed", s.PRURL)
-	}
-}

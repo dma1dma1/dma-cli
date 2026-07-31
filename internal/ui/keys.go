@@ -51,7 +51,7 @@ func (m Model) hints() []hint {
 	case modeDiff:
 		return []hint{
 			{"tab", "diff mode"}, {"j/k", "prev/next session"}, {"a", "attach"},
-			{"s", "push+PR"}, {"o/y", "PR open/copy"}, {"m", "merge"}, {"x", "prune"},
+			{"s", "ship"}, {"o/y", "PR open/copy"}, {"m", "merge"}, {"x", "prune"},
 			{"esc", "board"},
 		}
 	case modeRepos:
@@ -68,7 +68,7 @@ func (m Model) hints() []hint {
 		{"a", "attach"},
 		{"e", "expand"},
 		{"d", "diff"},
-		{"s", "push+PR"},
+		{"s", "ship"},
 		// One entry for the pair: the bar is already long enough that a second
 		// PR-shaped hint would push something else off the end.
 		{"o/y", "PR open/copy"},
@@ -99,7 +99,7 @@ var helpText = [][3]string{
 	{"", "enter / d", "review the diff"},
 	{"", "H L", "move a card to the previous/next column"},
 	{"", "G", "move the selected session to a project"},
-	{"", "s", "commit and push the branch, open a PR"},
+	{"", "s", "ask the agent to commit, push, and open a PR"},
 	{"", "o", "open the PR in your browser"},
 	{"", "y", "copy the PR link to the clipboard"},
 	{"", "m", "merge the PR, or queue it where the base branch has a merge queue"},

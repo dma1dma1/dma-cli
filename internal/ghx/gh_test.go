@@ -84,22 +84,6 @@ func TestMergeableAndReview(t *testing.T) {
 	}
 }
 
-func TestParseCreated(t *testing.T) {
-	out := "https://github.com/owner/name/pull/1234\n"
-	n, url := parseCreated(out)
-	if n != 1234 {
-		t.Errorf("number = %d, want 1234", n)
-	}
-	// The whole address is kept, host included: an Enterprise PR is not on
-	// github.com, and a link composed from the number would go to the wrong one.
-	if url != "https://github.com/owner/name/pull/1234" {
-		t.Errorf("url = %q, want the address gh printed", url)
-	}
-	if n, url := parseCreated("no url here"); n != 0 || url != "" {
-		t.Fatalf("parseCreated = %d, %q, want nothing", n, url)
-	}
-}
-
 // GitHub answers 502/504 when a query is too expensive to finish. That is not
 // the same as being offline or logged out, and its three-sentence apology is
 // not what a one-line status bar should carry.

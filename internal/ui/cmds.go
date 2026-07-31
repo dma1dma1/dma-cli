@@ -84,16 +84,6 @@ type titledMsg struct {
 	title string
 }
 
-type shippedMsg struct {
-	id string
-	// branch is the name the agent gave its work, read at ship time -- the
-	// session record may still be showing none.
-	branch string
-	number int
-	url    string
-	err    error
-}
-
 // linkAction is what to do with a PR's web address once it is in hand.
 type linkAction int
 
@@ -437,43 +427,36 @@ func titleCmd(s *core.Session, task string) tea.Cmd {
 	}
 }
 
-// shipCmd commits, pushes and opens a PR in one action.
-func shipCmd(cfg *core.Config, s *core.Session, title string) tea.Cmd {
+// shipRequest is what s sends to the agent.
+//
+// The agent ships its own work rather than dma doing the git for it: it is the
+// one that knows what it changed, so the commit message and the PR are its to
+// write, and a repo with its own conventions gets them followed. The permission
+// line and the closing sentence are both there because the value of the key is
+// not having to come back -- an agent that stops to ask whether it may push has
+// handed the card straight back to you.
+const shipRequest = "Commit, push, and open a PR. You have full permission to do so. Do not come back to me until the PR is open."
+
+// askShipCmd asks a session's agent to commit, push and open its own PR.
+//
+// A paste followed by a separate Enter, rather than a typed line: the paste
+// lands as one insertion the agent's input reads in a single go, and the Enter
+// is then unambiguously the submit.
+func askShipCmd(s *core.Session) tea.Cmd {
+	if s == nil {
+		return nil
+	}
 	sess := *s
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
-		repo, ok := cfg.Repo(sess.RepoID)
-		if !ok {
-			return shippedMsg{id: sess.ID, err: fmt.Errorf("unknown repo %q", sess.RepoID)}
+		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, shipRequest); err != nil {
+			return noticeMsg{text: fmt.Sprintf("ask %s to ship: %v", sess.Title, err)}
 		}
-		// Read the branch from the worktree rather than the session record: the
-		// agent names it, and a poll may not have picked it up yet. Naming it is
-		// also the agent's job, so a still-detached worktree stops here instead
-		// of getting a name invented for it.
-		branch := gitx.CurrentBranch(ctx, sess.WorktreePath)
-		if branch == "" {
-			return shippedMsg{id: sess.ID, err: fmt.Errorf("no branch yet: the agent has not created one in %s", sess.WorktreePath)}
+		if err := tmuxx.SendKey(ctx, sess.TmuxSession, "Enter"); err != nil {
+			return noticeMsg{text: fmt.Sprintf("ask %s to ship: %v", sess.Title, err)}
 		}
-		if err := gitx.CommitAll(ctx, sess.WorktreePath, title); err != nil {
-			return shippedMsg{id: sess.ID, err: err}
-		}
-		if !gitx.HasCommits(ctx, sess.WorktreePath, sess.BaseBranch) {
-			return shippedMsg{id: sess.ID, err: fmt.Errorf("nothing to push: no commits on %s", branch)}
-		}
-		if err := gitx.Push(ctx, sess.WorktreePath, branch); err != nil {
-			return shippedMsg{id: sess.ID, err: err}
-		}
-		remote := repo.Remote
-		if remote == "" {
-			if r, err := gitx.RemoteSlug(ctx, repo.Path); err == nil {
-				remote = r
-			}
-		}
-		n, url, err := ghx.CreatePR(ctx, sess.WorktreePath, remote, sess.BaseBranch, branch,
-			title, "Opened from dma.", false)
-		return shippedMsg{id: sess.ID, branch: branch, number: n, url: url, err: err}
+		return nil
 	}
 }
 

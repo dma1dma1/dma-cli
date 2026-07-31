@@ -353,38 +353,6 @@ func mergeable(m string) core.Mergeable {
 	return core.MergeUnknown
 }
 
-// CreatePR opens a pull request for the branch checked out in wt, returning its
-// number and web address.
-func CreatePR(ctx context.Context, wt, remote, base, head, title, body string, draft bool) (int, string, error) {
-	args := []string{"pr", "create", "-R", remote, "--base", base, "--head", head,
-		"--title", title, "--body", body}
-	if draft {
-		args = append(args, "--draft")
-	}
-	out, err := run(ctx, wt, args...)
-	if err != nil {
-		return 0, "", err
-	}
-	n, url := parseCreated(out)
-	return n, url, nil
-}
-
-// parseCreated pulls the number and the URL out of the line gh prints on
-// success.
-func parseCreated(out string) (int, string) {
-	for _, f := range strings.Fields(out) {
-		i := strings.LastIndex(f, "/pull/")
-		if i < 0 {
-			continue
-		}
-		var n int
-		if _, err := fmt.Sscanf(f[i+len("/pull/"):], "%d", &n); err == nil {
-			return n, f
-		}
-	}
-	return 0, ""
-}
-
 // MergeOutcome says what a merge request actually accomplished. A base branch
 // behind a merge queue does not merge on demand, and the board must not claim
 // otherwise.

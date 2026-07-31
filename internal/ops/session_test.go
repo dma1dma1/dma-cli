@@ -535,10 +535,11 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// TestShipGitHalf covers the git side of the ship action -- commit, detect
-// commits, push -- against a local bare remote. Opening the PR itself is gh's
-// job and is covered separately.
-func TestShipGitHalf(t *testing.T) {
+// Shipping is the agent's own work now -- s only asks for it -- so what matters
+// is that the board reads that work back: the branch the agent names, the
+// commits it makes, and the files it leaves behind. The commit and push here
+// stand in for the agent's, against a local bare remote.
+func TestBoardTracksAgentGitWork(t *testing.T) {
 	repoPath := newTestRepo(t, "ship")
 	ctx := context.Background()
 
@@ -572,7 +573,7 @@ func TestShipGitHalf(t *testing.T) {
 	s := res.Session
 	t.Cleanup(func() { _ = Teardown(context.Background(), cfg, s, TeardownOptions{Force: true}) })
 
-	// Nothing committed yet, so there is nothing to open a PR for.
+	// Nothing committed yet, so there is nothing a PR could be opened for.
 	if gitx.HasCommits(ctx, s.WorktreePath, s.BaseBranch) {
 		t.Error("a fresh worktree reported commits ahead of base")
 	}
@@ -616,7 +617,7 @@ func TestShipGitHalf(t *testing.T) {
 		t.Fatalf("branch %s not present on the remote (out=%q err=%v)", s.Branch, out, err)
 	}
 
-	// A second ship with no new work must not create an empty commit.
+	// A second commit with no new work must not create an empty one.
 	if err := gitx.CommitAll(ctx, s.WorktreePath, "again"); err != nil {
 		t.Fatalf("CommitAll on a clean tree: %v", err)
 	}

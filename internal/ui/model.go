@@ -425,9 +425,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case titledMsg:
 		return m.handleTitled(msg)
 
-	case shippedMsg:
-		return m.handleShipped(msg)
-
 	case mergedMsg:
 		return m.handleMerged(msg)
 
@@ -774,30 +771,6 @@ func (m Model) handleTitled(msg titledMsg) (tea.Model, tea.Cmd) {
 	s.Title = title
 	m.save()
 	return m, nil
-}
-
-func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
-	if msg.err != nil {
-		return m, errStatus(msg.err)
-	}
-	s := core.FindByID(m.sessions, msg.id)
-	if s == nil {
-		return m, nil
-	}
-	if msg.branch != "" {
-		s.Branch = msg.branch
-	}
-	if msg.number > 0 {
-		s.PRNumber, s.PRState = msg.number, core.PROpen
-		s.Lifecycle = core.LifecyclePROpen
-		// gh prints the address on creation, so o and y work on a fresh PR
-		// without waiting for the next poll.
-		s.PRURL = msg.url
-	}
-	// The card moves to In Review and grows a PR number, so there is nothing a
-	// message would add.
-	m.save()
-	return m, pollPRsCmd(m.cfg, m.sessions)
 }
 
 func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {

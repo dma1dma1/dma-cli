@@ -48,9 +48,10 @@ For GitHub pull-request features, also install `gh` and authenticate it:
 gh auth login
 ```
 
-The board can run without `gh`, but PR status, push-and-open-PR, link, and merge
-features will not be available. `dma doctor` treats missing GitHub integration
-as an incomplete setup.
+The board can run without `gh`, but PR status, link, and merge features will not
+be available. `dma doctor` treats missing GitHub integration as an incomplete
+setup. `s` asks the agent to open the pull request, so the agent needs `gh`
+too.
 
 Optional tools:
 
@@ -127,7 +128,8 @@ with your task. The worktree is named from the opening of the description, and
 keeps that name after the card is renamed.
 
 The agent is responsible for creating and naming its branch. Until it does, the
-card displays `no branch` and `s` cannot push or open a pull request.
+card displays `no branch` and there is nothing for `dma` to track a pull request
+against.
 
 ### Repository expectations
 
@@ -238,7 +240,7 @@ opening prompt.
 | `a` | Attach to the selected tmux session |
 | `e` | Expand the session panel |
 | `enter` or `d` | Review the selected session's diff |
-| `s` | Commit, push, and open a pull request |
+| `s` | Ask the agent to commit, push, and open a pull request |
 | `o` / `y` | Open or copy the pull-request link |
 | `m` | Merge the pull request or add it to the merge queue |
 | `x` | Prune one session's worktree and branch |
