@@ -299,7 +299,14 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		if !s.HasPR() {
 			return m, errStatus(fmt.Errorf("no PR to merge"))
 		}
-		return m.askConfirm(fmt.Sprintf("Merge PR #%d (%s)?", s.PRNumber, s.Title),
+		// A queued PR is asked about rather than refused: the merge itself
+		// re-checks the queue, so pressing m on a card whose queue standing has
+		// gone stale re-queues it instead of waiting for the next poll.
+		prompt := fmt.Sprintf("Merge PR #%d (%s)?", s.PRNumber, s.Title)
+		if s.PRQueued {
+			prompt = fmt.Sprintf("PR #%d is in the merge queue. Queue it again?", s.PRNumber)
+		}
+		return m.askConfirm(prompt,
 			func(mm *Model) tea.Cmd { return mergeCmd(mm.cfg, s) })
 
 	case "x":

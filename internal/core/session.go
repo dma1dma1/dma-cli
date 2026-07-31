@@ -184,7 +184,11 @@ type Session struct {
 	PRCI        CIState     `json:"pr_ci"`
 	PRReview    ReviewState `json:"pr_review"`
 	PRMergeable Mergeable   `json:"pr_mergeable"`
-	PRSyncedAt  time.Time   `json:"pr_synced_at"`
+	// PRQueued reports that the PR is waiting in its base branch's merge queue.
+	// It is not a PR state: GitHub still calls a queued PR open, and the queue
+	// can drop it back out again.
+	PRQueued   bool      `json:"pr_queued,omitempty"`
+	PRSyncedAt time.Time `json:"pr_synced_at"`
 
 	// Runtime-only fields, recomputed at startup and on poll.
 	TmuxAlive     bool `json:"-"`

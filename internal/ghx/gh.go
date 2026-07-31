@@ -89,6 +89,15 @@ func firstLine(s string) string {
 }
 
 func run(ctx context.Context, dir string, args ...string) (string, error) {
+	out, _, err := runOutErr(ctx, dir, args...)
+	return out, err
+}
+
+// runOutErr also hands back what gh wrote to stderr on success. gh reports some
+// outcomes there rather than in its exit code -- a pull request that is already
+// in the merge queue is a warning and a zero exit -- so a caller that has to
+// tell those apart needs the text.
+func runOutErr(ctx context.Context, dir string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -97,9 +106,9 @@ func run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), classify("", stderr.String()+err.Error())
+		return stdout.String(), stderr.String(), classify("", stderr.String()+err.Error())
 	}
-	return stdout.String(), nil
+	return stdout.String(), stderr.String(), nil
 }
 
 type checkEntry struct {
@@ -376,8 +385,114 @@ func parseCreated(out string) (int, string) {
 	return 0, ""
 }
 
-// MergePR merges an open pull request, deleting the remote branch.
-func MergePR(ctx context.Context, remote string, number int, method string) error {
+// MergeOutcome says what a merge request actually accomplished. A base branch
+// behind a merge queue does not merge on demand, and the board must not claim
+// otherwise.
+type MergeOutcome int
+
+const (
+	// MergeCompleted means the pull request is merged and done.
+	MergeCompleted MergeOutcome = iota
+	// MergeQueued means the queue owns it now: it merges when the queue reaches
+	// it, and can just as well be dropped back out.
+	MergeQueued
+	// MergeAlreadyQueued means it was in the queue before we asked, so nothing
+	// happened. gh treats this as success, and so do we.
+	MergeAlreadyQueued
+)
+
+// QueueState is one pull request's standing with its base branch's merge queue.
+type QueueState struct {
+	// Enabled reports that the base branch requires a merge queue, which makes
+	// merging a matter of joining the queue rather than landing a commit.
+	Enabled bool
+	// InQueue reports that the pull request is already waiting in that queue.
+	InQueue bool
+}
+
+// queueQuery asks for the two fields that decide how a merge must be performed.
+// It is a GraphQL query because gh's --json field set exposes neither, though
+// gh's own merge command reads both.
+const queueQuery = `query($owner:String!,$name:String!,$number:Int!){` +
+	`repository(owner:$owner,name:$name){` +
+	`pullRequest(number:$number){isInMergeQueue isMergeQueueEnabled}}}`
+
+// PRQueueState reports whether a pull request's base branch requires a merge
+// queue, and whether the pull request is already in it.
+func PRQueueState(ctx context.Context, remote string, number int) (QueueState, error) {
+	owner, name, ok := splitRemote(remote)
+	if !ok {
+		return QueueState{}, &Error{Kind: ErrNoRepo, Remote: remote, Msg: "repo has no remote configured"}
+	}
+	out, err := run(ctx, "", "api", "graphql", "-f", "query="+queueQuery,
+		"-f", "owner="+owner, "-f", "name="+name, "-F", "number="+fmt.Sprint(number))
+	if err != nil {
+		if e, ok := err.(*Error); ok {
+			e.Remote = remote
+			return QueueState{}, e
+		}
+		return QueueState{}, err
+	}
+	return parseQueueState(out, remote)
+}
+
+func parseQueueState(out, remote string) (QueueState, error) {
+	var resp struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					IsInMergeQueue      bool `json:"isInMergeQueue"`
+					IsMergeQueueEnabled bool `json:"isMergeQueueEnabled"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return QueueState{}, &Error{Kind: ErrOther, Remote: remote, Msg: "parse gh output: " + err.Error()}
+	}
+	pr := resp.Data.Repository.PullRequest
+	return QueueState{Enabled: pr.IsMergeQueueEnabled, InQueue: pr.IsInMergeQueue}, nil
+}
+
+// splitRemote takes the owner and name off a remote. A host-qualified remote
+// still ends in that pair.
+func splitRemote(remote string) (owner, name string, ok bool) {
+	parts := strings.Split(strings.Trim(remote, "/"), "/")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	owner, name = parts[len(parts)-2], parts[len(parts)-1]
+	return owner, name, owner != "" && name != ""
+}
+
+// MergePR merges an open pull request, deleting the remote branch, or adds it
+// to the merge queue when its base branch has one.
+//
+// The queued path is not the same request with a flag changed. The queue picks
+// the strategy, so none is passed; and gh refuses --delete-branch outright,
+// because deleting the branch would eject the pull request from the queue and
+// close it. The outcome tells the caller which of the two happened, since a
+// queued pull request has not merged and may yet fail to.
+func MergePR(ctx context.Context, remote string, number int, method string) (MergeOutcome, error) {
+	// A probe that cannot answer must not block a merge that would otherwise
+	// work. Falling through costs nothing: the direct attempt recognizes a queue
+	// from gh's refusal and retries the right way.
+	qs, _ := PRQueueState(ctx, remote, number)
+	if qs.InQueue {
+		return MergeAlreadyQueued, nil
+	}
+	if qs.Enabled {
+		return queueMerge(ctx, remote, number)
+	}
+
+	out, err := directMerge(ctx, remote, number, method)
+	if err != nil && refusedForMergeQueue(err) {
+		return queueMerge(ctx, remote, number)
+	}
+	return out, err
+}
+
+func directMerge(ctx context.Context, remote string, number int, method string) (MergeOutcome, error) {
 	flag := "--squash"
 	switch method {
 	case "merge":
@@ -385,6 +500,41 @@ func MergePR(ctx context.Context, remote string, number int, method string) erro
 	case "rebase":
 		flag = "--rebase"
 	}
-	_, err := run(ctx, "", "pr", "merge", "-R", remote, fmt.Sprint(number), flag, "--delete-branch")
-	return err
+	_, stderr, err := runOutErr(ctx, "", "pr", "merge", "-R", remote, fmt.Sprint(number), flag, "--delete-branch")
+	if err != nil {
+		return MergeCompleted, err
+	}
+	return mergeOutcome(stderr, MergeCompleted), nil
+}
+
+// queueMerge adds a pull request to its base branch's merge queue. gh enables
+// auto-merge when the required checks are still running and enqueues outright
+// once they pass; both mean the same thing here -- the queue merges it later,
+// without us.
+func queueMerge(ctx context.Context, remote string, number int) (MergeOutcome, error) {
+	_, stderr, err := runOutErr(ctx, "", "pr", "merge", "-R", remote, fmt.Sprint(number))
+	if err != nil {
+		return MergeCompleted, err
+	}
+	return mergeOutcome(stderr, MergeQueued), nil
+}
+
+// mergeOutcome reads what gh says it did, since gh reports a pull request that
+// was already queued as a warning on a successful run.
+func mergeOutcome(stderr string, dflt MergeOutcome) MergeOutcome {
+	if strings.Contains(strings.ToLower(stderr), "already queued") {
+		return MergeAlreadyQueued
+	}
+	return dflt
+}
+
+// refusedForMergeQueue recognizes gh declining a direct merge because the base
+// branch is behind a queue. It backs up the queue query for hosts that cannot
+// answer it -- an older GitHub Enterprise, most likely.
+func refusedForMergeQueue(err error) bool {
+	e, ok := err.(*Error)
+	if !ok {
+		return false
+	}
+	return strings.Contains(strings.ToLower(e.Msg), "merge queue")
 }
