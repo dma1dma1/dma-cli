@@ -333,6 +333,33 @@ func TestDiffPerFile(t *testing.T) {
 	}
 }
 
+// A rendered diff has to arrive with its lines numbered whichever renderer drew
+// it: git puts the numbers in the hunk header and nowhere else, so the margin is
+// added on the way out.
+func TestDiffCarriesLineNumbers(t *testing.T) {
+	if HasDelta() {
+		t.Skip("delta draws the margin itself")
+	}
+	dir := testRepo(t)
+	write(t, dir, "keep.txt", "alpha\nbravo\ncharlie\ndingo\n")
+
+	out, err := Diff(context.Background(), dir, "main", DiffUncommitted, DiffTarget{Path: "keep.txt"}, DiffOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(stripANSI(out), "\n") {
+		if !strings.HasSuffix(line, "+dingo") {
+			continue
+		}
+		// The fourth line of the new file, and no line at all in the old one.
+		if m := marginPattern.FindStringSubmatch(line); m == nil || m[1] != "" || m[2] != "4" {
+			t.Errorf("added row = %q, want it numbered as line 4 of the new file", line)
+		}
+		return
+	}
+	t.Errorf("the added line is not in the rendered diff:\n%s", out)
+}
+
 func TestDeltaArgs(t *testing.T) {
 	args := strings.Join(deltaArgs(DiffOpts{Width: 80}), " ")
 	if !strings.Contains(args, "-w=80") {
@@ -343,6 +370,14 @@ func TestDeltaArgs(t *testing.T) {
 	}
 	if !strings.Contains(args, "--max-line-length=0") {
 		t.Errorf("long lines would be clipped: %s", args)
+	}
+	// The margin is the whole point of asking delta rather than reading a patch,
+	// and a hunk header that repeats what the margin says is noise.
+	if !strings.Contains(args, "--line-numbers") {
+		t.Errorf("no line numbers asked for: %s", args)
+	}
+	if !strings.Contains(args, "--hunk-header-style=syntax") {
+		t.Errorf("hunk headers would still carry line numbers: %s", args)
 	}
 
 	sbs := strings.Join(deltaArgs(DiffOpts{Width: 80, SideBySide: true}), " ")

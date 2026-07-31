@@ -17,20 +17,21 @@ func twoHunks() []gitx.Hunk {
 	}
 }
 
-// plainRender is what git's own output looks like: the @@ markers survive, so the
-// rows can be counted exactly.
+// plainRender is what git's own output looks like once it has been given a
+// margin: line numbers down the side and one rule where each hunk header was, so
+// the rows can be counted exactly.
 const plainRender = `diff --git a/panel.go b/panel.go
 --- a/panel.go
 +++ b/panel.go
-@@ -4,6 +4,8 @@ func (m Model) chips() string {
- 	line3
-+	added line
-+	another added line
- 	line4
-@@ -20,7 +22,6 @@ func (m Model) chips() string {
- 	line19
--	line20
- 	line21`
+┄┄┄┄┄┄┄┄┄ func (m Model) chips() string {
+ 4 ⋮  4 │  	line3
+   ⋮  5 │ +	added line
+   ⋮  6 │ +	another added line
+ 5 ⋮  7 │  	line4
+┄┄┄┄┄┄┄┄┄ func (m Model) chips() string {
+20 ⋮ 22 │  	line19
+21 ⋮    │ -	line20
+22 ⋮ 23 │  	line21`
 
 // deltaRender is what delta's default hunk header looks like: its own decoration,
 // with no @@ anywhere. The changed lines are still the changed lines, which is
@@ -48,7 +49,7 @@ const deltaRender = "\x1b[34mpanel.go\x1b[0m\n" +
 	"\x1b[31m-\tline20\x1b[0m\n" +
 	" \tline21"
 
-// With the @@ markers present the mapping is exact: hunk N is the Nth marker.
+// With a rule per hunk the mapping is exact: hunk N is the Nth rule.
 func TestHunkRowsFromHeaders(t *testing.T) {
 	rows := hunkRows(plainRender, twoHunks())
 	if len(rows) != 2 {
@@ -56,12 +57,12 @@ func TestHunkRowsFromHeaders(t *testing.T) {
 	}
 	lines := strings.Split(plainRender, "\n")
 	for i, row := range rows {
-		if !strings.HasPrefix(lines[row], "@@") {
+		if !strings.HasPrefix(lines[row], gitx.HunkRule) {
 			t.Errorf("hunk %d mapped to row %d, which is %q", i, row, lines[row])
 		}
 	}
 	if rows[0] != 3 || rows[1] != 8 {
-		t.Errorf("rows = %v, want [3 8] (the two @@ rows)", rows)
+		t.Errorf("rows = %v, want [3 8] (the two rule rows)", rows)
 	}
 }
 
