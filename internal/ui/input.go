@@ -824,11 +824,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// gesture that takes them back. Leaving focus where it was means every key
 	// keeps going to the agent from a pointer that has visibly left it, and
 	// ctrl-q becomes the only way out of a mode the user already tried to leave.
-	//
-	// Not while the panel is expanded: there is no board on screen to click back
-	// to, so the only cells that miss every target are the frame and the chip
-	// row, and a click landing there is a miss rather than a departure.
-	if m.focus != focusBoard && !m.previewFull {
+	if m.focus != focusBoard {
 		m.focus = focusBoard
 		// Not inlined into the return: onFocusChange blurs the input through a
 		// pointer, and Go does not order that against copying m into the result.
