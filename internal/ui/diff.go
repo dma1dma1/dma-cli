@@ -67,6 +67,10 @@ func (m Model) diffChips(s *core.Session) string {
 		}
 		add(fmt.Sprintf("PR #%d %s", s.PRNumber, s.PRState), prStyle)
 
+		if s.PRQueued {
+			add("◌ merge queue", lipgloss.NewStyle().Foreground(st.P.Accent))
+		}
+
 		// Mergeable first: conflicts matter most and matter earliest.
 		switch s.PRMergeable {
 		case core.MergeConflicts:

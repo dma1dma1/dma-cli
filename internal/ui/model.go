@@ -12,6 +12,7 @@ import (
 	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
+	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 	"github.com/dma1dma1/dma-cli/internal/hooks"
 	"github.com/dma1dma1/dma-cli/internal/notify"
@@ -339,15 +340,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleShipped(msg)
 
 	case mergedMsg:
-		if msg.err != nil {
-			return m, errStatus(msg.err)
-		}
-		if s := core.FindByID(m.sessions, msg.id); s != nil {
-			s.PRState = core.PRMerged
-			s.Lifecycle = core.LifecycleMerged
-			m.save()
-		}
-		return m, nil
+		return m.handleMerged(msg)
+
+	case prQueueMsg:
+		return m.handlePRQueue(msg)
 
 	case teardownMsg:
 		return m.handleTeardown(msg)
@@ -520,6 +516,13 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		s.PRNumber, s.PRURL, s.PRState = pr.Number, pr.URL, pr.State
 		s.PRCI, s.PRReview, s.PRMergeable = pr.CI, pr.Review, pr.Mergeable
 
+		// A queued PR is an open PR, so the poll cannot tell that the queue let
+		// go of it. Ask, but only for the cards actually claiming to be queued --
+		// on a board with no merge queue in sight that is never.
+		if s.PRQueued {
+			follow = append(follow, prQueueCmd(repo.Remote, s.ID, s.PRNumber))
+		}
+
 		// A PR appearing, and that PR merging, are the two durable events that
 		// move a card into the git-owned columns.
 		if !hadPR && s.HasPR() && s.Lifecycle != core.LifecycleMerged {
@@ -530,6 +533,9 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 			s.Lifecycle = core.LifecycleMerged
 			dirty = true
 		}
+		if pr.State == core.PRMerged || pr.State == core.PRClosed {
+			s.PRQueued = false
+		}
 	}
 	if dirty {
 		m.save()
@@ -537,6 +543,53 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 	if len(follow) > 0 {
 		return m, tea.Batch(follow...)
 	}
+	return m, nil
+}
+
+// handleMerged applies the result of pressing m.
+//
+// Only a merge that landed moves the card to the merged column. A pull request
+// the merge queue accepted is still open work: the queue merges it when it
+// reaches it, or drops it back out, and the poll is what resolves which.
+func (m Model) handleMerged(msg mergedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m, errStatus(msg.err)
+	}
+	s := core.FindByID(m.sessions, msg.id)
+	if s == nil {
+		return m, nil
+	}
+	switch msg.outcome {
+	case ghx.MergeQueued, ghx.MergeAlreadyQueued:
+		s.PRQueued = true
+		m.save()
+		// Worth the footer even though the card now reads "queued": you pressed
+		// merge and nothing merged, which is the one outcome the board should not
+		// leave you to infer from a label.
+		if msg.outcome == ghx.MergeAlreadyQueued {
+			return m, status(fmt.Sprintf("PR #%d is already in the merge queue", s.PRNumber))
+		}
+		return m, status(fmt.Sprintf("PR #%d added to the merge queue", s.PRNumber))
+	}
+	s.PRState = core.PRMerged
+	s.Lifecycle = core.LifecycleMerged
+	s.PRQueued = false
+	m.save()
+	return m, nil
+}
+
+// handlePRQueue applies a queue re-check. A failed check leaves the card as it
+// was: the queue standing it is showing is the last one GitHub confirmed.
+func (m Model) handlePRQueue(msg prQueueMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m, nil
+	}
+	s := core.FindByID(m.sessions, msg.sessionID)
+	if s == nil || s.PRQueued == msg.inQueue {
+		return m, nil
+	}
+	s.PRQueued = msg.inQueue
+	m.save()
 	return m, nil
 }
 
@@ -553,6 +606,9 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	if msg.pr.URL != "" {
 		s.PRURL = msg.pr.URL
 	}
+	// This resolves a PR that left the open set, so whatever the queue was going
+	// to do with it, it has done.
+	s.PRQueued = false
 	core.Touch(s)
 	// A PR closed without merging keeps its column and is labelled closed on the
 	// card, rather than vanishing from the board.

@@ -3,6 +3,7 @@ package ghx
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 )
 
@@ -58,6 +59,31 @@ func TestPollBranchesDecodesAnOpenPRLive(t *testing.T) {
 		t.Errorf("unexpected state %q on #%d", pr.State, pr.Number)
 	}
 	t.Logf("decoded %+v", pr)
+}
+
+// The queue query is GraphQL rather than gh's --json, so nothing but a live run
+// proves the query is well formed and decodes.
+func TestPRQueueStateLive(t *testing.T) {
+	if os.Getenv("DMA_LIVE") != "1" {
+		t.Skip("set DMA_LIVE=1 to run live gh tests")
+	}
+	remote, number := os.Getenv("DMA_LIVE_REPO"), os.Getenv("DMA_LIVE_PR")
+	if remote == "" || number == "" {
+		// cli/cli merges without a queue, which still exercises the whole path.
+		remote, number = "cli/cli", "11000"
+	}
+	n, err := strconv.Atoi(number)
+	if err != nil {
+		t.Fatalf("DMA_LIVE_PR is not a number: %v", err)
+	}
+	qs, err := PRQueueState(context.Background(), remote, n)
+	if err != nil {
+		t.Fatalf("PRQueueState: %v", err)
+	}
+	if qs.InQueue && !qs.Enabled {
+		t.Errorf("PR is in a queue its base branch does not have: %+v", qs)
+	}
+	t.Logf("%s#%d: %+v", remote, n, qs)
 }
 
 // A repo that does not exist must be classified, not surfaced as a raw error.

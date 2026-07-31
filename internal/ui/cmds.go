@@ -98,8 +98,18 @@ type prLinkMsg struct {
 }
 
 type mergedMsg struct {
-	id  string
-	err error
+	id string
+	// outcome distinguishes a merge that landed from one that only joined a
+	// merge queue, which is still open work.
+	outcome ghx.MergeOutcome
+	err     error
+}
+
+// prQueueMsg carries a refreshed merge-queue standing for one session's PR.
+type prQueueMsg struct {
+	sessionID string
+	inQueue   bool
+	err       error
 }
 
 type teardownMsg struct {
@@ -420,8 +430,21 @@ func mergeCmd(cfg *core.Config, s *core.Session) tea.Cmd {
 		if sess.PRNumber == 0 {
 			return mergedMsg{id: sess.ID, err: fmt.Errorf("no PR to merge")}
 		}
-		err := ghx.MergePR(ctx, repo.Remote, sess.PRNumber, "squash")
-		return mergedMsg{id: sess.ID, err: err}
+		outcome, err := ghx.MergePR(ctx, repo.Remote, sess.PRNumber, "squash")
+		return mergedMsg{id: sess.ID, outcome: outcome, err: err}
+	}
+}
+
+// prQueueCmd re-checks a PR the board is showing as queued. A merge queue can
+// drop a PR back out -- its checks fail against the queue's merge candidate --
+// and the open-PR poll says nothing about that, since the PR was open all
+// along.
+func prQueueCmd(remote, sessionID string, number int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		qs, err := ghx.PRQueueState(ctx, remote, number)
+		return prQueueMsg{sessionID: sessionID, inQueue: qs.InQueue, err: err}
 	}
 }
 

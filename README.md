@@ -112,7 +112,7 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 | `s` | commit and push the agent's branch, open a PR |
 | `o` | open the PR in your browser |
 | `y` | copy the PR link to the clipboard |
-| `m` | merge the PR |
+| `m` | merge the PR — or add it to the merge queue, where the base branch has one |
 | `x` | prune the worktree and its branch |
 | `D` | kill the agent, keep the worktree |
 | `R` | refresh PR and session state now |
@@ -142,6 +142,8 @@ Everything is written to `~/.dma/config.json` and can be edited there. Bootstrap
 The first two move on their own as agents start and stop, so **idle is the column you act on** — everything waiting for you, whether that is a permission prompt or a finished diff.
 
 The last two are owned by durable git facts, and agent activity can never pull a card out of them: whether a process happens to be mid-tool-call says nothing about whether its PR is merged.
+
+A merge queue is why **merged** is not where `m` puts a card. Where the base branch has one, `m` hands the PR to the queue and the card reads `◌ queued` in **pr open** until the queue lands it — or drops it back out, which polling notices too. Only a PR that actually merged reaches the merged column.
 
 Because cards move by themselves, **selection is anchored to the session, not to a position.** When a card crosses columns the cursor follows it rather than landing on whatever took its place, and a card appearing above the cursor never shifts it.
 
