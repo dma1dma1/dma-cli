@@ -65,6 +65,10 @@ type Styles struct {
 	Error   lipgloss.Style
 	Status  lipgloss.Style
 	Title   lipgloss.Style
+	// Match marks the runes a help search landed on. It has to stand out against
+	// both of the styles it appears inside -- the key column and the description
+	// -- so it is the focus color the rest of the UI reserves for "here".
+	Match lipgloss.Style
 
 	Chip        lipgloss.Style
 	ChipFocused lipgloss.Style
@@ -94,6 +98,7 @@ func newStyles() Styles {
 		Error:   base.Foreground(p.Danger),
 		Status:  base.Foreground(p.Muted),
 		Title:   base.Foreground(p.Text).Bold(true),
+		Match:   base.Foreground(p.Focus).Bold(true),
 
 		Chip:        base.Foreground(p.ChipText).Background(p.Chip).Padding(0, 1),
 		ChipFocused: base.Foreground(lipgloss.Color("232")).Background(p.Focus).Bold(true).Padding(0, 1),

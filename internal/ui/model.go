@@ -140,6 +140,11 @@ type Model struct {
 	// layout git can produce, so the toggle says so rather than silently failing.
 	diffSideBySide bool
 
+	// helpQuery filters the help screen's keymap as it is typed. It is cleared
+	// when the screen closes: a search you set last time is a keymap that looks
+	// like it has lost half its keys.
+	helpQuery string
+
 	hookEvents <-chan hooks.Event
 	hookURL    string
 
@@ -1304,37 +1309,4 @@ func (m Model) hintLine(hints []hint) string {
 		parts = append(parts, m.styles.KeyHint.Render(h.key)+" "+m.styles.KeyDesc.Render(h.desc))
 	}
 	return strings.Join(parts, m.styles.KeyDesc.Render(" · "))
-}
-
-func (m Model) viewHelp() string {
-	st := m.styles
-	lines := []string{""}
-	for _, row := range helpText {
-		if row[0] != "" {
-			lines = append(lines, "", "  "+st.Title.Render(row[0]))
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("    %s  %s",
-			st.KeyHint.Render(padRight(row[1], 12)), st.KeyDesc.Render(row[2])))
-	}
-	tail := []string{
-		"",
-		"  " + st.Faint.Render("hook listener: "+m.hookURL),
-		"  " + st.Faint.Render("press any key to return"),
-	}
-	// The keymap is longer than a short window. Clip the list rather than let the
-	// frame clip the whole view, so the line naming the key that closes this
-	// screen is never the one that falls off the bottom of it.
-	if avail := max(m.height-len(m.footer())-len(tail), 1); len(lines) > avail {
-		lines = lines[:avail-1]
-		lines = append(lines, "  "+st.Faint.Render("… more keys below — grow the window to read them"))
-	}
-	return strings.Join(append(lines, tail...), "\n")
-}
-
-func padRight(s string, n int) string {
-	if len(s) >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-len(s))
 }

@@ -22,8 +22,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case modePrompt:
 		return m.keyPrompt(msg, key)
 	case modeHelp:
-		m.mode = modeBoard
-		return m, nil
+		return m.keyHelp(msg, key)
 	case modeRepos:
 		return m.keyRepos(key)
 	case modeDiff:
@@ -193,6 +192,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 
 	case "?":
 		m.mode = modeHelp
+		m.helpQuery = ""
 		return m, nil
 
 	case "i", "n":

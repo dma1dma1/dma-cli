@@ -331,7 +331,7 @@ opening prompt.
 | `p` | Choose a project filter |
 | `G` | Move the selected session to a project |
 | `R` | Refresh session and PR state |
-| `?` | Show the complete in-app help |
+| `?` | Show the complete in-app help — type in it to search the keymap |
 | `q` | Quit; agents continue running |
 
 When typing directly into the session panel or an attached tmux session, every
