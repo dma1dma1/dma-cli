@@ -46,6 +46,11 @@ type Model struct {
 	height int
 
 	selectedID string
+	// deselected says the empty selection was chosen rather than merely arrived
+	// at, which rebuild has to know: it helpfully picks a card whenever nothing
+	// is selected, and switching project would get its blank panel filled back in
+	// on the next poll.
+	deselected bool
 	// repoFilter and projectFilter both reset on launch rather than persisting:
 	// a filter you forgot you set is a board that silently lies about what is
 	// running.
@@ -170,6 +175,39 @@ func (m Model) selected() *core.Session {
 	return core.FindByID(m.sessions, m.selectedID)
 }
 
+// selectSession aims the board's cursor and the panel at one session.
+//
+// The preview goes with it: it is the previous session's output, and left in
+// place it draws into this session's panel until the next capture lands.
+func (m *Model) selectSession(s *core.Session) {
+	m.selectedID, m.deselected = s.ID, false
+	m.preview, m.previewCursor = "", tmuxx.Cursor{}
+}
+
+// clearSelection empties the panel and keeps it empty until something is picked.
+func (m *Model) clearSelection() {
+	m.selectedID, m.deselected = "", true
+	m.preview, m.previewCursor = "", tmuxx.Cursor{}
+}
+
+// dropSelectionIfHidden empties the panel when a filter has just taken the
+// selected card off the board.
+//
+// The panel does not outlive the card it belongs to. Selection is held as an id
+// and the filters do not touch it, so changing one used to leave the previous
+// project or repo's agent running in the panel with no card above it to explain
+// why -- which reads as the filter not having taken. Every filter change lands on
+// the empty panel instead, the same place a board with no sessions starts from,
+// and the next move or click picks from what the board is showing now.
+//
+// Widening a filter is not a change to land on: the card is still there, and
+// blanking the panel under it would throw away the user's place for nothing.
+func (m *Model) dropSelectionIfHidden() {
+	if m.selectedID != "" && !m.findSelected().ok {
+		m.clearSelection()
+	}
+}
+
 func (m *Model) save() {
 	if err := core.SaveSessions(m.sessions); err != nil {
 		m.statusText, m.statusErr, m.statusAt = "save state: "+err.Error(), true, time.Now()
@@ -179,6 +217,9 @@ func (m *Model) save() {
 // rebuild exists so callers do not need to know that the layout is derived on
 // demand rather than cached.
 func (m *Model) rebuild() {
+	if m.deselected {
+		return
+	}
 	if m.selected() == nil {
 		if s := m.firstSession(); s != nil {
 			m.selectedID = s.ID
@@ -635,8 +676,7 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()
-	m.selectedID = s.ID
-	m.preview = ""
+	m.selectSession(s)
 
 	// The new card is its own confirmation, so a successful start says nothing.
 	// Warnings are the exception: a symlink or hook install that failed is not

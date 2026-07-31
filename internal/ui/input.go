@@ -195,7 +195,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 			dir = 1
 		}
 		if s := m.moveH(dir); s != nil {
-			m.selectedID, m.preview = s.ID, ""
+			m.selectSession(s)
 			return m, previewCmd(s)
 		}
 		return m, nil
@@ -206,7 +206,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 			dir = -1
 		}
 		if s := m.moveV(dir); s != nil {
-			m.selectedID, m.preview = s.ID, ""
+			m.selectSession(s)
 			return m, previewCmd(s)
 		}
 		return m, nil
@@ -268,13 +268,16 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		}
 		// The footer carries a [repo:x] tag while a filter is on, and the board
 		// visibly changes, so the state is already on screen either way.
+		// Clearing the filter only ever puts cards back, so the selection is left
+		// alone; switching it on can hide the selected one, and the panel does not
+		// stay on a card the board no longer shows.
 		if m.repoFilter != "" {
 			m.repoFilter = ""
 			m.rebuild()
 			return m, nil
 		}
 		m.repoFilter = m.activeRepoID()
-		m.rebuild()
+		m.dropSelectionIfHidden()
 		return m, nil
 
 	case "X":
@@ -539,7 +542,7 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 			dir = -1
 		}
 		if s := m.stepSession(dir); s != nil {
-			m.selectedID, m.preview = s.ID, ""
+			m.selectSession(s)
 			return m, tea.Batch(m.refreshDiff(), previewCmd(s))
 		}
 		return m, nil
@@ -665,7 +668,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, m.refreshDiff()
 		}
 		m.focus = focusBoard
-		m.selectedID, m.preview = s.ID, ""
+		m.selectSession(s)
 		m.lastClickID, m.lastClickAt = s.ID, now()
 		return m, previewCmd(s)
 	}
