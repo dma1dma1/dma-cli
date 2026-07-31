@@ -267,6 +267,14 @@ your tmux mouse setting when you detach.
 Cards move automatically as agent and GitHub state changes. Within a column,
 sessions needing attention sort first, followed by the longest time in state.
 
+Two things raise a desktop notification, because the board is not meant to be
+watched: an agent that starts needing your input, and an open pull request that
+becomes mergeable — no conflicts, no failing or unfinished checks, and no
+reviewer asking for changes. Each fires once on the transition rather than for
+as long as the state lasts, and is not repeated when the board is relaunched.
+Drafts and pull requests already in a merge queue are not announced, since
+neither is waiting on you.
+
 The columns grow with the cards they hold, up to half the window; past that they
 scroll instead, so a busy column never crowds out the session panel below. A
 column with cards off screen counts them at that end. Moving the cursor scrolls

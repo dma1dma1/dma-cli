@@ -187,8 +187,13 @@ type Session struct {
 	// PRQueued reports that the PR is waiting in its base branch's merge queue.
 	// It is not a PR state: GitHub still calls a queued PR open, and the queue
 	// can drop it back out again.
-	PRQueued   bool      `json:"pr_queued,omitempty"`
-	PRSyncedAt time.Time `json:"pr_synced_at"`
+	PRQueued bool `json:"pr_queued,omitempty"`
+	// PRMergeableNotified records that the user has already been told this PR is
+	// ready to merge. It is persisted rather than kept in memory so that
+	// relaunching the board does not re-announce every PR that was already ready
+	// when it closed.
+	PRMergeableNotified bool      `json:"pr_mergeable_notified,omitempty"`
+	PRSyncedAt          time.Time `json:"pr_synced_at"`
 
 	// Runtime-only fields, recomputed at startup and on poll.
 	TmuxAlive     bool `json:"-"`
@@ -245,6 +250,56 @@ func (s *Session) syncColumn() {
 // HasPR reports whether a pull request is known for this session.
 func (s *Session) HasPR() bool {
 	return s.PRNumber > 0 && s.PRState != PRNone
+}
+
+// PRReadyToMerge reports whether an open pull request has nothing left standing
+// between it and a merge: no conflicts, no failing or unfinished checks, and no
+// reviewer asking for changes.
+//
+// Only PROpen qualifies. A draft is not offered for merging however green it is,
+// and merged and closed are not pending anything.
+func (s *Session) PRReadyToMerge() bool {
+	if s.PRNumber <= 0 || s.PRState != PROpen {
+		return false
+	}
+	// A queued PR is on its way in without the user, so it is not something to
+	// be handed back to them.
+	if s.PRQueued {
+		return false
+	}
+	// MergeUnknown is GitHub still computing the merge commit rather than an
+	// answer, and guessing clean from it would fire on PRs that turn out to
+	// conflict.
+	if s.PRMergeable != MergeClean {
+		return false
+	}
+	switch s.PRCI {
+	case CIPass, CINone:
+		// A repo with no checks at all has nothing to wait for.
+	default:
+		return false
+	}
+	return s.PRReview != ReviewChangesRequested
+}
+
+// ClaimMergeableNotice reports whether this is the moment to tell the user a PR
+// is ready to merge, and records having done so.
+//
+// The notification belongs to the transition, not the state: a PR sits ready for
+// as long as it takes the user to merge it, and every poll in that window would
+// otherwise raise another one. The claim is released when the PR stops being
+// ready, so a PR that goes red and comes back green is announced again -- the
+// second pass is news too.
+func (s *Session) ClaimMergeableNotice() bool {
+	if !s.PRReadyToMerge() {
+		s.PRMergeableNotified = false
+		return false
+	}
+	if s.PRMergeableNotified {
+		return false
+	}
+	s.PRMergeableNotified = true
+	return true
 }
 
 // NewID returns a short random identifier.
