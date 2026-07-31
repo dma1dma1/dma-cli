@@ -391,6 +391,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shippedMsg:
 		return m.handleShipped(msg)
 
+	case shepherdedMsg:
+		return m.handleShepherded(msg)
+
 	case mergedMsg:
 		return m.handleMerged(msg)
 
@@ -591,6 +594,13 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		if pr.State == core.PRMerged || pr.State == core.PRClosed {
 			s.PRQueued = false
 		}
+
+		// Only open pull requests are polled, so anything reaching here is still
+		// live work and worth shepherding -- including one this board never
+		// opened, which is the case an instruction in the launch prompt misses.
+		if c := m.shepherdCmdFor(s); c != nil {
+			follow = append(follow, c)
+		}
 	}
 	if dirty {
 		m.save()
@@ -599,6 +609,55 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(follow...)
 	}
 	return m, nil
+}
+
+// shepherdCmdFor returns the command that sends a session's on-PR-open line, or
+// nil when there is nothing to send.
+//
+// The trigger is the pull request existing, not anything the agent was told at
+// launch. An instruction in the opening prompt depends on the person
+// remembering to give it and on the agent still holding it an hour later, and
+// neither is reliable enough to build on; a pull request appearing is a durable
+// fact the board already computes. Both ways one can appear -- pressing s, and
+// the poll finding a PR the agent opened itself -- come through here, so the
+// line is sent regardless of how the work got to GitHub.
+//
+// Nothing is recorded until the send succeeds. A session whose terminal is gone
+// stays armed rather than being marked done, and the next poll picks it up once
+// there is an agent to receive it.
+func (m Model) shepherdCmdFor(s *core.Session) tea.Cmd {
+	if s == nil || !s.HasPR() || s.ShepherdedPR == s.PRNumber {
+		return nil
+	}
+	prof, ok := m.cfg.Profile(s.AgentProfile)
+	if !ok {
+		return nil
+	}
+	line := prof.PROpenCommand(s.PRNumber, s.PRURL)
+	if line == "" || !s.TmuxAlive {
+		return nil
+	}
+	return shepherdCmd(s, line, s.PRNumber)
+}
+
+// handleShepherded records that a session's on-PR-open line was delivered.
+func (m Model) handleShepherded(msg shepherdedMsg) (tea.Model, tea.Cmd) {
+	s := core.FindByID(m.sessions, msg.id)
+	if s == nil {
+		return m, nil
+	}
+	if msg.err != nil {
+		// Deliberately left unmarked: a send that failed because the agent was
+		// restarting must not become a pull request that silently never gets
+		// shepherded. The next poll tries again.
+		return m, errText(fmt.Sprintf("shepherd #%d: %v", msg.pr, msg.err))
+	}
+	if s.ShepherdedPR == msg.pr {
+		return m, nil
+	}
+	s.ShepherdedPR = msg.pr
+	m.save()
+	return m, status(fmt.Sprintf("shepherding #%d", msg.pr))
 }
 
 // handleMerged applies the result of pressing m.
@@ -722,7 +781,10 @@ func (m Model) handleShipped(msg shippedMsg) (tea.Model, tea.Cmd) {
 	// The card moves to In Review and grows a PR number, so there is nothing a
 	// message would add.
 	m.save()
-	return m, pollPRsCmd(m.cfg, m.sessions)
+	// Dispatched here as well as from the poll so shipping hands the PR straight
+	// back to the agent. Waiting for the next poll would leave a gap of up to
+	// poll_interval_secs, and the marker makes the second attempt a no-op.
+	return m, tea.Batch(m.shepherdCmdFor(s), pollPRsCmd(m.cfg, m.sessions))
 }
 
 func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {

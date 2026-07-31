@@ -330,3 +330,39 @@ func TestProjectRepoIgnoresUnregisteredRepos(t *testing.T) {
 		t.Errorf("project repo = %q, want none for an unregistered repo", repo)
 	}
 }
+
+// The line is typed into an agent that is already running, so both placeholders
+// have to be filled in before it is sent.
+func TestPROpenCommandSubstitutesPlaceholders(t *testing.T) {
+	p := AgentProfile{OnPROpen: "/pr-shepherd {pr} {url}"}
+	got := p.PROpenCommand(412, "https://github.com/o/r/pull/412")
+	want := "/pr-shepherd 412 https://github.com/o/r/pull/412"
+	if got != want {
+		t.Errorf("PROpenCommand = %q, want %q", got, want)
+	}
+}
+
+// A line with no placeholder is a perfectly good instruction and must survive
+// untouched.
+func TestPROpenCommandLeavesAPlainLineAlone(t *testing.T) {
+	p := AgentProfile{OnPROpen: "watch the PR until CI is green"}
+	if got := p.PROpenCommand(412, "u"); got != "watch the PR until CI is green" {
+		t.Errorf("PROpenCommand = %q", got)
+	}
+}
+
+// Empty is the default and means send nothing, which is what the caller checks.
+func TestPROpenCommandIsEmptyWhenUnset(t *testing.T) {
+	if got := (AgentProfile{}).PROpenCommand(412, "u"); got != "" {
+		t.Errorf("PROpenCommand = %q, want empty", got)
+	}
+}
+
+// Unlike a launch command this is not handed to a shell, so quoting it would
+// put literal quotes in the agent's composer.
+func TestPROpenCommandDoesNotShellQuote(t *testing.T) {
+	p := AgentProfile{OnPROpen: "shepherd it, don't stop at the first failure"}
+	if got := p.PROpenCommand(1, ""); strings.Contains(got, `'\''`) {
+		t.Errorf("PROpenCommand shell-quoted the line: %q", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -71,6 +72,15 @@ type AgentProfile struct {
 	// liveness plus a pane-change heuristic, which is coarser but never blocks
 	// the feature on universal coverage.
 	Hooks bool `json:"hooks"`
+	// OnPROpen is a line typed into the agent the first time a pull request
+	// appears for its session -- a slash command, or plain instructions. Empty,
+	// the default, sends nothing.
+	//
+	// It lives on the profile rather than on the repo because the line is
+	// written in one agent's vocabulary: "/pr-shepherd 412" means something to
+	// Claude Code and nothing to anything else. Setting it once therefore covers
+	// every repo that agent works in, which is what "always" has to mean.
+	OnPROpen string `json:"on_pr_open,omitempty"`
 }
 
 // LaunchCommand is the shell line that starts this agent on a prompt.
@@ -107,10 +117,27 @@ func (p AgentProfile) LaunchCommand(prompt string, images ...string) string {
 	return command + " " + quoted
 }
 
+// PROpenCommand is the line to type when a pull request appears, with {pr} and
+// {url} substituted.
+//
+// Nothing is shell-quoted here, unlike LaunchCommand: that string is a command
+// line handed to a shell, this one is typed into an agent that is already
+// running. Quoting it would put literal quotes in the agent's composer.
+func (p AgentProfile) PROpenCommand(number int, url string) string {
+	line := strings.TrimSpace(p.OnPROpen)
+	if line == "" {
+		return ""
+	}
+	line = strings.ReplaceAll(line, prPlaceholder, strconv.Itoa(number))
+	return strings.ReplaceAll(line, urlPlaceholder, url)
+}
+
 const (
 	promptPlaceholder    = "{prompt}"
 	imagePlaceholder     = "{images}"
 	imagePathPlaceholder = "{path}"
+	prPlaceholder        = "{pr}"
+	urlPlaceholder       = "{url}"
 )
 
 func (p AgentProfile) imageArguments(images []string) string {

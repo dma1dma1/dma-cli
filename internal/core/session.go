@@ -189,6 +189,15 @@ type Session struct {
 	// can drop it back out again.
 	PRQueued   bool      `json:"pr_queued,omitempty"`
 	PRSyncedAt time.Time `json:"pr_synced_at"`
+	// ShepherdedPR is the pull request the profile's on-PR-open line has already
+	// been sent for.
+	//
+	// It records a number rather than a flag so the trigger is edge-triggered on
+	// the pull request's identity: a session whose PR is closed and reopened
+	// under a new number never stopped having a PR, and a flag would read that
+	// as already handled. It is persisted because the board restarting is not a
+	// reason to send the line a second time.
+	ShepherdedPR int `json:"shepherded_pr,omitempty"`
 
 	// Runtime-only fields, recomputed at startup and on poll.
 	TmuxAlive     bool `json:"-"`

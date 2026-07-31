@@ -81,6 +81,15 @@ type shippedMsg struct {
 	err    error
 }
 
+// shepherdedMsg reports the outcome of typing a profile's on-PR-open line into
+// an agent. It carries the pull request number so a reply arriving after the
+// poll moved on cannot mark the wrong one as handled.
+type shepherdedMsg struct {
+	id  string
+	pr  int
+	err error
+}
+
 // linkAction is what to do with a PR's web address once it is in hand.
 type linkAction int
 
@@ -446,6 +455,22 @@ func shipCmd(cfg *core.Config, s *core.Session, title string) tea.Cmd {
 		n, url, err := ghx.CreatePR(ctx, sess.WorktreePath, remote, sess.BaseBranch, branch,
 			title, "Opened from dma.", false)
 		return shippedMsg{id: sess.ID, branch: branch, number: n, url: url, err: err}
+	}
+}
+
+// shepherdCmd types a profile's on-PR-open line into a running agent.
+//
+// It goes through the terminal rather than argv because the agent is already
+// there, and that is the point: the agent that wrote the branch is the one that
+// should answer for its pull request, with the conversation that produced it
+// still in hand. An agent mid-turn queues the line and picks it up when the
+// turn ends, so nothing here waits for it to go idle.
+func shepherdCmd(s *core.Session, line string, pr int) tea.Cmd {
+	id, tmux := s.ID, s.TmuxSession
+	return func() tea.Msg {
+		ctx, cancel := contextWithTimeout()
+		defer cancel()
+		return shepherdedMsg{id: id, pr: pr, err: tmuxx.SendLiteral(ctx, tmux, line)}
 	}
 }
 

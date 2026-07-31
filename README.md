@@ -212,7 +212,8 @@ Set `DMA_HOME` to relocate both.
   ],
   "default_repo": "my-project",
   "agent_profiles": [
-    { "name": "claude", "command": "claude --permission-mode auto", "hooks": true },
+    { "name": "claude", "command": "claude --permission-mode auto", "hooks": true,
+      "on_pr_open": "/pr-shepherd {pr}" },  // optional; see below
     {
       "name": "codex",
       "command": "codex",
@@ -232,6 +233,23 @@ Set `DMA_HOME` to relocate both.
 `image_argument` is repeated for every image attached to a new session; `{path}` becomes the shell-quoted path of the staged PNG. The built-in Codex profile uses `--image {path}`. Profiles without `image_argument` receive the image paths in their opening prompt, which lets agents such as Claude Code read them directly.
 
 `hooks: false` puts a profile on the inferred-state path described above. Add any agent you like — the command is run inside the worktree's tmux session.
+
+### On PR open
+
+`on_pr_open` is a line typed into the agent the first time a pull request appears for its session — a slash command, or plain instructions. `{pr}` and `{url}` are substituted. Unset, the default, sends nothing.
+
+```jsonc
+"on_pr_open": "/pr-shepherd {pr}"          // a command your agent knows
+"on_pr_open": "Watch PR {url} until CI is green and every review thread is resolved."
+```
+
+It fires on the pull request existing, not on anything the agent was told at launch. Asking for shepherding in the opening prompt only works when you remember to ask and the agent is still holding the instruction an hour later; a PR appearing is a durable fact the board already computes, so it covers the sessions you forgot to ask. Both ways one can appear — pressing `s`, and the poll finding a PR the agent opened itself — go through the same path.
+
+Sent once per pull request number, recorded in `state.json`, so restarting the board does not start a second turn, and a PR closed and reopened under a new number is picked up again. A send is only recorded once it lands: a session whose terminal is gone stays armed and is served when the agent comes back.
+
+The line is typed into the agent's composer, so it inherits that composer's quirks — notably the vim-keymap mangling described under `LaunchCommand`, which is why the built-in `codex` profile leaves it unset.
+
+The card stays in **pr open** while the line runs. Its badge goes to `● working`, but PR-driven columns are never given up to agent activity.
 
 ## Commands
 
@@ -261,6 +279,7 @@ You normally need none of these — `cd` into a repo and run `dma`. `dma repo ad
 - **Diffs are not parsed.** `git diff --color=always`, optionally piped through `delta`, rendered into a viewport. Untracked files are included explicitly — a new file is an agent's most common output and plain `git diff` omits it.
 - **Registration is a side effect, not a step.** Standing in a repo is a complete statement of intent; making someone declare it first is ceremony. Detection reads the checkout instead of asking.
 - **dma creates no branches.** A worktree starts detached at the tip of `origin/<base>`, fetched at that moment — a local base branch is whatever the last direct visit to the repo left behind, which on a repo driven through this tool is nothing. The agent names its own branch once it knows what the work turned out to be, and the board adopts whatever it finds there; a name derived from the task title would be a guess made at the moment of least information. Until then the card reads `no branch`, and `s` refuses to invent one.
+- **`on_pr_open` lives on the agent profile, not on the repo.** The line is written in one agent's vocabulary — `/pr-shepherd 412` means something to Claude Code and nothing to anything else. Setting it once therefore covers every repo that agent works in, which is what "always" has to mean. A per-repo setting would be a list to keep in step with the repo list.
 - **Teardown never forces.** A dirty worktree, commits sitting on no branch, or an unmerged branch each require a second, explicit confirmation.
 
 ## Not in scope
