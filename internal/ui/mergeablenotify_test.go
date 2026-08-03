@@ -114,6 +114,25 @@ func TestPRSyncStaysQuietForAQueuedPR(t *testing.T) {
 	}
 }
 
+// Auto-merge will act when CI becomes green, so the user does not also need a
+// notification asking them to merge it manually.
+func TestPRSyncStaysQuietWhenAutoMergeIsEnabled(t *testing.T) {
+	got := captureNotifications(t)
+	s := branchSess("a", "r1", "feat-a", core.LifecyclePROpen)
+	s.PRNumber, s.PRState, s.PRAutoMerge = 7, core.PROpen, true
+	m := testModel(nil, s)
+	poll := greenPoll("feat-a", 7)
+	pr := poll.Open["feat-a"]
+	pr.AutoMerge = true
+	poll.Open["feat-a"] = pr
+
+	m.handlePRSync(prSyncMsg{repoID: "r1", poll: poll})
+
+	if len(*got) != 0 {
+		t.Errorf("an auto-merging PR raised %v", *got)
+	}
+}
+
 // A PR the queue dropped back out is the user's problem again, and that happens
 // without any polled field changing -- so the queue re-check has to notify too.
 func TestQueueDropoutNotifies(t *testing.T) {

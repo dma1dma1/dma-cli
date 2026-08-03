@@ -354,6 +354,8 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		prompt := fmt.Sprintf("Merge PR #%d (%s)?", s.PRNumber, s.Title)
 		if s.PRQueued {
 			prompt = fmt.Sprintf("PR #%d is in the merge queue. Queue it again?", s.PRNumber)
+		} else if s.PRCI == core.CIPending {
+			prompt = fmt.Sprintf("Enable auto-merge for PR #%d when CI passes?", s.PRNumber)
 		}
 		return m.askConfirm(prompt,
 			func(mm *Model) tea.Cmd { return mergeCmd(mm.cfg, s) })

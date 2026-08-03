@@ -167,6 +167,9 @@ func (m Model) diffChips(s *core.Session) string {
 		if s.PRQueued {
 			add("◌ merge queue", lipgloss.NewStyle().Foreground(st.P.Accent))
 		}
+		if s.PRAutoMerge {
+			add("◌ auto-merge", lipgloss.NewStyle().Foreground(st.P.Accent))
+		}
 
 		// Mergeable first: conflicts matter most and matter earliest.
 		switch s.PRMergeable {

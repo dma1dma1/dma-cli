@@ -54,6 +54,8 @@ func TestPRReadyToMergeRejectsWhatIsStillBlocked(t *testing.T) {
 		{"closed", func(s *Session) { s.PRState = PRClosed }},
 		// The queue merges it without the user, so there is nothing to hand back.
 		{"queued", func(s *Session) { s.PRQueued = true }},
+		// Auto-merge also owns the next transition once the requirements pass.
+		{"auto-merge enabled", func(s *Session) { s.PRAutoMerge = true }},
 		{"no pr at all", func(s *Session) { s.PRNumber, s.PRState = 0, PRNone }},
 	}
 	for _, tc := range cases {

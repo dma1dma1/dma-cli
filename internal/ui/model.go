@@ -960,11 +960,13 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		}
 		hadPR := s.HasPR()
 		if s.PRNumber != pr.Number || s.PRState != pr.State || s.PRCI != pr.CI ||
-			s.PRReview != pr.Review || s.PRMergeable != pr.Mergeable || s.PRURL != pr.URL {
+			s.PRReview != pr.Review || s.PRMergeable != pr.Mergeable || s.PRURL != pr.URL ||
+			s.PRAutoMerge != pr.AutoMerge {
 			dirty = true
 		}
 		s.PRNumber, s.PRURL, s.PRState = pr.Number, pr.URL, pr.State
 		s.PRCI, s.PRReview, s.PRMergeable = pr.CI, pr.Review, pr.Mergeable
+		s.PRAutoMerge = pr.AutoMerge
 
 		// A queued PR is an open PR, so the poll cannot tell that the queue let
 		// go of it. Ask, but only for the cards actually claiming to be queued --
@@ -985,6 +987,7 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		}
 		if pr.State == core.PRMerged || pr.State == core.PRClosed {
 			s.PRQueued = false
+			s.PRAutoMerge = false
 		}
 
 		// Last, so the verdict is read off the fully applied poll. A card that is
@@ -1006,8 +1009,8 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 // handleMerged applies the result of pressing m.
 //
 // Only a merge that landed moves the card to the merged column. A pull request
-// the merge queue accepted is still open work: the queue merges it when it
-// reaches it, or drops it back out, and the poll is what resolves which.
+// accepted by auto-merge or a merge queue is still open work: GitHub merges it
+// later, or may stop waiting, and the poll is what resolves which.
 func (m Model) handleMerged(msg mergedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		return m, errStatus(msg.err)
@@ -1022,12 +1025,21 @@ func (m Model) handleMerged(msg mergedMsg) (tea.Model, tea.Cmd) {
 		// reads "queued", which says both that the merge did not land and where
 		// the PR went.
 		s.PRQueued = true
+		s.PRAutoMerge = false
+		m.save()
+		return m, nil
+	case ghx.MergeAutoEnabled:
+		// Auto-merge is still an open PR. The ordinary PR poll carries the
+		// autoMergeRequest field, so it also notices if GitHub disables it later.
+		s.PRQueued = false
+		s.PRAutoMerge = true
 		m.save()
 		return m, nil
 	}
 	s.PRState = core.PRMerged
 	s.Lifecycle = core.LifecycleMerged
 	s.PRQueued = false
+	s.PRAutoMerge = false
 	m.save()
 	return m, nil
 }
@@ -1066,6 +1078,7 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	// This resolves a PR that left the open set, so whatever the queue was going
 	// to do with it, it has done.
 	s.PRQueued = false
+	s.PRAutoMerge = false
 	core.Touch(s)
 	// A PR closed without merging keeps its column and is labelled closed on the
 	// card, rather than vanishing from the board.

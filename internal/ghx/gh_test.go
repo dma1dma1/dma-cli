@@ -69,6 +69,15 @@ func TestPRState(t *testing.T) {
 	}
 }
 
+func TestDecodePRReadsAutoMergeRequest(t *testing.T) {
+	if decodePR(prJSON{}).AutoMerge {
+		t.Fatal("a PR without an auto-merge request was read as automatic")
+	}
+	if !decodePR(prJSON{AutoMergeRequest: &struct{}{}}).AutoMerge {
+		t.Fatal("an active auto-merge request was not preserved")
+	}
+}
+
 func TestMergeableAndReview(t *testing.T) {
 	if mergeable("CONFLICTING") != core.MergeConflicts {
 		t.Error("CONFLICTING did not map to conflicts")

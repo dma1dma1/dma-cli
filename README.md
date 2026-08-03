@@ -360,7 +360,7 @@ opening prompt.
 | `enter` or `d` | Review the selected session's changes |
 | `s` | Ask the agent to commit, push, and open a pull request |
 | `o` / `y` | Open or copy the pull-request link |
-| `m` | Merge the pull request or add it to the merge queue |
+| `m` | Merge the pull request, enable auto-merge while CI is pending, or add it to the merge queue |
 | `x` | Prune one session's worktree and branch, closing its pull request if it is still open |
 | `X` | Prune the merged sessions currently shown |
 | `D` | Kill the agent but keep its worktree |
@@ -466,8 +466,8 @@ watched: an agent that starts needing your input, and an open pull request that
 becomes mergeable — no conflicts, no failing or unfinished checks, and no
 reviewer asking for changes. Each fires once on the transition rather than for
 as long as the state lasts, and is not repeated when the board is relaunched.
-Drafts and pull requests already in a merge queue are not announced, since
-neither is waiting on you.
+Drafts and pull requests already set to auto-merge or in a merge queue are not
+announced, since none is waiting on you.
 
 Pruning a session whose pull request is still open closes that pull request
 first, since the worktree and branch behind it are about to be removed. The
