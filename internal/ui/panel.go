@@ -374,6 +374,26 @@ func (m Model) previewBody(rows, width int) []string {
 		return centered(rows, width, st.Faint.Render(hint))
 	}
 
+	lines := m.previewLines(rows, width)
+	if m.previewSelection.held() {
+		lines = m.previewSelection.render(st.TextSelection)
+	}
+	// One mark around the block, not one per line: paired markers describe a
+	// rectangle, so per-line marks would collapse the zone onto the last line.
+	out := strings.Split(zone.Mark(zonePreview, strings.Join(lines, "\n")), "\n")
+	for len(out) < rows {
+		out = append(out, "")
+	}
+	return out
+}
+
+// previewLines returns exactly the terminal rows currently visible inside the
+// panel, before bubblezone wraps them. Drag selection snapshots this slice so a
+// live agent redraw cannot move the text out from under the pointer.
+func (m Model) previewLines(rows, width int) []string {
+	if m.previewSelection.held() {
+		return append([]string(nil), m.previewSelection.lines...)
+	}
 	lines := strings.Split(strings.TrimRight(m.preview, "\n"), "\n")
 	// Drawn before the tail is taken, while a line's index is still its pane row:
 	// that is the only coordinate space the cursor tmux reported makes sense in.
@@ -388,11 +408,8 @@ func (m Model) previewBody(rows, width int) []string {
 		// away here rather than widening the row.
 		out = append(out, pad(l, width))
 	}
-	// One mark around the block, not one per line: paired markers describe a
-	// rectangle, so per-line marks would collapse the zone onto the last line.
-	out = strings.Split(zone.Mark(zonePreview, strings.Join(out, "\n")), "\n")
 	for len(out) < rows {
-		out = append(out, "")
+		out = append(out, strings.Repeat(" ", width))
 	}
 	return out
 }

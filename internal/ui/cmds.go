@@ -595,6 +595,20 @@ func linkCmd(url string, action linkAction) tea.Cmd {
 	}
 }
 
+// copyTextCmd puts an application-owned terminal selection on the clipboard.
+// Success is already visible as the held highlight; only a failure needs a
+// notice line.
+func copyTextCmd(content string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := link.Copy(ctx, content); err != nil {
+			return noticeMsg{text: "copy selection: " + err.Error()}
+		}
+		return nil
+	}
+}
+
 // prLinkCmd resolves the address of a PR whose link the session does not know.
 //
 // Sessions record the URL as it arrives from the poll, so this only runs for a
