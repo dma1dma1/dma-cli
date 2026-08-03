@@ -119,14 +119,15 @@ type checkEntry struct {
 }
 
 type prJSON struct {
-	Number         int          `json:"number"`
-	URL            string       `json:"url"`
-	HeadRefName    string       `json:"headRefName"`
-	State          string       `json:"state"`
-	IsDraft        bool         `json:"isDraft"`
-	Mergeable      string       `json:"mergeable"`
-	ReviewDecision string       `json:"reviewDecision"`
-	Checks         []checkEntry `json:"statusCheckRollup"`
+	Number           int          `json:"number"`
+	URL              string       `json:"url"`
+	HeadRefName      string       `json:"headRefName"`
+	State            string       `json:"state"`
+	IsDraft          bool         `json:"isDraft"`
+	Mergeable        string       `json:"mergeable"`
+	ReviewDecision   string       `json:"reviewDecision"`
+	Checks           []checkEntry `json:"statusCheckRollup"`
+	AutoMergeRequest *struct{}    `json:"autoMergeRequest"`
 }
 
 // PR is the normalized pull request state for one branch.
@@ -141,9 +142,10 @@ type PR struct {
 	CI        core.CIState
 	Review    core.ReviewState
 	Mergeable core.Mergeable
+	AutoMerge bool
 }
 
-const prFields = "number,url,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup"
+const prFields = "number,url,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup,autoMergeRequest"
 
 // Poll is one repo's branch-scoped poll result.
 type Poll struct {
@@ -281,6 +283,7 @@ func decodePR(r prJSON) PR {
 		CI:        rollupCI(r.Checks),
 		Review:    reviewState(r.ReviewDecision),
 		Mergeable: mergeable(r.Mergeable),
+		AutoMerge: r.AutoMergeRequest != nil,
 	}
 }
 
@@ -367,7 +370,18 @@ const (
 	// MergeAlreadyQueued means it was in the queue before we asked, so nothing
 	// happened. gh treats this as success, and so do we.
 	MergeAlreadyQueued
+	// MergeAutoEnabled means GitHub will merge the pull request once its pending
+	// requirements pass. The pull request remains open until then.
+	MergeAutoEnabled
 )
+
+// MergeOptions controls how a pull request is merged.
+type MergeOptions struct {
+	Method string
+	// Auto asks GitHub to wait for unmet requirements instead of refusing the
+	// merge. On a PR that became ready since the last poll, gh merges at once.
+	Auto bool
+}
 
 // QueueState is one pull request's standing with its base branch's merge queue.
 type QueueState struct {
@@ -433,15 +447,15 @@ func splitRemote(remote string) (owner, name string, ok bool) {
 	return owner, name, owner != "" && name != ""
 }
 
-// MergePR merges an open pull request, deleting the remote branch, or adds it
-// to the merge queue when its base branch has one.
+// MergePR merges an open pull request, enables auto-merge while its requirements
+// are pending, or adds it to the merge queue when its base branch has one.
 //
 // The queued path is not the same request with a flag changed. The queue picks
 // the strategy, so none is passed; and gh refuses --delete-branch outright,
 // because deleting the branch would eject the pull request from the queue and
 // close it. The outcome tells the caller which of the two happened, since a
 // queued pull request has not merged and may yet fail to.
-func MergePR(ctx context.Context, remote string, number int, method string) (MergeOutcome, error) {
+func MergePR(ctx context.Context, remote string, number int, opts MergeOptions) (MergeOutcome, error) {
 	// A probe that cannot answer must not block a merge that would otherwise
 	// work. Falling through costs nothing: the direct attempt recognizes a queue
 	// from gh's refusal and retries the right way.
@@ -453,26 +467,44 @@ func MergePR(ctx context.Context, remote string, number int, method string) (Mer
 		return queueMerge(ctx, remote, number)
 	}
 
-	out, err := directMerge(ctx, remote, number, method)
+	out, err := directMerge(ctx, remote, number, opts)
 	if err != nil && refusedForMergeQueue(err) {
 		return queueMerge(ctx, remote, number)
 	}
 	return out, err
 }
 
-func directMerge(ctx context.Context, remote string, number int, method string) (MergeOutcome, error) {
+func directMerge(ctx context.Context, remote string, number int, opts MergeOptions) (MergeOutcome, error) {
+	args := directMergeArgs(remote, number, opts)
+	stdout, stderr, err := runOutErr(ctx, "", args...)
+	if err != nil {
+		return MergeCompleted, err
+	}
+	dflt := MergeCompleted
+	if opts.Auto {
+		// If CI finished between the board's poll and this request, gh may merge
+		// immediately. Its success text distinguishes that race. Defaulting to
+		// open is safer if a gh version changes the wording: the next poll will
+		// still discover a completed merge, while a false completed result would
+		// move the card out of the set that gets polled.
+		dflt = MergeAutoEnabled
+	}
+	return mergeOutcome(stdout+"\n"+stderr, dflt), nil
+}
+
+func directMergeArgs(remote string, number int, opts MergeOptions) []string {
 	flag := "--squash"
-	switch method {
+	switch opts.Method {
 	case "merge":
 		flag = "--merge"
 	case "rebase":
 		flag = "--rebase"
 	}
-	_, stderr, err := runOutErr(ctx, "", "pr", "merge", "-R", remote, fmt.Sprint(number), flag, "--delete-branch")
-	if err != nil {
-		return MergeCompleted, err
+	args := []string{"pr", "merge", "-R", remote, fmt.Sprint(number), flag}
+	if opts.Auto {
+		args = append(args, "--auto")
 	}
-	return mergeOutcome(stderr, MergeCompleted), nil
+	return append(args, "--delete-branch")
 }
 
 // queueMerge adds a pull request to its base branch's merge queue. gh enables
@@ -521,9 +553,16 @@ func alreadyNotOpen(stderr string, err error) bool {
 
 // mergeOutcome reads what gh says it did, since gh reports a pull request that
 // was already queued as a warning on a successful run.
-func mergeOutcome(stderr string, dflt MergeOutcome) MergeOutcome {
-	if strings.Contains(strings.ToLower(stderr), "already queued") {
+func mergeOutcome(output string, dflt MergeOutcome) MergeOutcome {
+	s := strings.ToLower(output)
+	if strings.Contains(s, "already queued") {
 		return MergeAlreadyQueued
+	}
+	// With --auto, gh still merges immediately if the requirements became ready
+	// since the caller last checked. All three strategies use this word order;
+	// the deferred message instead says "will be automatically merged".
+	if strings.Contains(s, "merged pull request") {
+		return MergeCompleted
 	}
 	return dflt
 }

@@ -109,6 +109,22 @@ func TestPRSyncDoesNotCrossAssignBetweenRepos(t *testing.T) {
 	}
 }
 
+func TestPRSyncTracksAutoMerge(t *testing.T) {
+	s := branchSess("a", "r1", "feat-a", core.LifecyclePROpen)
+	s.PRNumber, s.PRState = 7, core.PROpen
+	m := testModel(nil, s)
+
+	m.handlePRSync(prSyncMsg{repoID: "r1", poll: ghx.Poll{
+		Open: map[string]ghx.PR{"feat-a": {
+			Number: 7, Branch: "feat-a", State: core.PROpen, AutoMerge: true,
+		}},
+		Answered: map[string]bool{"feat-a": true},
+	}})
+	if !s.PRAutoMerge {
+		t.Error("the poll did not preserve GitHub's auto-merge request")
+	}
+}
+
 func sameSet(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

@@ -1,6 +1,9 @@
 package ghx
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseQueueState(t *testing.T) {
 	cases := []struct {
@@ -91,5 +94,25 @@ func TestMergeOutcomeReadsAlreadyQueued(t *testing.T) {
 	}
 	if got := mergeOutcome("", MergeQueued); got != MergeQueued {
 		t.Errorf("outcome = %v, want MergeQueued", got)
+	}
+	if got := mergeOutcome("✓ Squashed and merged pull request owner/name#7", MergeAutoEnabled); got != MergeCompleted {
+		t.Errorf("immediate --auto outcome = %v, want MergeCompleted", got)
+	}
+	if got := mergeOutcome("✓ Pull request owner/name#7 will be automatically merged via squash when all requirements are met", MergeAutoEnabled); got != MergeAutoEnabled {
+		t.Errorf("deferred --auto outcome = %v, want MergeAutoEnabled", got)
+	}
+}
+
+func TestDirectMergeArgsEnableAutoMerge(t *testing.T) {
+	got := strings.Join(directMergeArgs("owner/name", 7, MergeOptions{Method: "squash", Auto: true}), " ")
+	for _, want := range []string{"pr merge", "-R owner/name", "7", "--squash", "--auto", "--delete-branch"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("args = %q, missing %q", got, want)
+		}
+	}
+
+	got = strings.Join(directMergeArgs("owner/name", 7, MergeOptions{Method: "squash"}), " ")
+	if strings.Contains(got, "--auto") {
+		t.Errorf("ready-PR args unexpectedly enable auto-merge: %q", got)
 	}
 }

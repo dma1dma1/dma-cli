@@ -87,6 +87,38 @@ func TestMergeFailureLeavesTheCardAlone(t *testing.T) {
 	}
 }
 
+// Enabling auto-merge is not a completed merge. The card remains visible while
+// CI runs and says that GitHub owns the next transition.
+func TestMergeAutoEnabledKeepsTheCardOpen(t *testing.T) {
+	s := queuedSess("a")
+	s.PRCI = core.CIPending
+	m := testModel(nil, s)
+
+	m.handleMerged(mergedMsg{id: s.ID, outcome: ghx.MergeAutoEnabled})
+
+	if !s.PRAutoMerge {
+		t.Error("an auto-merge request was not recorded")
+	}
+	if s.Lifecycle != core.LifecyclePROpen || s.PRState != core.PROpen {
+		t.Errorf("auto-merge moved an open PR: lifecycle=%q state=%q", s.Lifecycle, s.PRState)
+	}
+	if got := m.branchOrPR(s); !strings.Contains(got, "auto-merge") {
+		t.Errorf("card label = %q, want auto-merge", got)
+	}
+}
+
+func TestMergeKeyOffersAutoMergeWhileCIIsPending(t *testing.T) {
+	s := queuedSess("a")
+	s.PRCI = core.CIPending
+	m := testModel(nil, s)
+
+	next, _ := m.sessionAction("m")
+	got := next.(Model)
+	if got.mode != modeConfirm || !strings.Contains(got.confirm.message, "Enable auto-merge") {
+		t.Errorf("pending-CI prompt = %q, want auto-merge confirmation", got.confirm.message)
+	}
+}
+
 // A queued PR is still an open PR, so the poll alone cannot tell that the queue
 // let go of it. The card claiming to be queued is what earns the extra query.
 func TestPRSyncRechecksQueuedCards(t *testing.T) {

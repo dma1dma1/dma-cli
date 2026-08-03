@@ -305,6 +305,8 @@ func (m Model) branchOrPR(s *core.Session) string {
 		// Queued outranks CI: the queue is running its own checks now, and
 		// whatever the PR's own last run said is no longer the thing to watch.
 		return label + " ◌ queued"
+	case s.PRAutoMerge:
+		return label + " ◌ auto-merge"
 	}
 	switch s.PRCI {
 	case core.CIFail:

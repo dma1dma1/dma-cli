@@ -555,7 +555,10 @@ func mergeCmd(cfg *core.Config, s *core.Session) tea.Cmd {
 		if sess.PRNumber == 0 {
 			return mergedMsg{id: sess.ID, err: fmt.Errorf("no PR to merge")}
 		}
-		outcome, err := ghx.MergePR(ctx, repo.Remote, sess.PRNumber, "squash")
+		outcome, err := ghx.MergePR(ctx, repo.Remote, sess.PRNumber, ghx.MergeOptions{
+			Method: "squash",
+			Auto:   sess.PRCI == core.CIPending,
+		})
 		return mergedMsg{id: sess.ID, outcome: outcome, err: err}
 	}
 }

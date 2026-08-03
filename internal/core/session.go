@@ -188,6 +188,9 @@ type Session struct {
 	// It is not a PR state: GitHub still calls a queued PR open, and the queue
 	// can drop it back out again.
 	PRQueued bool `json:"pr_queued,omitempty"`
+	// PRAutoMerge reports that GitHub will merge the PR once its outstanding
+	// requirements pass. Like a queued PR, it remains open in the meantime.
+	PRAutoMerge bool `json:"pr_auto_merge,omitempty"`
 	// PRMergeableNotified records that the user has already been told this PR is
 	// ready to merge. It is persisted rather than kept in memory so that
 	// relaunching the board does not re-announce every PR that was already ready
@@ -269,9 +272,9 @@ func (s *Session) PRReadyToMerge() bool {
 	if s.PRNumber <= 0 || s.PRState != PROpen {
 		return false
 	}
-	// A queued PR is on its way in without the user, so it is not something to
-	// be handed back to them.
-	if s.PRQueued {
+	// A queued or auto-merging PR is on its way in without the user, so it is not
+	// something to be handed back to them.
+	if s.PRQueued || s.PRAutoMerge {
 		return false
 	}
 	// MergeUnknown is GitHub still computing the merge commit rather than an
