@@ -166,6 +166,34 @@ func TestBootstrapClonesTreePerWorktree(t *testing.T) {
 	}
 }
 
+// Canceling a session start must stop its clone rather than falling through to
+// the recursive-copy fallback, which could keep saturating the disk after the
+// caller has already given up.
+func TestBootstrapCanceledCloneDoesNotCopy(t *testing.T) {
+	repoPath := newTestRepo(t, "canceled-clone")
+	tree := filepath.Join(repoPath, "node_modules", "pkg")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "index.js"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	warns := Bootstrap(ctx, core.Repo{
+		Path:      repoPath,
+		Bootstrap: core.Bootstrap{Clone: []string{"node_modules"}},
+	}, wt)
+	if len(warns) != 1 || !strings.Contains(warns[0], context.Canceled.Error()) {
+		t.Fatalf("warnings = %v, want one canceled clone", warns)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, "node_modules")); !os.IsNotExist(err) {
+		t.Errorf("canceled clone left a destination behind: %v", err)
+	}
+}
+
 func TestBootstrapWarnsButDoesNotFailOnMissingPaths(t *testing.T) {
 	repoPath := newTestRepo(t, "boot2")
 	wt := t.TempDir()

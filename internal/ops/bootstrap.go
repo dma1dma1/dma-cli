@@ -33,7 +33,7 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) []string {
 		created = append(created, rel)
 	}
 	for _, rel := range repo.Bootstrap.Clone {
-		if err := clonePath(repo.Path, worktree, rel); err != nil {
+		if err := clonePath(ctx, repo.Path, worktree, rel); err != nil {
 			warnings = append(warnings, fmt.Sprintf("clone %s: %v", rel, err))
 			continue
 		}
@@ -58,10 +58,13 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) []string {
 // untracked filters to the paths git would actually report, so already-ignored
 // entries are not appended to the exclude file for no reason.
 func untracked(ctx context.Context, worktree string, paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	ignored := ignoredSet(ctx, worktree, paths)
 	var out []string
 	for _, p := range paths {
-		// check-ignore exits 0 when the path is already ignored.
-		if _, err := gitx.Run(ctx, worktree, "check-ignore", "-q", p); err == nil {
+		if ignored[p] {
 			continue
 		}
 		out = append(out, p)
@@ -109,7 +112,7 @@ func linkPath(repoPath, worktree, rel string) error {
 //
 // The fallback is slow for a dependency tree, but a slow correct worktree beats
 // a fast one whose node_modules is the same directory as its neighbour's.
-func clonePath(repoPath, worktree, rel string) error {
+func clonePath(ctx context.Context, repoPath, worktree, rel string) error {
 	src, err := safeJoin(repoPath, rel)
 	if err != nil {
 		return err
@@ -129,12 +132,17 @@ func clonePath(repoPath, worktree, rel string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	if err := cloneTree(src, dst); err == nil {
+	if err := cloneTree(ctx, src, dst); err == nil {
 		return nil
 	}
 	// A partial clone would read as a complete tree to every installer that
 	// looks for one, so it goes before the copy retries.
 	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	// A canceled start must not turn into an uncancelable recursive copy just
+	// because its clone worker was the first operation to notice the deadline.
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if info.IsDir() {

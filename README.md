@@ -232,8 +232,9 @@ It handles detected paths in three ways:
   `.bundle`, and `.terraform`. One copy on disk serves every worktree.
 - **Cloned per worktree:** dependency trees that record the absolute path they
   were built for — `node_modules`, `.venv`, `venv`, and `.tox`. Each worktree
-  gets a private copy, made with a filesystem clone (APFS `clonefile(2)`) where
-  the platform offers one, so a large tree costs seconds and no disk. Other
+  gets a private copy, made with a copy-on-write APFS clone at background I/O
+  priority where the platform offers one, so a large tree costs seconds and no
+  initial file-data copy while interactive board I/O takes precedence. Other
   platforms fall back to a recursive copy.
 - **Copied per worktree:** local configuration such as `.env`, `.env.local`,
   and related files.
