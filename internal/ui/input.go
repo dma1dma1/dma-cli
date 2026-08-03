@@ -943,7 +943,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.(type) {
+	case tea.MouseMotionMsg:
+		return m.dragPreviewSelection(msg)
+	case tea.MouseReleaseMsg:
+		return m.releasePreviewSelection(msg)
 	case tea.MouseWheelMsg:
+		m.clearPreviewSelection()
 		// Scroll routes by zone: in the review view, whichever of the two panes
 		// the pointer is over; in a focused session panel, the agent's history;
 		// otherwise the column under the pointer.
@@ -957,6 +962,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.handleWheel(msg)
 	case tea.MouseClickMsg:
+		if m.beginPreviewSelection(msg) {
+			return m, nil
+		}
+		m.clearPreviewSelection()
 		if m.mode == modeDiff {
 			return m.diffClick(msg)
 		}

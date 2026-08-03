@@ -85,6 +85,9 @@ type Styles struct {
 	// already chose for the same characters.
 	MatchHit     lipgloss.Style
 	MatchCurrent lipgloss.Style
+	// TextSelection is the terminal-preview drag range. Reverse video remains
+	// legible over both light and dark agent color schemes.
+	TextSelection lipgloss.Style
 }
 
 func newStyles() Styles {
@@ -118,8 +121,9 @@ func newStyles() Styles {
 		Dialog:   base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true).Padding(0, 1),
 		Selected: base.Foreground(lipgloss.Color("232")).Background(p.Focus),
 
-		MatchHit:     base.Foreground(lipgloss.Color("232")).Background(p.Accent),
-		MatchCurrent: base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true),
+		MatchHit:      base.Foreground(lipgloss.Color("232")).Background(p.Accent),
+		MatchCurrent:  base.Foreground(lipgloss.Color("232")).Background(p.Warning).Bold(true),
+		TextSelection: base.Reverse(true),
 	}
 }
 

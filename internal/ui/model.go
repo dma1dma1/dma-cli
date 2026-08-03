@@ -97,6 +97,10 @@ type Model struct {
 	// Full-screen agents such as Claude own their scroll position and have no
 	// tmux history, so their wheel events must go back to the application.
 	previewMouseSGR bool
+	// previewSelection is an application-owned drag selection. Terminal-native
+	// selections cannot survive the board's live redraws, so the preview keeps a
+	// snapshot and redraws the selected cells itself until the next interaction.
+	previewSelection previewSelection
 
 	// echoUntil is how long the panel keeps re-reading the pane at echoInterval
 	// after a forwarded keystroke; echoing says whether that ticker is running,
@@ -212,6 +216,7 @@ func (m Model) selected() *core.Session {
 // The preview goes with it: it is the previous session's output, and left in
 // place it draws into this session's panel until the next capture lands.
 func (m *Model) selectSession(s *core.Session) {
+	m.clearPreviewSelection()
 	m.selectedID, m.deselected = s.ID, false
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
 	m.previewScroll, m.previewMouseSGR = 0, false
@@ -220,6 +225,7 @@ func (m *Model) selectSession(s *core.Session) {
 
 // clearSelection empties the panel and keeps it empty until something is picked.
 func (m *Model) clearSelection() {
+	m.clearPreviewSelection()
 	m.selectedID, m.deselected = "", true
 	m.preview, m.previewCursor = "", tmuxx.Cursor{}
 	m.previewScroll, m.previewMouseSGR = 0, false
@@ -352,14 +358,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
+		if msg.Width != m.width || msg.Height != m.height {
+			m.clearPreviewSelection()
+		}
 		m.width, m.height = msg.Width, msg.Height
 		m.layoutSizes()
 		return m, m.syncAgentSize()
 
 	case tea.KeyPressMsg:
+		m.clearPreviewSelection()
 		return m.handleKey(msg)
 
 	case tea.PasteMsg:
+		m.clearPreviewSelection()
 		return m.handlePaste(msg)
 
 	case tea.MouseMsg:
