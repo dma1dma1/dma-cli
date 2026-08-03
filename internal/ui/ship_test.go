@@ -60,3 +60,63 @@ func TestShipRequestGrantsPermissionAndDoesNotHandBack(t *testing.T) {
 		t.Error("ship request spans lines; a newline mid-message submits half of it")
 	}
 }
+
+func TestShepherdRequestShipsAndConvergesWithoutMerging(t *testing.T) {
+	for _, want := range []string{
+		"Commit, push, and open a PR",
+		"full permission",
+		"shepherd",
+		"monitor CI and review threads",
+		"fix valid failures and feedback",
+		"commit and push each fix",
+		"CI passes and all review threads are resolved",
+		"Do not merge",
+		"ready to merge or you are genuinely blocked",
+	} {
+		if !strings.Contains(shepherdRequest, want) {
+			t.Errorf("shepherd request lost %q; it reads:\n%s", want, shepherdRequest)
+		}
+	}
+	if strings.Contains(shepherdRequest, "\n") {
+		t.Error("shepherd request spans lines; a newline mid-message submits half of it")
+	}
+	if strings.Contains(strings.ToLower(shipRequest), "shepherd") {
+		t.Error("lowercase s unexpectedly shepherds; the two shortcuts should remain distinct")
+	}
+}
+
+func TestShepherdKeyUsesTheShipPath(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+
+	before := time.Now()
+	next, cmd := m.sessionAction("S")
+	got := next.(Model)
+
+	if cmd == nil {
+		t.Fatal("S produced no command; nothing was sent to the agent")
+	}
+	if got.touchedAt["a"].Before(before) {
+		t.Error("the shepherd request was not recorded against the session")
+	}
+	if !got.echoing {
+		t.Error("S did not start the echo ticker")
+	}
+}
+
+func TestShepherdKeyNeedsALiveTerminal(t *testing.T) {
+	s := liveSess("a")
+	s.TmuxAlive = false
+	m := testModel(nil, s)
+
+	next, cmd := m.sessionAction("S")
+	notice, ok := drainNotice(t, cmd)
+	if !ok {
+		t.Fatal("S on a dead session said nothing")
+	}
+	if !strings.Contains(notice.text, "not running") {
+		t.Errorf("notice = %q, want it to name the dead terminal", notice.text)
+	}
+	if got := next.(Model); got.echoing {
+		t.Error("started capturing a pane that is not there")
+	}
+}

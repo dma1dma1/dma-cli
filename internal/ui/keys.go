@@ -94,7 +94,7 @@ func (m Model) hints() []hint {
 		{"t", "type to agent"},
 		{"a", "attach"},
 		{"d", "diff"},
-		{"s", "ship"},
+		{"s/S", "ship/shepherd"},
 		// One entry for the pair: the bar is already long enough that a second
 		// PR-shaped hint would push something else off the end.
 		{"o/y", "PR open/copy"},
@@ -122,6 +122,7 @@ var helpText = [][3]string{
 	{"", "H L", "move a card to the previous/next column"},
 	{"", "G", "move the selected session to a project"},
 	{"", "s", "ask the agent to commit, push, and open a PR"},
+	{"", "S", "ship, then shepherd CI and review feedback until the PR is ready"},
 	{"", "o", "open the PR in your browser"},
 	{"", "y", "copy the PR link to the clipboard"},
 	{"", "m", "merge the PR; with pending CI, enable auto-merge; queue it where the base branch requires a merge queue"},

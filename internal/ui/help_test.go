@@ -61,6 +61,12 @@ func TestSearchFindsRowsByDescription(t *testing.T) {
 	}
 }
 
+func TestSearchFindsShepherdShortcut(t *testing.T) {
+	if !hasDesc(filterHelp("shepherd"), "shepherd CI and review feedback") {
+		t.Errorf("help search did not find the S shortcut: %v", descs(filterHelp("shepherd")))
+	}
+}
+
 // Fuzzy is the fallback, not the rule. A word the keymap actually contains is
 // read literally, or "prune" comes back holding "previous/next column" -- which
 // it does spell, p-r-...-u-n-e, and which is not what was asked for.
