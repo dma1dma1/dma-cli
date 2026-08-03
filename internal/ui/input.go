@@ -322,7 +322,7 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch key {
-	case "s":
+	case "s", "S":
 		if !s.TmuxAlive {
 			return m, errStatus(fmt.Errorf("terminal for this session is not running"))
 		}
@@ -332,7 +332,11 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		// The request never passes through panel focus, so nothing has readied a
 		// modal composer for it. Sequence, not batch: the mode has to change
 		// before the request arrives.
-		send := tea.Sequence(insertModeCmd(s), askShipCmd(s))
+		request := shipRequest
+		if key == "S" {
+			request = shepherdRequest
+		}
+		send := tea.Sequence(insertModeCmd(s), askShipCmd(s, request))
 		// Sequenced rather than inlined into the return: startEcho mutates m, and
 		// Go does not order that against copying m into the return value.
 		cmd := tea.Batch(send, m.startEcho())

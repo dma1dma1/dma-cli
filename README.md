@@ -65,8 +65,8 @@ gh auth login
 
 The board can run without `gh`, but PR status, link, and merge features will not
 be available. `dma doctor` treats missing GitHub integration as an incomplete
-setup. `s` asks the agent to open the pull request, so the agent needs `gh`
-too.
+setup. `s` and `S` ask the agent to open the pull request, so the agent needs
+`gh` too.
 
 Optional tools:
 
@@ -360,6 +360,7 @@ opening prompt.
 | `a` | Attach to the selected tmux session |
 | `enter` or `d` | Review the selected session's changes |
 | `s` | Ask the agent to commit, push, and open a pull request |
+| `S` | Ship, then shepherd CI and review feedback until the pull request is ready |
 | `o` / `y` | Open or copy the pull-request link |
 | `m` | Merge the pull request, enable auto-merge while CI is pending, or add it to the merge queue |
 | `x` | Prune one session's worktree and branch, closing its pull request if it is still open |

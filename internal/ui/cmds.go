@@ -520,12 +520,18 @@ func titleCmd(s *core.Session, task string) tea.Cmd {
 // handed the card straight back to you.
 const shipRequest = "Commit, push, and open a PR. You have full permission to do so. Do not come back to me until the PR is open."
 
-// askShipCmd asks a session's agent to commit, push and open its own PR.
+// shepherdRequest is what S sends to the agent. It begins with the same grant as
+// s, then keeps the agent responsible for the PR until CI and review converge.
+// Merging remains a separate, explicit board action.
+const shepherdRequest = "Commit, push, and open a PR. You have full permission to do so. Then shepherd the PR: use the available PR shepherd skill, monitor CI and review threads, fix valid failures and feedback, commit and push each fix, and continue until CI passes and all review threads are resolved. Do not merge. Do not come back to me until the PR is ready to merge or you are genuinely blocked."
+
+// askShipCmd asks a session's agent to ship its work, with the requested stopping
+// point supplied by the board key that called it.
 //
 // A paste followed by a separate Enter, rather than a typed line: the paste
 // lands as one insertion the agent's input reads in a single go, and the Enter
 // is then unambiguously the submit.
-func askShipCmd(s *core.Session) tea.Cmd {
+func askShipCmd(s *core.Session, request string) tea.Cmd {
 	if s == nil {
 		return nil
 	}
@@ -533,7 +539,7 @@ func askShipCmd(s *core.Session) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, shipRequest); err != nil {
+		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, request); err != nil {
 			return noticeMsg{text: fmt.Sprintf("ask %s to ship: %v", sess.Title, err)}
 		}
 		if err := tmuxx.SendKey(ctx, sess.TmuxSession, "Enter"); err != nil {
