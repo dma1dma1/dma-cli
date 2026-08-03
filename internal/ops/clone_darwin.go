@@ -1,17 +1,22 @@
 package ops
 
-import "golang.org/x/sys/unix"
+import (
+	"context"
+	"os/exec"
+)
 
-// cloneTree copies src to dst with APFS's clonefile(2), which is what makes
-// per-worktree dependency trees affordable.
+// cloneTree copies src to dst with APFS copy-on-write clones, which is what
+// makes per-worktree dependency trees affordable.
 //
-// One call clones a whole directory tree: the entire node_modules of a large
-// monorepo lands in about twenty seconds and costs no disk, since every file
-// shares the original's blocks until something writes to it. The alternative --
-// letting the repo's own installer rebuild the tree in each worktree -- is
-// minutes, and reading one shared copy is what this exists to stop doing.
+// A large node_modules can contain hundreds of thousands of entries. Running
+// that metadata work in dma's process at the default disk policy can starve the
+// tmux captures and git queries that keep the board interactive. taskpolicy
+// gives the clone worker throttled disk I/O, so foreground operations win while
+// the dependency tree continues to materialize in the background.
 //
-// dst must not exist; clonefile creates it.
-func cloneTree(src, dst string) error {
-	return unix.Clonefile(src, dst, 0)
+// cp -c keeps the clone copy-on-write: files share their original blocks until
+// one side writes to them. dst must not exist.
+func cloneTree(ctx context.Context, src, dst string) error {
+	return exec.CommandContext(ctx, "/usr/sbin/taskpolicy", "-d", "throttle",
+		"/bin/cp", "-cR", src, dst).Run()
 }
