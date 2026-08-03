@@ -252,7 +252,8 @@ func runRepoAdd(args []string) error {
 	remote := fs.String("remote", "", "owner/name (default: read from origin)")
 	base := fs.String("base", "", "base branch (default: repo default branch)")
 	wtRoot := fs.String("worktree-root", "", "where worktrees live (must differ per repo)")
-	symlink := fs.String("symlink", "", "comma-separated paths to symlink into each worktree")
+	symlink := fs.String("symlink", "", "comma-separated paths to share between worktrees")
+	clonePaths := fs.String("clone", "", "comma-separated dependency trees to clone per worktree")
 	copyPaths := fs.String("copy", "", "comma-separated paths to copy into each worktree")
 	setDefault := fs.Bool("default", false, "make this the default repo")
 	if err := fs.Parse(args); err != nil {
@@ -321,10 +322,11 @@ func runRepoAdd(args []string) error {
 	}
 
 	// Explicit flags win; otherwise detect what a fresh worktree will need.
-	if *symlink == "" && *copyPaths == "" {
+	if *symlink == "" && *clonePaths == "" && *copyPaths == "" {
 		r.Bootstrap = ops.DetectBootstrap(ctx, path)
 	} else {
 		r.Bootstrap.Symlink = splitList(*symlink)
+		r.Bootstrap.Clone = splitList(*clonePaths)
 		r.Bootstrap.Copy = splitList(*copyPaths)
 	}
 

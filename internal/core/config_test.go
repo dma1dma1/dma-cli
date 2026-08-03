@@ -23,6 +23,107 @@ func TestNormalizeBackfillsProfilesShippedAfterTheConfigWasWritten(t *testing.T)
 	}
 }
 
+// Every config written before cloning existed lists node_modules and .venv as
+// shared. Without this migration the fix would reach new registrations only, and
+// a repo registered months ago would go on pointing every worktree at one tree.
+func TestNormalizeMovesPathKeyedTreesOffTheSharedList(t *testing.T) {
+	c := &Config{Repos: []Repo{{
+		ID: "mono",
+		Bootstrap: Bootstrap{
+			Symlink: []string{
+				".pnpm-store",
+				".venv",
+				"node_modules",
+				"packages/db/node_modules",
+				"vendor",
+			},
+			Copy: []string{".env"},
+		},
+	}}}
+	c.normalize()
+
+	b := c.Repos[0].Bootstrap
+	for _, want := range []string{".venv", "node_modules", "packages/db/node_modules"} {
+		if !containsPath(b.Clone, want) {
+			t.Errorf("%s was not moved to the clone list: %+v", want, b)
+		}
+		if containsPath(b.Symlink, want) {
+			t.Errorf("%s is still shared between worktrees: %v", want, b.Symlink)
+		}
+	}
+	// Caches that do not name their own location stay shared: duplicating a
+	// package store per worktree buys nothing.
+	for _, want := range []string{".pnpm-store", "vendor"} {
+		if !containsPath(b.Symlink, want) {
+			t.Errorf("%s stopped being shared: %+v", want, b)
+		}
+	}
+	if !containsPath(b.Copy, ".env") {
+		t.Errorf("copy list was disturbed: %v", b.Copy)
+	}
+}
+
+// normalize runs on every load, so a config already migrated must come out the
+// same rather than growing a duplicate entry each launch.
+func TestNormalizeReclassificationIsRepeatable(t *testing.T) {
+	c := &Config{Repos: []Repo{{
+		ID:        "mono",
+		Bootstrap: Bootstrap{Symlink: []string{"node_modules"}},
+	}}}
+	c.normalize()
+	first := c.Repos[0].Bootstrap
+	c.normalize()
+	second := c.Repos[0].Bootstrap
+
+	if len(second.Clone) != len(first.Clone) || len(second.Clone) != 1 {
+		t.Fatalf("clone list = %v after a second normalize, want one entry", second.Clone)
+	}
+	if len(second.Symlink) != 0 {
+		t.Errorf("symlink list = %v, want empty", second.Symlink)
+	}
+}
+
+// A path the current build does not recognize is the user's own choice, and
+// nothing here knows better than they do.
+func TestNormalizeLeavesUnrecognizedSharedPathsAlone(t *testing.T) {
+	c := &Config{Repos: []Repo{{
+		ID:        "custom",
+		Bootstrap: Bootstrap{Symlink: []string{"my-big-cache", "tools/prebuilt"}},
+	}}}
+	c.normalize()
+
+	b := c.Repos[0].Bootstrap
+	if len(b.Clone) != 0 {
+		t.Errorf("unrecognized paths were reclassified: %v", b.Clone)
+	}
+	if len(b.Symlink) != 2 {
+		t.Errorf("symlink list = %v, want both entries kept", b.Symlink)
+	}
+}
+
+func TestIsPathKeyed(t *testing.T) {
+	keyed := []string{
+		"node_modules", ".venv", "venv", ".tox",
+		"packages/db/node_modules", "packages/science/.venv",
+	}
+	for _, p := range keyed {
+		if !IsPathKeyed(p) {
+			t.Errorf("IsPathKeyed(%q) = false, want true", p)
+		}
+	}
+	shared := []string{
+		".pnpm-store", ".yarn/cache", "vendor", ".bundle", ".terraform",
+		// A repo's own toolchain cache is not bootstrapped at all, so it must
+		// not be claimed here either.
+		".flox/cache", "cache",
+	}
+	for _, p := range shared {
+		if IsPathKeyed(p) {
+			t.Errorf("IsPathKeyed(%q) = true, want false", p)
+		}
+	}
+}
+
 func TestNormalizeKeepsCustomizedBuiltinProfiles(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{{Name: "codex", Command: "codex --yolo"}}}
 	c.normalize()

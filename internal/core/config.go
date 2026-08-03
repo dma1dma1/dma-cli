@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -13,11 +15,84 @@ import (
 // different symlink and copy lists, which is the reason a repo has to be a
 // first-class record rather than a bare path on the session.
 type Bootstrap struct {
-	// Symlink paths are shared across worktrees -- dependency trees and caches
-	// such as node_modules, .venv, .gradle.
+	// Symlink paths are shared across worktrees -- content-addressed caches and
+	// vendored source, where one copy on disk serves every checkout that points
+	// at it.
 	Symlink []string `json:"symlink"`
+	// Clone paths get a private copy per worktree, made with a filesystem clone
+	// where the platform offers one. They are dependency trees that record the
+	// absolute path they were built for, so pointing two worktrees at one copy
+	// makes them fight over it. See IsPathKeyed.
+	Clone []string `json:"clone,omitempty"`
 	// Copy paths are duplicated per worktree -- per-worktree config such as .env.
 	Copy []string `json:"copy"`
+}
+
+// pathKeyedNames are directory names whose contents only make sense for the one
+// checkout that built them.
+//
+// A Python venv records its own location in pyvenv.cfg and records the source
+// directory of every editable install in a .pth file, so a venv shared between
+// worktrees is rewritten to point at whichever one activated last -- taking the
+// main checkout's imports with it. pnpm resolves its root node_modules through
+// symlinks, finds the virtual store where some other checkout left it, and
+// offers to delete and reinstall the tree from scratch, which would be the copy
+// every other worktree is using.
+//
+// Both fail the same way: the tree is not content, it is content plus the path
+// it was materialized at.
+var pathKeyedNames = map[string]bool{
+	"node_modules": true,
+	".venv":        true,
+	"venv":         true,
+	".tox":         true,
+}
+
+// IsPathKeyed reports whether rel names a dependency tree that has to belong to
+// exactly one checkout, and so must be cloned per worktree rather than shared.
+//
+// Note what is deliberately absent: a repo's own toolchain cache, such as flox's
+// $FLOX_ENV_CACHE. Those caches hold the hash files an activation hook checks to
+// decide whether to install anything, so handing a worktree a populated one
+// tells the hook its work is already done -- and the step it then skips is the
+// one that would have pointed the cloned venv at this worktree's sources instead
+// of the checkout it was cloned from. A slow first activation is the cheaper
+// mistake.
+func IsPathKeyed(rel string) bool {
+	return pathKeyedNames[path.Base(filepath.ToSlash(filepath.Clean(rel)))]
+}
+
+// reclassifyPathKeyed moves path-keyed trees off the symlink list, where every
+// config written before cloning existed still holds them.
+//
+// Without this the fix would reach new registrations and nobody else: a repo
+// registered months ago keeps sharing one node_modules between every worktree,
+// which is the failure the clone list exists to end. The move is safe to repeat
+// and loses nothing -- both lists name the same paths to the same bootstrap, and
+// entries this build does not recognize are left where the user put them.
+func (b *Bootstrap) reclassifyPathKeyed() {
+	kept := b.Symlink[:0]
+	for _, p := range b.Symlink {
+		if IsPathKeyed(p) && !containsPath(b.Clone, p) {
+			b.Clone = append(b.Clone, p)
+			continue
+		}
+		kept = append(kept, p)
+	}
+	b.Symlink = kept
+	if len(b.Symlink) == 0 {
+		b.Symlink = nil
+	}
+	sort.Strings(b.Clone)
+}
+
+func containsPath(list []string, want string) bool {
+	for _, p := range list {
+		if p == want {
+			return true
+		}
+	}
+	return false
 }
 
 type Repo struct {
@@ -273,6 +348,7 @@ func (c *Config) normalize() {
 		if r.WorktreeRoot == "" {
 			r.WorktreeRoot = filepath.Join(Dir(), "worktrees", r.ID)
 		}
+		r.Bootstrap.reclassifyPathKeyed()
 	}
 	if c.DefaultRepo == "" && len(c.Repos) > 0 {
 		c.DefaultRepo = c.Repos[0].ID
