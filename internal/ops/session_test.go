@@ -62,9 +62,9 @@ func newTestRepo(t *testing.T, name string) string {
 func TestBootstrapSymlinksAndCopies(t *testing.T) {
 	repoPath := newTestRepo(t, "boot")
 
-	// A shared dependency tree and a per-worktree env file: the two cases the
-	// bootstrap step exists for.
-	if err := os.MkdirAll(filepath.Join(repoPath, "node_modules", "pkg"), 0o755); err != nil {
+	// A shared cache and a per-worktree env file: two of the three cases the
+	// bootstrap step exists for. The third, a cloned tree, is below.
+	if err := os.MkdirAll(filepath.Join(repoPath, ".pnpm-store", "v3"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repoPath, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
@@ -79,7 +79,7 @@ func TestBootstrapSymlinksAndCopies(t *testing.T) {
 	repo := core.Repo{
 		Path: repoPath,
 		Bootstrap: core.Bootstrap{
-			Symlink: []string{"node_modules"},
+			Symlink: []string{".pnpm-store"},
 			Copy:    []string{".env"},
 		},
 	}
@@ -87,12 +87,12 @@ func TestBootstrapSymlinksAndCopies(t *testing.T) {
 		t.Fatalf("unexpected bootstrap warnings: %v", warns)
 	}
 
-	info, err := os.Lstat(filepath.Join(wt, "node_modules"))
+	info, err := os.Lstat(filepath.Join(wt, ".pnpm-store"))
 	if err != nil {
-		t.Fatalf("node_modules not created: %v", err)
+		t.Fatalf(".pnpm-store not created: %v", err)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		t.Error("node_modules should be a symlink so the dependency tree is shared")
+		t.Error(".pnpm-store should be a symlink so the cache is shared")
 	}
 
 	data, err := os.ReadFile(filepath.Join(wt, ".env"))
@@ -109,16 +109,77 @@ func TestBootstrapSymlinksAndCopies(t *testing.T) {
 	}
 }
 
+// A cloned tree has to be the worktree's own. Sharing one is what makes pnpm
+// offer to delete and reinstall the tree every other worktree is reading, and
+// uv rewrite a venv's editable installs to point at whichever worktree synced
+// last -- so the test that matters is that a write on one side stays there.
+func TestBootstrapClonesTreePerWorktree(t *testing.T) {
+	repoPath := newTestRepo(t, "clone")
+
+	tree := filepath.Join(repoPath, "node_modules", "pkg")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "index.js"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := core.Repo{
+		Path:      repoPath,
+		Bootstrap: core.Bootstrap{Clone: []string{"node_modules"}},
+	}
+	if warns := Bootstrap(context.Background(), repo, wt); len(warns) != 0 {
+		t.Fatalf("unexpected bootstrap warnings: %v", warns)
+	}
+
+	cloned := filepath.Join(wt, "node_modules")
+	info, err := os.Lstat(cloned)
+	if err != nil {
+		t.Fatalf("node_modules not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("node_modules was shared rather than cloned")
+	}
+
+	// The content has to arrive, or the worktree gains nothing over reinstalling.
+	if data, err := os.ReadFile(filepath.Join(cloned, "pkg", "index.js")); err != nil {
+		t.Fatalf("cloned tree is missing its contents: %v", err)
+	} else if string(data) != "main\n" {
+		t.Errorf("cloned content = %q", data)
+	}
+
+	// And it has to be independent in both directions.
+	if err := os.WriteFile(filepath.Join(cloned, "pkg", "index.js"), []byte("worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(tree, "index.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "main\n" {
+		t.Errorf("writing in the worktree changed the main checkout: %q", data)
+	}
+}
+
 func TestBootstrapWarnsButDoesNotFailOnMissingPaths(t *testing.T) {
 	repoPath := newTestRepo(t, "boot2")
 	wt := t.TempDir()
 	repo := core.Repo{
-		Path:      repoPath,
-		Bootstrap: core.Bootstrap{Symlink: []string{"nope"}, Copy: []string{"also-nope"}},
+		Path: repoPath,
+		Bootstrap: core.Bootstrap{
+			Symlink: []string{"nope"},
+			Clone:   []string{"nope-either"},
+			Copy:    []string{"also-nope"},
+		},
 	}
 	warns := Bootstrap(context.Background(), repo, wt)
-	if len(warns) != 2 {
-		t.Fatalf("got %d warnings, want 2", len(warns))
+	if len(warns) != 3 {
+		t.Fatalf("got %d warnings, want 3: %v", len(warns), warns)
 	}
 }
 
@@ -177,15 +238,22 @@ func TestBootstrapRejectsEscapingPaths(t *testing.T) {
 	repoPath := newTestRepo(t, "boot3")
 	wt := t.TempDir()
 	repo := core.Repo{
-		Path:      repoPath,
-		Bootstrap: core.Bootstrap{Symlink: []string{"../../etc/passwd"}, Copy: []string{"/etc/hosts"}},
+		Path: repoPath,
+		Bootstrap: core.Bootstrap{
+			Symlink: []string{"../../etc/passwd"},
+			Clone:   []string{"../../etc/ssh"},
+			Copy:    []string{"/etc/hosts"},
+		},
 	}
 	warns := Bootstrap(context.Background(), repo, wt)
-	if len(warns) != 2 {
+	if len(warns) != 3 {
 		t.Fatalf("escaping paths were not rejected: %v", warns)
 	}
 	if _, err := os.Lstat(filepath.Join(wt, "passwd")); err == nil {
 		t.Error("an escaping symlink was created")
+	}
+	if _, err := os.Lstat(filepath.Join(wt, "ssh")); err == nil {
+		t.Error("an escaping clone was created")
 	}
 }
 

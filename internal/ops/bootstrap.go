@@ -32,6 +32,13 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) []string {
 		}
 		created = append(created, rel)
 	}
+	for _, rel := range repo.Bootstrap.Clone {
+		if err := clonePath(repo.Path, worktree, rel); err != nil {
+			warnings = append(warnings, fmt.Sprintf("clone %s: %v", rel, err))
+			continue
+		}
+		created = append(created, rel)
+	}
 	for _, rel := range repo.Bootstrap.Copy {
 		if err := copyPath(repo.Path, worktree, rel); err != nil {
 			warnings = append(warnings, fmt.Sprintf("copy %s: %v", rel, err))
@@ -95,6 +102,45 @@ func linkPath(repoPath, worktree, rel string) error {
 		return err
 	}
 	return os.Symlink(src, dst)
+}
+
+// clonePath gives the worktree its own copy of repo/rel, preferring a
+// filesystem clone and falling back to a plain recursive copy.
+//
+// The fallback is slow for a dependency tree, but a slow correct worktree beats
+// a fast one whose node_modules is the same directory as its neighbour's.
+func clonePath(repoPath, worktree, rel string) error {
+	src, err := safeJoin(repoPath, rel)
+	if err != nil {
+		return err
+	}
+	dst, err := safeJoin(worktree, rel)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("not present in main checkout")
+	}
+	// The worktree may already carry a tracked file at this path.
+	if _, err := os.Lstat(dst); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := cloneTree(src, dst); err == nil {
+		return nil
+	}
+	// A partial clone would read as a complete tree to every installer that
+	// looks for one, so it goes before the copy retries.
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return copyDir(src, dst)
+	}
+	return copyFile(src, dst, info.Mode())
 }
 
 // copyPath duplicates repo/rel into the worktree, recursing into directories.

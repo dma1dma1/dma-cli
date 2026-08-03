@@ -31,16 +31,63 @@ func TestDetectFindsIgnoredDepsAndEnv(t *testing.T) {
 
 	b := DetectBootstrap(ctx, repo)
 
-	if !has(b.Symlink, "node_modules") || !has(b.Symlink, ".venv") {
-		t.Errorf("dependency trees not detected: %v", b.Symlink)
+	// Both trees record the path they were built for, so each worktree needs its
+	// own -- sharing one is what makes pnpm offer to reinstall from scratch and
+	// uv rewrite the venv out from under the other worktrees.
+	if !has(b.Clone, "node_modules") || !has(b.Clone, ".venv") {
+		t.Errorf("dependency trees not detected for cloning: %v", b.Clone)
+	}
+	if has(b.Symlink, "node_modules") || has(b.Symlink, ".venv") {
+		t.Errorf("path-keyed trees must never be shared: %v", b.Symlink)
 	}
 	if !has(b.Copy, ".env") {
 		t.Errorf(".env not detected for copying: %v", b.Copy)
 	}
-	// A shared cache must never be copied, and a per-session env file must
-	// never be shared.
-	if has(b.Copy, "node_modules") || has(b.Symlink, ".env") {
-		t.Errorf("symlink/copy classification inverted: %+v", b)
+	// A dependency tree must never be byte-copied, and a per-session env file
+	// must never be shared or cloned.
+	if has(b.Copy, "node_modules") || has(b.Symlink, ".env") || has(b.Clone, ".env") {
+		t.Errorf("bootstrap classification inverted: %+v", b)
+	}
+}
+
+// A cache whose contents do not name their own location is still worth pointing
+// every worktree at, and must not be needlessly duplicated.
+func TestDetectSharesPathIndependentCaches(t *testing.T) {
+	repo := newTestRepo(t, "caches")
+	ctx := context.Background()
+
+	mustMkdir(t, filepath.Join(repo, ".pnpm-store", "v3"))
+	mustMkdir(t, filepath.Join(repo, "vendor", "x"))
+	mustWrite(t, filepath.Join(repo, ".gitignore"), ".pnpm-store\nvendor\n")
+
+	b := DetectBootstrap(ctx, repo)
+
+	for _, want := range []string{".pnpm-store", "vendor"} {
+		if !has(b.Symlink, want) {
+			t.Errorf("%s not shared; got symlink=%v clone=%v", want, b.Symlink, b.Clone)
+		}
+		if has(b.Clone, want) {
+			t.Errorf("%s was cloned rather than shared", want)
+		}
+	}
+}
+
+// A repo's toolchain cache is left alone entirely. Handing a worktree a
+// populated one tells the repo's activation hook there is nothing to install,
+// and the step it skips is the one that repoints a cloned venv at this
+// worktree's sources. See core.IsPathKeyed.
+func TestDetectIgnoresToolchainCaches(t *testing.T) {
+	repo := newTestRepo(t, "flox")
+	ctx := context.Background()
+
+	mustMkdir(t, filepath.Join(repo, ".flox", "cache", "gobin"))
+	mustWrite(t, filepath.Join(repo, ".gitignore"), ".flox/cache\n")
+
+	b := DetectBootstrap(ctx, repo)
+
+	cache := filepath.Join(".flox", "cache")
+	if has(b.Clone, cache) || has(b.Symlink, cache) || has(b.Copy, cache) {
+		t.Errorf(".flox/cache should not be bootstrapped at all: %+v", b)
 	}
 }
 
@@ -84,8 +131,8 @@ func TestDetectFindsWorkspacePackages(t *testing.T) {
 		filepath.Join("packages", "db", "node_modules"),
 		filepath.Join("apps", "web", "node_modules"),
 	} {
-		if !has(b.Symlink, want) {
-			t.Errorf("%s not detected; got %v", want, b.Symlink)
+		if !has(b.Clone, want) {
+			t.Errorf("%s not detected; got %v", want, b.Clone)
 		}
 	}
 }
@@ -93,7 +140,7 @@ func TestDetectFindsWorkspacePackages(t *testing.T) {
 func TestDetectEmptyRepoProducesNothing(t *testing.T) {
 	repo := newTestRepo(t, "bare")
 	b := DetectBootstrap(context.Background(), repo)
-	if len(b.Symlink) != 0 || len(b.Copy) != 0 {
+	if len(b.Symlink) != 0 || len(b.Clone) != 0 || len(b.Copy) != 0 {
 		t.Fatalf("expected nothing to bootstrap, got %+v", b)
 	}
 	if got := SummarizeBootstrap(b); got != "nothing to share" {
@@ -123,7 +170,7 @@ func TestAdoptRegistersOnceAndIsIdempotent(t *testing.T) {
 	if r1.BaseBranch != "main" {
 		t.Errorf("base branch = %q", r1.BaseBranch)
 	}
-	if !has(r1.Bootstrap.Symlink, "node_modules") {
+	if !has(r1.Bootstrap.Clone, "node_modules") {
 		t.Errorf("bootstrap not detected during adoption: %+v", r1.Bootstrap)
 	}
 	if cfg.DefaultRepo != "adopt" {

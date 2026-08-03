@@ -225,12 +225,33 @@ can still start offline.
 When a repository is registered, `dma` looks for ignored dependency trees and
 local configuration that a fresh worktree would otherwise be missing.
 
-It handles detected paths in two ways:
+It handles detected paths in three ways:
 
-- **Symlinked and shared:** dependency trees and caches such as `node_modules`,
-  `.venv`, `target`, `.gradle`, `vendor`, `Pods`, and `.terraform`.
+- **Symlinked and shared:** caches and vendored source whose contents do not
+  name their own location, such as `.pnpm-store`, `.yarn/cache`, `vendor`,
+  `.bundle`, and `.terraform`. One copy on disk serves every worktree.
+- **Cloned per worktree:** dependency trees that record the absolute path they
+  were built for — `node_modules`, `.venv`, `venv`, and `.tox`. Each worktree
+  gets a private copy, made with a filesystem clone (APFS `clonefile(2)`) where
+  the platform offers one, so a large tree costs seconds and no disk. Other
+  platforms fall back to a recursive copy.
 - **Copied per worktree:** local configuration such as `.env`, `.env.local`,
   and related files.
+
+Dependency trees are cloned rather than shared because they are content *plus
+the path they were materialized at*. A Python venv records its own location in
+`pyvenv.cfg` and the source directory of every editable install in a `.pth`
+file, so a shared venv is rewritten to point at whichever worktree activated
+last — taking the main checkout's imports with it. pnpm resolves its root
+`node_modules` through symlinks, finds the virtual store where another checkout
+left it, and offers to delete and reinstall the tree that every other worktree
+is reading.
+
+A repository's own toolchain cache is deliberately left alone. Those caches hold
+the hash files an activation hook checks to decide whether to install anything,
+so handing a worktree a populated one tells the hook its work is already done —
+and the step it then skips is the one that would point a cloned venv at this
+worktree's sources. A slow first activation is the cheaper mistake.
 
 Detection also covers common monorepo directories such as `packages/*`,
 `apps/*`, and `services/*`. Tracked files are not bootstrapped because git
@@ -244,23 +265,28 @@ newly fetched shell code is never approved automatically.
 The registration notice summarizes what was detected:
 
 ```text
-registered devops-copilot — shares .pnpm-store, .venv, node_modules +40 more, copies .env
+registered devops-copilot — shares .pnpm-store, clones .venv, node_modules +40 more, copies .env
 ```
 
 Review this behavior before starting agents in repositories with sensitive
 configuration:
 
 - Copied `.env` files may contain secrets that the selected agent can access.
-- Symlinked dependency directories are shared, so changes made by one worktree
-  are visible to the others.
+- Symlinked directories are shared, so changes made by one worktree are visible
+  to the others.
 
 Detected paths are stored in `~/.dma/config.json`. You can edit the repository's
-`bootstrap.symlink` and `bootstrap.copy` lists, or register a repository
-explicitly:
+`bootstrap.symlink`, `bootstrap.clone` and `bootstrap.copy` lists, or register a
+repository explicitly:
 
 ```sh
-dma repo add --symlink node_modules,.venv --copy .env ~/code/my-project
+dma repo add --clone node_modules,.venv --symlink .pnpm-store --copy .env ~/code/my-project
 ```
+
+A configuration written before cloning existed lists dependency trees under
+`bootstrap.symlink`. They are moved to `bootstrap.clone` when the config loads,
+so an already-registered repository picks this up without being re-registered.
+Paths that are not recognized dependency trees stay where you put them.
 
 Bootstrap paths and the Claude hook settings installed by `dma` are added to
 the repository's local git exclude file so they do not make worktrees appear
@@ -488,6 +514,9 @@ An example configuration, shown as valid JSON:
       "worktree_root": "/Users/you/.dma/worktrees/my-project",
       "bootstrap": {
         "symlink": [
+          ".pnpm-store"
+        ],
+        "clone": [
           "node_modules",
           ".venv"
         ],
@@ -563,10 +592,16 @@ the repository's `remote` value with `dma repo list`.
 confirm it with `dma doctor`. The launch hint appears only once, recorded as
 `notifier_hint_shown` in `~/.dma/config.json`; delete that key to see it again.
 
-**The wrong files are shared or copied**
+**The wrong files are shared, cloned, or copied**
 
 Edit the repository's `bootstrap` lists in `~/.dma/config.json`, or unregister
-and add the repository again with explicit `--symlink` and `--copy` options.
+and add the repository again with explicit `--symlink`, `--clone`, and `--copy`
+options.
+
+**A tool offers to reinstall dependencies on every new session**
+
+The dependency tree is being shared rather than cloned. Check that it appears
+under `bootstrap.clone` and not `bootstrap.symlink` in `~/.dma/config.json`.
 
 **A session is safe to remove**
 

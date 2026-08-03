@@ -14,9 +14,14 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 )
 
-// sharedDirs are build and dependency trees worth sharing between worktrees.
-// They are large, expensive to rebuild, and safe to point at one copy.
-var sharedDirs = []string{
+// depDirs are build and dependency trees worth bootstrapping into a worktree.
+// They are large and expensive to rebuild, so a fresh worktree is given them
+// rather than left to reinstall.
+//
+// How each one arrives is decided at classification time, not here:
+// core.IsPathKeyed separates the trees that record the path they were built for
+// -- which get a private clone -- from the caches that do not, which are shared.
+var depDirs = []string{
 	"node_modules",  // npm, yarn, pnpm
 	".venv", "venv", // python
 	".tox",             // python test envs
@@ -59,7 +64,7 @@ const maxDetected = 250
 func DetectBootstrap(ctx context.Context, repoPath string) core.Bootstrap {
 	var candidates []string
 
-	for _, d := range sharedDirs {
+	for _, d := range depDirs {
 		candidates = append(candidates, d)
 	}
 	for _, f := range perWorktreeFiles {
@@ -107,17 +112,21 @@ func DetectBootstrap(ctx context.Context, repoPath string) core.Bootstrap {
 			// Tracked by git: the worktree gets its own copy already.
 			continue
 		}
-		if len(b.Symlink)+len(b.Copy) >= maxDetected {
+		if len(b.Symlink)+len(b.Clone)+len(b.Copy) >= maxDetected {
 			break
 		}
-		if isFile[p] {
+		switch {
+		case isFile[p]:
 			b.Copy = append(b.Copy, p)
-			continue
+		case core.IsPathKeyed(p):
+			b.Clone = append(b.Clone, p)
+		default:
+			b.Symlink = append(b.Symlink, p)
 		}
-		b.Symlink = append(b.Symlink, p)
 	}
 
 	sort.Strings(b.Symlink)
+	sort.Strings(b.Clone)
 	sort.Strings(b.Copy)
 	return b
 }
@@ -265,13 +274,15 @@ func uniqueRepoID(cfg *core.Config, want string) string {
 // SummarizeBootstrap renders what detection found, so registration is not a
 // black box.
 func SummarizeBootstrap(b core.Bootstrap) string {
-	n := len(b.Symlink) + len(b.Copy)
-	if n == 0 {
+	if len(b.Symlink)+len(b.Clone)+len(b.Copy) == 0 {
 		return "nothing to share"
 	}
 	var parts []string
 	if len(b.Symlink) > 0 {
 		parts = append(parts, "shares "+joinCapped(b.Symlink, 3))
+	}
+	if len(b.Clone) > 0 {
+		parts = append(parts, "clones "+joinCapped(b.Clone, 3))
 	}
 	if len(b.Copy) > 0 {
 		parts = append(parts, "copies "+joinCapped(b.Copy, 3))
