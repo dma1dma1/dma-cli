@@ -43,6 +43,47 @@ type ImageAttachment struct {
 	PNG []byte
 }
 
+const (
+	// bootstrapTimeout bounds dependency materialization. A large monorepo --
+	// 336k entries across 42 trees -- measures around 26 seconds via directory
+	// clonefile, so this is not sized for the normal path. It is sized for
+	// cloneTree's fallback: a volume without clone support drops to a throttled
+	// recursive copy, which measured 6.4 minutes on that same repo. This has to
+	// cover the slow path or the fallback would fail every start it rescued.
+	//
+	// It exists to catch a genuinely stuck clone, which is why it sits far above
+	// both figures rather than near either.
+	bootstrapTimeout = 15 * time.Minute
+	// rollbackTimeout bounds cleanup after a failed start. Removing a worktree
+	// that already carries cloned dependency trees is itself a large delete, so
+	// it needs considerably more than a moment.
+	rollbackTimeout = 5 * time.Minute
+)
+
+// abort undoes a half-created session and returns cause unchanged, so callers
+// read as "fail with this error, and leave nothing behind".
+//
+// Cleanup deliberately runs on a context detached from the caller's. The usual
+// reason to abort is that the caller's context has just died, and a dead context
+// cannot run the git command that removes the worktree -- so the cleanup failed
+// at exactly the moment it was needed. That is what left orphaned worktrees on
+// disk and in git's registry, with nothing in the board's state pointing at them
+// and no record anywhere that they existed.
+func abort(ctx context.Context, repo core.Repo, worktree, tmuxName string, cause error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+
+	if tmuxName != "" {
+		_ = tmuxx.KillSession(ctx, tmuxName)
+	}
+	if err := gitx.RemoveWorktree(ctx, repo.Path, worktree, true); err != nil {
+		// A worktree that could not be removed is state the user has to know
+		// about: it will never appear on the board, and nothing else reports it.
+		return fmt.Errorf("%w (left behind worktree %s: %v)", cause, worktree, err)
+	}
+	return cause
+}
+
 // CreateResult carries the new session plus any non-fatal bootstrap warnings.
 type CreateResult struct {
 	Session  *core.Session
@@ -106,15 +147,28 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
 
-	warnings = append(warnings, Bootstrap(ctx, repo, worktree)...)
+	// Bootstrap gets a budget of its own. Materializing a large monorepo's
+	// dependency trees is minutes of work -- a few hundred thousand files
+	// through a deliberately throttled clone -- and sharing one deadline with
+	// the rest of the start meant a slow bootstrap left nothing but an expired
+	// context for the tmux session that follows it. The agent then launched into
+	// a worktree whose dependencies were still arriving, so the wait is spent
+	// here rather than deferred.
+	bootCtx, cancelBoot := context.WithTimeout(ctx, bootstrapTimeout)
+	bootWarnings, err := Bootstrap(bootCtx, repo, worktree)
+	cancelBoot()
+	warnings = append(warnings, bootWarnings...)
+	if err != nil {
+		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("bootstrap worktree: %w", err))
+	}
+
 	if err := authorizeMatchingDirenv(ctx, repo.Path, worktree); err != nil {
 		warnings = append(warnings, fmt.Sprintf("authorize direnv: %v", err))
 	}
 
 	imagePaths, err := stageImages(ctx, worktree, req.InitialImages)
 	if err != nil {
-		_ = gitx.RemoveWorktree(ctx, repo.Path, worktree, true)
-		return nil, fmt.Errorf("stage initial images: %w", err)
+		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("stage initial images: %w", err))
 	}
 
 	// Hooks are installed into the worktree before the agent starts, so the
@@ -131,9 +185,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	tmuxName = uniqueTmux(ctx, tmuxName)
 
 	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows); err != nil {
-		// Roll the worktree back rather than leaving a half-created session.
-		_ = gitx.RemoveWorktree(ctx, repo.Path, worktree, true)
-		return nil, fmt.Errorf("start tmux session: %w", err)
+		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("start tmux session: %w", err))
 	}
 
 	// The prompt is part of the launch line, so the agent starts already working
@@ -141,7 +193,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// the line now carries user text, and only the literal path keeps tmux from
 	// reading a trailing semicolon as its own command separator.
 	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.LaunchCommand(req.InitialPrompt, imagePaths...)); err != nil {
-		return nil, fmt.Errorf("launch agent: %w", err)
+		return nil, abort(ctx, repo, worktree, tmuxName, fmt.Errorf("launch agent: %w", err))
 	}
 
 	now := time.Now()

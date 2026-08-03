@@ -485,9 +485,15 @@ func prDetailCmd(remote, sessionID string, number int) tea.Cmd {
 	}
 }
 
+// createCmd starts a session. Its budget is an outer backstop only: the phases
+// inside ops.Create carry their own, because bootstrapping a large repo's
+// dependency trees can legitimately outlast any single deadline worth putting on
+// the rest of the start. Two minutes here used to expire mid-clone on a
+// monorepo, and every start in that repo then failed reporting tmux -- the step
+// after the one that actually ran out of time.
 func createCmd(cfg *core.Config, req ops.CreateRequest, background bool) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 		res, err := ops.Create(ctx, cfg, req)
 		return createdMsg{res: res, task: req.InitialPrompt, background: background, err: err}
