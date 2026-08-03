@@ -21,7 +21,13 @@ import (
 //
 // Individual path failures are collected and returned as warnings rather than
 // aborting: a missing .env in one repo should not block session creation.
-func Bootstrap(ctx context.Context, repo core.Repo, worktree string) []string {
+//
+// A canceled context is the exception, and is returned as an error. It is not a
+// per-path failure: every path still queued will fail the same way, and what is
+// on disk is a dependency tree truncated at an arbitrary point, which reads as
+// complete to every installer that looks at it. That is worth abandoning the
+// session over, so the caller can roll the worktree back.
+func Bootstrap(ctx context.Context, repo core.Repo, worktree string) ([]string, error) {
 	var warnings []string
 	var created []string
 
@@ -34,6 +40,9 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) []string {
 	}
 	for _, rel := range repo.Bootstrap.Clone {
 		if err := clonePath(ctx, repo.Path, worktree, rel); err != nil {
+			if ctx.Err() != nil {
+				return warnings, fmt.Errorf("clone %s: %w", rel, ctx.Err())
+			}
 			warnings = append(warnings, fmt.Sprintf("clone %s: %v", rel, err))
 			continue
 		}
@@ -52,7 +61,7 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) []string {
 	// not permanently read as dirty.
 	_ = gitx.AddLocalExclude(ctx, worktree, untracked(ctx, worktree, created)...)
 
-	return warnings
+	return warnings, nil
 }
 
 // untracked filters to the paths git would actually report, so already-ignored

@@ -3,6 +3,7 @@ package ops
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -83,8 +84,8 @@ func TestBootstrapSymlinksAndCopies(t *testing.T) {
 			Copy:    []string{".env"},
 		},
 	}
-	if warns := Bootstrap(context.Background(), repo, wt); len(warns) != 0 {
-		t.Fatalf("unexpected bootstrap warnings: %v", warns)
+	if warns, err := Bootstrap(context.Background(), repo, wt); err != nil || len(warns) != 0 {
+		t.Fatalf("bootstrap: err=%v warnings=%v", err, warns)
 	}
 
 	info, err := os.Lstat(filepath.Join(wt, ".pnpm-store"))
@@ -133,8 +134,8 @@ func TestBootstrapClonesTreePerWorktree(t *testing.T) {
 		Path:      repoPath,
 		Bootstrap: core.Bootstrap{Clone: []string{"node_modules"}},
 	}
-	if warns := Bootstrap(context.Background(), repo, wt); len(warns) != 0 {
-		t.Fatalf("unexpected bootstrap warnings: %v", warns)
+	if warns, err := Bootstrap(context.Background(), repo, wt); err != nil || len(warns) != 0 {
+		t.Fatalf("bootstrap: err=%v warnings=%v", err, warns)
 	}
 
 	cloned := filepath.Join(wt, "node_modules")
@@ -182,15 +183,68 @@ func TestBootstrapCanceledCloneDoesNotCopy(t *testing.T) {
 	wt := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	warns := Bootstrap(ctx, core.Repo{
+	warns, err := Bootstrap(ctx, core.Repo{
 		Path:      repoPath,
 		Bootstrap: core.Bootstrap{Clone: []string{"node_modules"}},
 	}, wt)
-	if len(warns) != 1 || !strings.Contains(warns[0], context.Canceled.Error()) {
-		t.Fatalf("warnings = %v, want one canceled clone", warns)
+	// Cancellation is an error rather than a warning: the caller has to roll the
+	// worktree back instead of launching an agent into a truncated tree.
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("warnings = %v, want none: cancellation is reported as an error", warns)
 	}
 	if _, err := os.Lstat(filepath.Join(wt, "node_modules")); !os.IsNotExist(err) {
 		t.Errorf("canceled clone left a destination behind: %v", err)
+	}
+}
+
+// A failed start is usually a start whose context has just expired, so the
+// cleanup has to run on a context of its own. Sharing the caller's meant the
+// rollback git command could not launch at all, and the half-built worktree
+// stayed on disk and in git's registry with nothing on the board pointing at it.
+func TestAbortRemovesWorktreeWithDeadContext(t *testing.T) {
+	repoPath := newTestRepo(t, "abort")
+	repo := core.Repo{Path: repoPath}
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := gitx.AddDetachedWorktree(context.Background(), repoPath, wt, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cause := errors.New("start tmux session: boom")
+	if err := abort(ctx, repo, wt, "", cause); !errors.Is(err, cause) {
+		t.Fatalf("abort returned %v, want the original cause unchanged", err)
+	}
+	if _, err := os.Lstat(wt); !os.IsNotExist(err) {
+		t.Errorf("worktree survived the rollback: %v", err)
+	}
+	out, err := gitx.Run(context.Background(), repoPath, "worktree", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, wt) {
+		t.Errorf("worktree still registered with git:\n%s", out)
+	}
+}
+
+// A rollback that cannot finish leaves state nobody records, so the error has to
+// name the leftover rather than reporting only the original failure.
+func TestAbortReportsWorktreeItCouldNotRemove(t *testing.T) {
+	repoPath := newTestRepo(t, "abort-fail")
+	repo := core.Repo{Path: repoPath}
+	missing := filepath.Join(t.TempDir(), "never-created")
+
+	cause := errors.New("start tmux session: boom")
+	err := abort(context.Background(), repo, missing, "", cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("abort dropped the original cause: %v", err)
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error does not name the leftover worktree: %v", err)
 	}
 }
 
@@ -205,7 +259,10 @@ func TestBootstrapWarnsButDoesNotFailOnMissingPaths(t *testing.T) {
 			Copy:    []string{"also-nope"},
 		},
 	}
-	warns := Bootstrap(context.Background(), repo, wt)
+	warns, err := Bootstrap(context.Background(), repo, wt)
+	if err != nil {
+		t.Fatalf("missing paths should warn, not fail: %v", err)
+	}
 	if len(warns) != 3 {
 		t.Fatalf("got %d warnings, want 3: %v", len(warns), warns)
 	}
@@ -273,7 +330,10 @@ func TestBootstrapRejectsEscapingPaths(t *testing.T) {
 			Copy:    []string{"/etc/hosts"},
 		},
 	}
-	warns := Bootstrap(context.Background(), repo, wt)
+	warns, err := Bootstrap(context.Background(), repo, wt)
+	if err != nil {
+		t.Fatalf("escaping paths should warn, not fail: %v", err)
+	}
 	if len(warns) != 3 {
 		t.Fatalf("escaping paths were not rejected: %v", warns)
 	}
