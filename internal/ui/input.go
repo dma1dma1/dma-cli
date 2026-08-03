@@ -443,11 +443,9 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m.startTask(false)
 
-	case "ctrl+o":
-		// Start it and stay where you are. The mnemonic is readline's
-		// operate-and-get-next, which is the same bargain -- accept this line,
-		// don't move -- and ctrl+o is one of the few control keys the textarea's
-		// own keymap, tmux's prefix, and terminal flow control all leave alone.
+	case "ctrl+enter":
+		// Start it and stay where you are. This mirrors enter's submit action
+		// while the modifier says not to move the panel to the new session.
 		return m.startTask(true)
 
 	case "shift+enter", "alt+enter", "ctrl+j":
