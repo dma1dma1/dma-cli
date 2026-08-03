@@ -97,20 +97,20 @@ func TestBackgroundStartFillsAnEmptyPanel(t *testing.T) {
 	}
 }
 
-// ctrl-o is a second submit key, so it has to spend the composer the way enter
-// does: task sent, box emptied, keyboard handed back to the board.
-func TestCtrlOSubmitsTheTask(t *testing.T) {
+// ctrl-enter is a second submit key, so it has to spend the composer the way
+// enter does: task sent, box emptied, keyboard handed back to the board.
+func TestCtrlEnterSubmitsTheTask(t *testing.T) {
 	m := testModel(oneRepoCfg())
 	m.focus = focusInput
 	m.input.Focus()
 	m.input.SetValue("retry the flaky upload test")
 	m.layoutSizes()
 
-	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
 	got := next.(Model)
 
 	if cmd == nil {
-		t.Fatal("ctrl-o produced no command; no session was started")
+		t.Fatal("ctrl-enter produced no command; no session was started")
 	}
 	if v := got.input.Value(); v != "" {
 		t.Errorf("input still holds %q, want it spent", v)
@@ -120,14 +120,14 @@ func TestCtrlOSubmitsTheTask(t *testing.T) {
 	}
 }
 
-// ctrl-o on an empty composer is enter on an empty composer: there is no task to
-// start, so it just closes the box.
-func TestCtrlOOnAnEmptyTaskJustCloses(t *testing.T) {
+// ctrl-enter on an empty composer is enter on an empty composer: there is no
+// task to start, so it just closes the box.
+func TestCtrlEnterOnAnEmptyTaskJustCloses(t *testing.T) {
 	m := testModel(oneRepoCfg())
 	m.focus = focusInput
 	m.input.Focus()
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	next, _ := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
 	if got := next.(Model); got.focus != focusBoard {
 		t.Errorf("focus = %v, want the board back", got.focus)
 	}

@@ -44,7 +44,7 @@ func (m Model) hints() []hint {
 			// One entry for the pair, the way the board's PR and prune keys are
 			// written: they start the same session and differ only in whether the
 			// panel follows it, so they read together and cost one hint's room.
-			{"enter/ctrl-o", "start / in background"},
+			{"enter/ctrl-enter", "start / in background"},
 			{"shift-enter", "newline"},
 			{"tab", "selectors"}, {"esc", "board"},
 		}
@@ -140,7 +140,7 @@ var helpText = [][3]string{
 	{"", "ctrl-u", "clear the task, images included"},
 	{"", "backspace", "at the start, remove the last image"},
 	{"", "enter", "start an agent with the chosen agent/repo/project"},
-	{"", "ctrl-o", "start it in the background — the panel stays where it is"},
+	{"", "ctrl-enter", "start it in the background — the panel stays where it is"},
 	{"", "shift-enter", "newline — alt-enter or ctrl-j where the terminal eats it"},
 	{"", "esc", "return to the board"},
 
