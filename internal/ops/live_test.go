@@ -81,19 +81,37 @@ func TestLiveCreateSession(t *testing.T) {
 	}
 
 	// Clean up whatever this test created, whatever the assertions below do.
+	//
+	// Through Teardown rather than a raw worktree remove, because teardown cost is
+	// the other half of what only a real repo can show: unlinking the trees
+	// bootstrap just cloned is the slowest thing the board does, and the timings
+	// logged here are what say whether it is still on the critical path.
 	t.Cleanup(func() {
 		bg := context.Background()
-		if err := tmuxx.KillSession(bg, s.TmuxSession); err != nil {
-			t.Errorf("cleanup tmux: %v", err)
+
+		start := time.Now()
+		if err := Teardown(bg, cfg, s, TeardownOptions{Force: true}); err != nil {
+			t.Errorf("cleanup teardown: %v", err)
 		}
-		if err := gitx.RemoveWorktree(bg, repo.Path, s.WorktreePath, true); err != nil {
-			t.Errorf("cleanup worktree: %v", err)
-		}
+		t.Logf("Teardown returned in %s", time.Since(start).Round(time.Millisecond))
+
 		if _, err := os.Lstat(s.WorktreePath); !os.IsNotExist(err) {
 			t.Errorf("cleanup left the worktree behind: %v", err)
 		}
-		if tmuxx.HasSession(context.Background(), s.TmuxSession) {
+		if tmuxx.HasSession(bg, s.TmuxSession) {
 			t.Errorf("cleanup left the tmux session behind")
+		}
+
+		// Teardown only moved the files; the board sweeps afterwards, and skipping
+		// it here would leak a whole bootstrapped worktree per run.
+		start = time.Now()
+		if err := SweepTrash(bg, repo.WorktreeRoot); err != nil {
+			t.Errorf("cleanup sweep: %v", err)
+		}
+		t.Logf("SweepTrash finished in %s", time.Since(start).Round(time.Millisecond))
+
+		if entries, err := os.ReadDir(TrashDir(repo.WorktreeRoot)); err == nil && len(entries) != 0 {
+			t.Errorf("the sweep left %d worktrees in the trash", len(entries))
 		}
 	})
 

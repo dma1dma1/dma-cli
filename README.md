@@ -293,6 +293,14 @@ Bootstrap paths and the Claude hook settings installed by `dma` are added to
 the repository's local git exclude file so they do not make worktrees appear
 dirty.
 
+Cloned trees are large enough that deleting them is the slow half of a prune: a
+worktree of a monorepo with 42 configured trees holds around 347k files, and
+unlinking them takes half a minute. So `x` and `X` do not wait for it. The
+worktree is renamed into `~/.dma/worktrees/<repo>/.trash`, which takes
+milliseconds and is what frees the board, and the files are unlinked afterwards
+in the background. The trash is also swept when `dma` starts, so a prune
+interrupted by a quit leaves nothing permanent behind.
+
 ## Agent permissions and profiles
 
 The built-in profiles are:

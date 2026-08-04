@@ -233,17 +233,24 @@ func TestAbortRemovesWorktreeWithDeadContext(t *testing.T) {
 
 // A rollback that cannot finish leaves state nobody records, so the error has to
 // name the leftover rather than reporting only the original failure.
+//
+// The repo has no worktree root, so there is nowhere to rename the directory to
+// and cleanup falls back to asking git to remove it -- which it will not, since
+// the directory is not a worktree of this repo.
 func TestAbortReportsWorktreeItCouldNotRemove(t *testing.T) {
 	repoPath := newTestRepo(t, "abort-fail")
 	repo := core.Repo{Path: repoPath}
-	missing := filepath.Join(t.TempDir(), "never-created")
+	stray := filepath.Join(t.TempDir(), "not-a-worktree")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cause := errors.New("start tmux session: boom")
-	err := abort(context.Background(), repo, missing, "", cause)
+	err := abort(context.Background(), repo, stray, "", cause)
 	if !errors.Is(err, cause) {
 		t.Fatalf("abort dropped the original cause: %v", err)
 	}
-	if !strings.Contains(err.Error(), missing) {
+	if !strings.Contains(err.Error(), stray) {
 		t.Errorf("error does not name the leftover worktree: %v", err)
 	}
 }

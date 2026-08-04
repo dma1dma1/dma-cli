@@ -656,6 +656,32 @@ func teardownAllCmd(cfg *core.Config, sessions []*core.Session) tea.Cmd {
 	return tea.Sequence(cmds...)
 }
 
+// sweepTimeout bounds one sweep of the trash. A worktree carrying cloned
+// dependency trees takes half a minute to unlink and the trash can hold a whole
+// merged column of them, so this is sized for several rather than one.
+const sweepTimeout = 10 * time.Minute
+
+// sweepTrashCmd unlinks the worktrees teardown moved aside.
+//
+// This is the slow half of a prune with nothing waiting on it: the rename that
+// freed the board already happened, and the card is gone. So it reports nothing,
+// not even a failure -- a sweep that fails, or that a quit cuts short, leaves the
+// tree in the trash, and the next prune or the next start collects it.
+func sweepTrashCmd(cfg *core.Config) tea.Cmd {
+	roots := make([]string, 0, len(cfg.Repos))
+	for _, r := range cfg.Repos {
+		roots = append(roots, r.WorktreeRoot)
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), sweepTimeout)
+		defer cancel()
+		for _, root := range roots {
+			_ = ops.SweepTrash(ctx, root)
+		}
+		return nil
+	}
+}
+
 func teardownOne(cfg *core.Config, s *core.Session, opt ops.TeardownOptions, bulk bool) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
