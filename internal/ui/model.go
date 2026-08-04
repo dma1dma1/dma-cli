@@ -334,6 +334,9 @@ func (m Model) Init() tea.Cmd {
 		waitForHook(m.hookEvents),
 		observeCmd(m.sessions),
 		pollPRsCmd(m.cfg, m.sessions),
+		// Whatever the last run left in the trash: a sweep the quit cut short, or
+		// one that never ran because the process went away with the prune.
+		sweepTrashCmd(m.cfg),
 	)
 }
 
@@ -1250,7 +1253,9 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 	if m.selectedID == "" {
 		m.mode = modeBoard
 	}
-	return m, nil
+	// The card is gone but its files are not: teardown renamed them into the
+	// trash, and this is where the unlink gets paid for.
+	return m, sweepTrashCmd(m.cfg)
 }
 
 func nameOf(s *core.Session) string {

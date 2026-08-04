@@ -54,9 +54,10 @@ const (
 	// It exists to catch a genuinely stuck clone, which is why it sits far above
 	// both figures rather than near either.
 	bootstrapTimeout = 15 * time.Minute
-	// rollbackTimeout bounds cleanup after a failed start. Removing a worktree
-	// that already carries cloned dependency trees is itself a large delete, so
-	// it needs considerably more than a moment.
+	// rollbackTimeout bounds cleanup after a failed start. Discarding a worktree
+	// is a rename now, so the normal path needs milliseconds of this; the budget
+	// is still here for the case where the rename is unavailable and cleanup
+	// falls back to deleting a worktree full of cloned dependency trees in place.
 	rollbackTimeout = 5 * time.Minute
 )
 
@@ -76,7 +77,7 @@ func abort(ctx context.Context, repo core.Repo, worktree, tmuxName string, cause
 	if tmuxName != "" {
 		_ = tmuxx.KillSession(ctx, tmuxName)
 	}
-	if err := gitx.RemoveWorktree(ctx, repo.Path, worktree, true); err != nil {
+	if err := discardWorktree(ctx, repo, worktree, true); err != nil {
 		// A worktree that could not be removed is state the user has to know
 		// about: it will never appear on the board, and nothing else reports it.
 		return fmt.Errorf("%w (left behind worktree %s: %v)", cause, worktree, err)
@@ -359,13 +360,11 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 		}
 	}
 
-	if _, err := os.Stat(s.WorktreePath); err == nil {
-		if err := gitx.RemoveWorktree(ctx, repo.Path, s.WorktreePath, opt.Force); err != nil {
-			return fmt.Errorf("remove worktree: %w", err)
-		}
-	}
-	if err := gitx.PruneWorktrees(ctx, repo.Path); err != nil {
-		return fmt.Errorf("prune worktrees: %w", err)
+	// The worktree's files are moved aside rather than unlinked here, so the
+	// board is free as soon as the rename lands. See internal/ops/trash.go for
+	// what that is worth and who does the deleting.
+	if err := discardWorktree(ctx, repo, s.WorktreePath, opt.Force); err != nil {
+		return fmt.Errorf("remove worktree: %w", err)
 	}
 
 	// A session only has a branch once its agent made one, and the worktree is
