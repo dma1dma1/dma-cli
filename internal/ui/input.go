@@ -1070,12 +1070,12 @@ func (m Model) diffClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			m.review.picker.cursor = i
 			r := m.review.picker.results[i]
-			m.review.picker.close()
+			m.closePicker()
 			cmd := m.showFileAt(r.path, r.line)
 			return m, cmd
 		}
 		if z := zone.Get(zonePicker); z == nil || !z.InBounds(msg) {
-			m.review.picker.close()
+			m.closePicker()
 		}
 		return m, nil
 	}

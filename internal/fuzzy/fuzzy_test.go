@@ -1,6 +1,7 @@
 package fuzzy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -147,5 +148,20 @@ func TestMatchIsCaseInsensitive(t *testing.T) {
 	}
 	if _, _, ok := Match("readme", "README.md"); !ok {
 		t.Error("lower-case query did not match an upper-case path")
+	}
+}
+
+// A one-character query is a subsequence of nearly every path there is, so the
+// filter that Rank's ordering was once assumed to run behind does not filter at
+// all. This is the shape that made the sort quadratic; the benchmark is here so
+// the next person to change the ordering can see what it costs at scale.
+func BenchmarkRankWideMatch(b *testing.B) {
+	paths := make([]string, 0, 25000)
+	for i := 0; i < 25000; i++ {
+		paths = append(paths, fmt.Sprintf("packages/svc-%d/src/internal/handler_%d.go", i%40, i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Rank("i", paths, 200)
 	}
 }

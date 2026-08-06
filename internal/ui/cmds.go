@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -846,17 +847,85 @@ func worktreeFilesCmd(s *core.Session) tea.Cmd {
 	}
 }
 
+// grepTimeout is the cap on a single search. A query of one letter against a
+// large repo can take long enough to be worth abandoning, and cancelling the
+// context kills the process rather than leaving it writing into a buffer nobody
+// will read.
+const grepTimeout = 10 * time.Second
+
+// searchCancel is the board's handle on the search in flight, so starting a new
+// one can stop the old.
+//
+// The picker's generation counter already keeps a stale answer off the screen,
+// but it does nothing about the process behind it, which keeps reading the
+// worktree either way. A query typed with pauses in it starts one search per
+// pause, and on a large repo the abandoned ones were still running -- several
+// searches of the whole tree at once, all but the last of them for a query the
+// user had already typed past.
+//
+// It is a pointer held by the model rather than a value in it, because Bubble
+// Tea copies the model on every update and a cancel stored by value would stop
+// a copy nobody is waiting on. The mutex guards against the search goroutine
+// finishing, and clearing its own entry, while the update loop is installing
+// the next one.
+// Searches are identified by the picker's generation, which is already what
+// tells one query from the next.
+type searchCancel struct {
+	mu   sync.Mutex
+	gen  int
+	stop context.CancelFunc
+}
+
+// set installs the search now running. The caller must have taken the previous
+// one first.
+func (c *searchCancel) set(gen int, stop context.CancelFunc) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gen, c.stop = gen, stop
+}
+
+// take stops whatever is running and forgets it. It is safe to call when
+// nothing is.
+func (c *searchCancel) take() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	stop := c.stop
+	c.stop = nil
+	c.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// clear forgets a search that finished on its own, leaving a newer one that has
+// already replaced it alone.
+func (c *searchCancel) clear(gen int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.stop = nil
+	}
+}
+
 // grepCmd searches the worktree.
 //
-// The timeout is the cap that matters: the result count is bounded by the tools
-// themselves, but a query of one letter against a large repo can still take
-// long enough to be worth abandoning, and cancelling the context kills the
-// process rather than leaving it writing into a buffer nobody will read.
-func grepCmd(s *core.Session, query string, gen int) tea.Cmd {
+// The context is made by the caller on the update loop rather than here, so
+// that stopping the previous search and registering this one happen in a fixed
+// order. Created inside the goroutine, a slow-starting search could install its
+// cancel after the keystroke meant to abandon it had already looked.
+func grepCmd(ctx context.Context, stop context.CancelFunc, holder *searchCancel, s *core.Session, query string, gen int) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		defer stop()
+		defer holder.clear(gen)
 		hits, err := gitx.Grep(ctx, sess.WorktreePath, query, pickLimit)
 		return grepMsg{id: sess.ID, gen: gen, hits: hits, err: err}
 	}

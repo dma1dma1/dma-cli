@@ -7,7 +7,10 @@
 // for the ranking to look like anything but an opinion.
 package fuzzy
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Result is one candidate that matched.
 type Result struct {
@@ -164,14 +167,23 @@ func isUpper(b byte) bool { return b >= 'A' && b <= 'Z' }
 // sortResults orders by score, then by the shorter candidate, then by name.
 // The last two are there to make the order total: any pair of candidates has a
 // defined order, so the list cannot depend on the sort's internals.
+//
+// That totality is what lets this use an unstable sort. Rank's contract is that
+// the same query twice draws the same list -- rows that swapped under the cursor
+// between identical keystrokes would make the finder unusable -- and with no two
+// distinct results comparing equal, the order is fixed by less() alone rather
+// than by the order they happened to be appended in.
+//
+// This was an insertion sort, on the reasoning that the slice is a few thousand
+// at worst and a handful once filtered. That holds for a repo the size of this
+// one and breaks badly on a large one, because the filter does not filter: a
+// one-character query is a subsequence of nearly every path there is. On a
+// 24,860-path monorepo "i" matches 23,284 candidates, and the quadratic sort
+// spent 512ms of the 515ms Rank took -- on the update goroutine, so the whole
+// board sat frozen for half a second per keystroke, worst on the first one.
+// Matching all 24,860 costs 3ms; sorting them here now costs 3ms as well.
 func sortResults(rs []Result) {
-	// Insertion sort: the slice is at most a few thousand and usually a handful
-	// once filtered, and this keeps the comparison in one obvious place.
-	for i := 1; i < len(rs); i++ {
-		for j := i; j > 0 && less(rs[j], rs[j-1]); j-- {
-			rs[j], rs[j-1] = rs[j-1], rs[j]
-		}
-	}
+	sort.Slice(rs, func(i, j int) bool { return less(rs[i], rs[j]) })
 }
 
 func less(a, b Result) bool {

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -125,6 +126,11 @@ type Model struct {
 	// and the searches that choose what the pane shows. See review.go.
 	review review
 
+	// searchStop abandons the worktree search in flight when a newer query
+	// replaces it or the picker closes. It is a pointer so every copy of the
+	// model reaches the same one; see searchCancel.
+	searchStop *searchCancel
+
 	// helpQuery filters the help screen's keymap as it is typed. It is cleared
 	// when the screen closes: a search you set last time is a keymap that looks
 	// like it has lost half its keys.
@@ -188,6 +194,7 @@ func New(opt Options) Model {
 		agentChoice: opt.Config.DefaultProfile,
 		input:       newTaskInput(styles),
 		review:      review{view: viewport.New(), mode: gitx.DiffUncommitted},
+		searchStop:  &searchCancel{},
 		width:       120,
 		height:      36,
 	}
@@ -586,8 +593,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s == nil || m.review.picker.query == "" {
 			return m, nil
 		}
+		// Whatever the last pause in typing started is reading the worktree for
+		// a query that no longer exists. Stop it before adding another.
+		m.searchStop.take()
+		ctx, stop := context.WithTimeout(context.Background(), grepTimeout)
+		m.searchStop.set(msg.gen, stop)
 		m.review.picker.searching = true
-		return m, grepCmd(s, m.review.picker.query, msg.gen)
+		return m, grepCmd(ctx, stop, m.searchStop, s, m.review.picker.query, msg.gen)
 
 	case grepMsg:
 		return m.handleGrep(msg)

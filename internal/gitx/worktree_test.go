@@ -3,6 +3,7 @@ package gitx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,5 +214,38 @@ func TestGrepOnRealRepo(t *testing.T) {
 	// function signature.
 	if _, err := Grep(context.Background(), dir, "func Needle(", 50); err != nil {
 		t.Errorf("a query with an unbalanced bracket failed: %v", err)
+	}
+}
+
+// A search stops as soon as it has the rows the picker can show, which means
+// killing the tool mid-write. The risk in that is the abandoned process: a
+// non-zero exit from a search that was cut short on purpose says nothing about
+// the search, and must not turn a full result list into an error.
+func TestGrepStopsAtTheLimitWithoutFailing(t *testing.T) {
+	dir := testRepo(t)
+	// Enough matches, spread over enough files, that the limit is reached well
+	// before either tool has finished walking.
+	for i := 0; i < 40; i++ {
+		var b strings.Builder
+		for j := 0; j < 40; j++ {
+			b.WriteString("needle\n")
+		}
+		write(t, dir, fmt.Sprintf("f%d.txt", i), b.String())
+	}
+
+	const limit = 25
+	hits, err := Grep(context.Background(), dir, "needle", limit)
+	if err != nil {
+		t.Fatalf("a search that was cut short reported an error: %v", err)
+	}
+	if len(hits) != limit {
+		t.Fatalf("got %d hits, want exactly the limit of %d", len(hits), limit)
+	}
+	// The rows still have to be whole ones: a row assembled from a half-written
+	// line would send the pane to the wrong place.
+	for _, h := range hits {
+		if h.Path == "" || h.Line == 0 || h.Text != "needle" {
+			t.Errorf("truncated row: %+v", h)
+		}
 	}
 }
