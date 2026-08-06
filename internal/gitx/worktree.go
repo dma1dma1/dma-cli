@@ -162,51 +162,72 @@ func Grep(ctx context.Context, wt, query string, limit int) ([]Hit, error) {
 		args = append(args, "-e", query)
 	}
 
-	var out string
-	var err error
-	if hasRipgrep() {
-		out, err = runTool(ctx, wt, "rg", args)
-	} else {
-		out, err = RunRaw(ctx, wt, args...)
+	name := "rg"
+	if !hasRipgrep() {
+		// The package invariant: git is always scoped with an explicit -C rather
+		// than left to inherit a working directory.
+		name = "git"
+		args = append([]string{"-C", wt}, args...)
 	}
+
+	// The rows are collected as they arrive and the search is abandoned once
+	// there are enough of them, rather than run to completion and truncated. A
+	// search walks the whole worktree, so on a large repo the rows the picker
+	// shows are usually complete long before the walk is -- see runLines.
+	hits := make([]Hit, 0, limit)
+	stopped, err := runLines(ctx, wt, name, args, func(line string) bool {
+		if h, ok := parseGrepLine(line); ok {
+			hits = append(hits, h)
+		}
+		return len(hits) < limit
+	})
 	// Both tools exit 1 to mean "nothing matched", which is an answer rather
-	// than a failure. Output in hand beats any exit status, so the error is
-	// only believed when there is nothing to show for it.
-	if out == "" && err != nil {
+	// than a failure. Rows in hand beat any exit status, so the error is only
+	// believed when there is nothing to show for it and the search was not cut
+	// short on purpose.
+	if len(hits) == 0 && !stopped && err != nil {
 		if exitCode(err) == 1 {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return parseGrep(out, limit), nil
+	return hits, nil
 }
 
-// parseGrep reads "path:line:text", the one output format ripgrep and git grep
-// agree on. It is split out from running either of them so it can be tested
-// without ripgrep installed.
+// parseGrepLine reads one "path:line:text" row, the one output format ripgrep
+// and git grep agree on. It is split out from running either of them so it can
+// be tested without ripgrep installed, and so the streaming search can parse a
+// row at a time without holding the whole result.
+func parseGrepLine(line string) (Hit, bool) {
+	if line == "" {
+		return Hit{}, false
+	}
+	// SplitN with three parts, because the matching text routinely contains
+	// colons and only the first two fields are ours.
+	parts := strings.SplitN(line, ":", 3)
+	if len(parts) < 3 {
+		return Hit{}, false
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil {
+		// A path with a colon in it shifts the fields along. Rather than guess
+		// which colon was the separator, the row is dropped: a result list that
+		// sends you to the wrong line is worse than one row short.
+		return Hit{}, false
+	}
+	return Hit{Path: parts[0], Line: n, Text: strings.TrimRight(parts[2], " \t\r")}, true
+}
+
+// parseGrep reads a whole search result, up to limit rows.
 func parseGrep(out string, limit int) []Hit {
 	var hits []Hit
 	for _, line := range strings.Split(out, "\n") {
-		if line == "" {
-			continue
-		}
 		if len(hits) >= limit {
 			break
 		}
-		// SplitN with three parts, because the matching text routinely contains
-		// colons and only the first two fields are ours.
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) < 3 {
-			continue
+		if h, ok := parseGrepLine(line); ok {
+			hits = append(hits, h)
 		}
-		n, err := strconv.Atoi(parts[1])
-		if err != nil {
-			// A path with a colon in it shifts the fields along. Rather than
-			// guess which colon was the separator, the row is dropped: a result
-			// list that sends you to the wrong line is worse than one row short.
-			continue
-		}
-		hits = append(hits, Hit{Path: parts[0], Line: n, Text: strings.TrimRight(parts[2], " \t\r")})
 	}
 	return hits
 }

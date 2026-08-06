@@ -83,6 +83,15 @@ func (p *picker) start(kind pickerKind, width int) tea.Cmd {
 
 func (p *picker) close() { *p = picker{} }
 
+// closePicker puts the overlay away and abandons any search still running
+// behind it. Stopping the search matters as much as hiding the rows: it is a
+// process reading the whole worktree, and once the overlay is gone there is
+// nothing left that would use its answer.
+func (m *Model) closePicker() {
+	m.review.picker.close()
+	m.searchStop.take()
+}
+
 func (p *picker) move(delta int) {
 	if len(p.results) == 0 {
 		return

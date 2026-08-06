@@ -164,7 +164,7 @@ func (m *Model) rankPaths() {
 func (m Model) keyPicker(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "ctrl+c":
-		m.review.picker.close()
+		m.closePicker()
 		return m, nil
 
 	case "up", "ctrl+p":
@@ -180,7 +180,7 @@ func (m Model) keyPicker(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.review.picker.close()
+		m.closePicker()
 		cmd := m.showFileAt(r.path, r.line)
 		return m, cmd
 	}

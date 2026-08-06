@@ -8,7 +8,9 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
@@ -440,24 +442,62 @@ type Observation struct {
 	Branch string
 }
 
+// observeConcurrency bounds how many worktrees are inspected at once. Each one
+// is a handful of git processes, so this is a limit on processes in flight
+// rather than on goroutines: a board of fifty sessions should not answer a poll
+// tick by forking two hundred and fifty gits at the same moment.
+func observeConcurrency() int {
+	if n := runtime.NumCPU(); n > 4 {
+		return n
+	}
+	return 4
+}
+
 // Observe collects liveness and worktree facts for all sessions. Liveness comes
 // from a single tmux list-sessions rather than one call per session.
+//
+// The worktrees are inspected concurrently. Each one costs several git
+// processes -- a branch read, a status, and a diff stat -- and on a large repo
+// that is most of half a second, so done one after another a poll grew directly
+// with the size of the board: ten sessions against a monorepo measured 2.9s of
+// git per tick, and fanning them out brought it to 1.5s. It is off the update
+// loop either way, so this was never a freeze; what it was is a burst of some
+// fifty processes that got longer every time a session was added.
+//
+// Running them together is safe because none of it writes anything shared. Each
+// worktree has its own index, so the refresh a status does lands in its own
+// file; everything else reads refs and objects, which git is happy to serve
+// concurrently. The writing operations on a repo -- worktree add, remove, prune
+// -- do contend, which is why teardown is still sequenced; see teardownAllCmd.
 func Observe(ctx context.Context, sessions []*core.Session) []Observation {
 	live, _ := tmuxx.ListSessions(ctx)
-	out := make([]Observation, 0, len(sessions))
-	for _, s := range sessions {
-		o := Observation{
-			ID:     s.ID,
-			Alive:  live[s.TmuxSession],
-			Branch: gitx.CurrentBranch(ctx, s.WorktreePath),
-		}
-		if dirty, err := gitx.IsDirty(ctx, s.WorktreePath); err == nil {
-			o.Dirty = dirty
-		}
-		if a, r, err := gitx.DiffStat(ctx, s.WorktreePath, s.BaseBranch); err == nil {
-			o.DiffAdded, o.DiffRemoved = a, r
-		}
-		out = append(out, o)
+
+	// Indexed rather than appended, so the results stay in the order the
+	// sessions arrived in whatever order they finish.
+	out := make([]Observation, len(sessions))
+	sem := make(chan struct{}, observeConcurrency())
+	var wg sync.WaitGroup
+	for i, s := range sessions {
+		wg.Add(1)
+		go func(i int, s *core.Session) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			o := Observation{
+				ID:     s.ID,
+				Alive:  live[s.TmuxSession],
+				Branch: gitx.CurrentBranch(ctx, s.WorktreePath),
+			}
+			if dirty, err := gitx.IsDirty(ctx, s.WorktreePath); err == nil {
+				o.Dirty = dirty
+			}
+			if a, r, err := gitx.DiffStat(ctx, s.WorktreePath, s.BaseBranch); err == nil {
+				o.DiffAdded, o.DiffRemoved = a, r
+			}
+			out[i] = o
+		}(i, s)
 	}
+	wg.Wait()
 	return out
 }
