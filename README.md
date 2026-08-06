@@ -173,8 +173,8 @@ In the board:
 1. Press `A` if you want to change the selected agent.
 2. Press `i` and describe the task.
 3. Optionally press `ctrl-v` to attach an image from the clipboard.
-4. Press `enter`, or `ctrl-enter` to start it without leaving the session already
-   on the panel.
+4. Press `enter`. The agent starts in the background, leaving the panel on the
+   session you were already watching.
 
 In the task input, `ctrl-v` attaches a clipboard image or pastes ordinary text.
 Press `ctrl-u` to start the task over: it clears the text and any attached
@@ -196,15 +196,18 @@ against.
 
 ### Starting a session in the background
 
-`enter` starts the agent and moves the panel to it. `ctrl-enter` starts the same
-session and leaves the panel showing the session you were already watching.
+`enter` starts the agent and leaves the panel showing the session you were
+already watching.
 
-The two differ because a start is not instant: the fetch and the worktree take
-seconds, so a foreground start moves the panel whenever it finishes — usually
-once you have gone back to reading another agent. Use `ctrl-enter` to line up work
-without giving up the session in front of you. The card still appears in its
-column, and the notice line names what started, since nothing else on screen
-moves.
+Sessions start in the background because a start is not instant: the fetch and
+the worktree take seconds, so moving the panel to the new session would move it
+whenever the start finishes — usually once you have gone back to reading another
+agent. Lining up work therefore costs you nothing of the session in front of you.
+The card appears in its column, and the notice line names what started, since
+nothing else on screen moves. Select the card when you want to watch it.
+
+An empty panel is the exception: with no session to be pulled away from, the
+first card to arrive fills it.
 
 ### Repository expectations
 
@@ -364,7 +367,7 @@ opening prompt.
 | `t` | Type into the selected agent from the session panel |
 | `ctrl-v` | Paste an image or text into a task or live agent |
 | `ctrl-u` | Clear the task input while composing |
-| `ctrl-enter` | Start the composed task in the background, leaving the panel where it is |
+| `enter` | Start the composed task in the background, leaving the panel where it is |
 | `a` | Attach to the selected tmux session |
 | `enter` or `d` | Review the selected session's changes |
 | `s` | Ask the agent to commit, push, and open a pull request |
