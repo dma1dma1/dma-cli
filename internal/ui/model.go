@@ -1108,23 +1108,18 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()
-	if msg.background {
-		// rebuild rather than nothing at all: a board whose panel is empty has
-		// nothing to be pulled away from, so the first card to arrive may as well
-		// fill it. A panel emptied on purpose is left empty, which rebuild already
-		// knows.
-		m.rebuild()
-	} else {
-		m.selectSession(s)
-	}
+	// rebuild rather than select: a start never moves the panel to the new card.
+	// It still fills an empty one -- a board whose panel is empty has nothing to be
+	// pulled away from, so the first card to arrive may as well fill it. A panel
+	// emptied on purpose is left empty, which rebuild already knows.
+	m.rebuild()
 	// watching is whether the panel ended up on the new session, which is what
 	// decides both of the questions below.
 	watching := m.selectedID == s.ID
 
-	// A card that took the panel is its own confirmation, so a successful start
-	// says nothing. One started in the background moved nothing on screen -- it is
-	// one more card in a column that already had some -- so it says which session
-	// it was.
+	// A card that took the panel is its own confirmation, so it says nothing. Every
+	// other start moved nothing on screen -- it is one more card in a column that
+	// already had some -- so it says which session it was.
 	//
 	// Warnings outrank both: a symlink or hook install that failed is not visible
 	// anywhere on the board, and the session runs degraded until it is fixed.

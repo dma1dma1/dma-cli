@@ -444,13 +444,12 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		m.focus = focusBoard
 		return m, m.onFocusChange()
 
-	case "enter":
-		return m.startTask(false)
-
-	case "ctrl+enter":
-		// Start it and stay where you are. This mirrors enter's submit action
-		// while the modifier says not to move the panel to the new session.
-		return m.startTask(true)
+	case "enter", "ctrl+enter":
+		// One submit key with one behaviour. ctrl-enter used to be the background
+		// start and every start is one now, so it is kept as an alias rather than
+		// left to fall through to the field, where the modifier would be dropped
+		// and the keypress would insert a newline instead of starting anything.
+		return m.startTask()
 
 	case "shift+enter", "alt+enter", "ctrl+j":
 		// Enter is spent on starting the agent, so a task written over several
@@ -500,15 +499,16 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 
 // startTask hands the composed task to a new session and returns to the board.
 //
-// background says the board's cursor stays where it is rather than following the
-// new card. Deciding to start work is not the same as deciding to watch it: the
-// worktree, the fetch, and the agent's first frame take seconds, so a foreground
-// start moves the panel off whatever you went back to reading in the meantime,
-// which is the one moment you did not ask for it to move.
+// The board's cursor stays where it is rather than following the new card.
+// Deciding to start work is not the same as deciding to watch it: the worktree,
+// the fetch, and the agent's first frame take seconds, so moving the panel to the
+// new session would pull it off whatever you went back to reading in the
+// meantime, which is the one moment you did not ask for it to move. The card is
+// on the board and the notice names it; select it when you want to watch it.
 //
-// An empty composer closes either way. There is no task to start and nothing to
-// keep the box open for.
-func (m Model) startTask(background bool) (tea.Model, tea.Cmd) {
+// An empty composer closes. There is no task to start and nothing to keep the box
+// open for.
+func (m Model) startTask() (tea.Model, tea.Cmd) {
 	task := strings.TrimSpace(m.input.Value())
 	if task == "" {
 		m.focus = focusBoard
@@ -522,7 +522,7 @@ func (m Model) startTask(background bool) (tea.Model, tea.Cmd) {
 	m.pendingImages = nil
 	m.layoutSizes()
 	m.focus = focusBoard
-	return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req, background))
+	return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req))
 }
 
 // newSessionRequest describes the session the chips currently add up to.

@@ -78,12 +78,7 @@ type createdMsg struct {
 	// card wants all of it -- the line that matters is as often in the stack
 	// trace below the first one as in the first one.
 	task string
-	// background says the session was asked for without asking to watch it, so
-	// the card must arrive without taking the panel. It rides on the message
-	// rather than being read off the model when it lands, because a start takes
-	// seconds and what the panel is showing by then is a different question.
-	background bool
-	err        error
+	err  error
 }
 
 // titledMsg carries a summary of the task back to the card that is currently
@@ -491,12 +486,12 @@ func prDetailCmd(remote, sessionID string, number int) tea.Cmd {
 // the rest of the start. Two minutes here used to expire mid-clone on a
 // monorepo, and every start in that repo then failed reporting tmux -- the step
 // after the one that actually ran out of time.
-func createCmd(cfg *core.Config, req ops.CreateRequest, background bool) tea.Cmd {
+func createCmd(cfg *core.Config, req ops.CreateRequest) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 		res, err := ops.Create(ctx, cfg, req)
-		return createdMsg{res: res, task: req.InitialPrompt, background: background, err: err}
+		return createdMsg{res: res, task: req.InitialPrompt, err: err}
 	}
 }
 
