@@ -313,12 +313,14 @@ The built-in profiles are:
   {
     "name": "claude",
     "command": "claude --permission-mode auto",
+    "resume_command": "claude --permission-mode auto --continue",
     "hooks": true
   },
   {
     "name": "codex",
     "command": "codex",
     "image_argument": "--image {path}",
+    "resume_command": "codex resume --last",
     "hooks": false
   }
 ]
@@ -348,9 +350,20 @@ second-guessed, because nothing else strands: an agent behind an `idle` card is
 running and reports within seconds, and one behind `needs you` is blocked on a
 question, which is what the badge says.
 
+`resume_command` is what `c` and `C` run to bring an agent back in a worktree it
+has already worked in — see [Restarting sessions](#restarting-sessions). It must
+identify the conversation from the working directory alone, which both built-in
+resume commands do: `claude --continue` continues the most recent conversation in
+the current directory, and `codex resume --last` picks the most recent session in
+it unless asked for `--all`. That is what makes restarting a whole board at once
+correct, since each session has a worktree of its own.
+
 You can add another agent by adding an entry to `agent_profiles`. The command
 runs inside the new worktree. The task is appended as a positional argument;
-use `{prompt}` in the command if it needs to appear somewhere else.
+use `{prompt}` in the command if it needs to appear somewhere else. Add a
+`resume_command` if the agent can continue a previous conversation; without one,
+a restart launches `command` instead and the board says the agent came back
+without its history.
 
 For images attached to a new session, `image_argument` is repeated once per
 image and `{path}` is replaced with the shell-quoted path to its staged PNG.
@@ -376,6 +389,8 @@ opening prompt.
 | `m` | Merge the pull request, enable auto-merge while CI is pending, or add it to the merge queue |
 | `x` | Prune one session's worktree and branch, closing its pull request if it is still open |
 | `X` | Prune the merged sessions currently shown |
+| `c` | Restart the selected session's agent where it left off |
+| `C` | Restart every shown session whose terminal is gone |
 | `D` | Kill the agent but keep its worktree |
 | `A` | Choose the agent used for new sessions |
 | `r` | Switch, add, or unregister repositories |
@@ -400,6 +415,41 @@ to normal mode after every message it sends—`dma` puts it back into insert mod
 when you hand it the keyboard, so a sentence typed into the panel arrives as text
 rather than as vim commands. Nothing is sent to an agent that is not modal, or
 while a dialog is open, so answering a prompt with `1` or `y` still works.
+
+## Restarting sessions
+
+Agents survive quitting the board, but they do not survive the machine: tmux
+takes every session with it on a restart, so `dma` comes back to a board of cards
+whose worktrees are all still there and whose agents are all gone. Those cards
+read `⚠ not running`, the session panel says the terminal is gone, and the board
+offers the count once on launch.
+
+Press `C` to restart every shown session that is not running, or `c` for the
+selected one. Each gets its terminal back at the same name, in the same worktree,
+and its agent resumes the conversation it was having there — the branch, the
+commits, the uncommitted work and the agent's own history are all still on disk.
+Nothing is fetched, rebased or bootstrapped again: a restart runs the agent, and
+touches nothing else.
+
+The restarted agent comes up with the floor open rather than mid-task. It knows
+what it was doing, so telling it to carry on is a sentence typed with `t`.
+
+Some more detail on what the two keys pick:
+
+- `C` follows the filters, like `X`, so it restarts the board as it is on screen.
+- `C` skips merged sessions, whose work has landed. `c` still restarts one on
+  request, which is what a merged pull request with review feedback on it needs.
+- `c` on an agent that *is* running asks first, then stops it and starts it again
+  on the same conversation. That is the way to deal with a wedged agent, and the
+  difference between `c` and `D`, which stops one and leaves it stopped.
+- A session whose worktree has gone is refused by name, since there is nowhere
+  for its agent to be. Prune it with `x`.
+- An agent whose profile has no `resume_command` restarts as a fresh agent with
+  no memory of the task, and the board says so rather than letting the two look
+  alike.
+
+Outside the board, `dma ls` names the sessions nothing is running in its `TMUX`
+column.
 
 ## Reviewing changes
 
@@ -546,12 +596,14 @@ An example configuration, shown as valid JSON:
     {
       "name": "claude",
       "command": "claude --permission-mode auto",
+      "resume_command": "claude --permission-mode auto --continue",
       "hooks": true
     },
     {
       "name": "codex",
       "command": "codex",
       "image_argument": "--image {path}",
+      "resume_command": "codex resume --last",
       "hooks": false
     }
   ],
@@ -617,6 +669,19 @@ options.
 
 The dependency tree is being shared rather than cloned. Check that it appears
 under `bootstrap.clone` and not `bootstrap.symlink` in `~/.dma/config.json`.
+
+**Every card says `⚠ not running` after a reboot**
+
+tmux does not survive a machine restart, so the agents went with it while their
+worktrees stayed. Press `C` to restart them all, or `c` for one. See
+[Restarting sessions](#restarting-sessions).
+
+**A restarted agent has forgotten what it was doing**
+
+Its profile has no `resume_command`, so the restart launched `command` instead.
+Add one; the built-in profiles use `claude --permission-mode auto --continue` and
+`codex resume --last`. A profile whose `command` you edited is never given a
+generated resume line, since the two have to name the same program.
 
 **A session is safe to remove**
 

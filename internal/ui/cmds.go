@@ -134,6 +134,23 @@ type killedMsg struct {
 	err error
 }
 
+// restartMsg reports one session's terminal having been rebuilt and its agent
+// put back in it.
+type restartMsg struct {
+	id string
+	// tmuxSession is the terminal the session has now, normally the one it always
+	// had. See ops.RestartResult.
+	tmuxSession string
+	// resumed is whether the agent came back on its own conversation or as a fresh
+	// one. The board cannot see the difference, so the notice line says it.
+	resumed bool
+	// bulk marks a restart that came from C rather than c, so a failure among many
+	// names the session it belongs to.
+	bulk     bool
+	warnings []string
+	err      error
+}
+
 type diffMsg struct {
 	id      string
 	content string
@@ -694,6 +711,44 @@ func killCmd(s *core.Session) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		return killedMsg{id: sess.ID, err: ops.Kill(ctx, &sess)}
+	}
+}
+
+func restartCmd(cfg *core.Config, s *core.Session, hookURL string, cols, rows int) tea.Cmd {
+	return restartOne(cfg, s, hookURL, cols, rows, false)
+}
+
+// restartAllCmd brings back every session whose terminal is gone, one after
+// another rather than at once.
+//
+// The reason is the same shape as teardownAllCmd's. Installing hooks writes the
+// repo's exclude file to keep the settings out of git status, and every worktree
+// of a repo shares one of those -- so restarting a repo's sessions concurrently
+// would have several restarts reading and rewriting the same file, and the last
+// writer would drop the others' lines.
+func restartAllCmd(cfg *core.Config, sessions []*core.Session, hookURL string, cols, rows int) tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(sessions))
+	for _, s := range sessions {
+		cmds = append(cmds, restartOne(cfg, s, hookURL, cols, rows, true))
+	}
+	return tea.Sequence(cmds...)
+}
+
+func restartOne(cfg *core.Config, s *core.Session, hookURL string, cols, rows int, bulk bool) tea.Cmd {
+	sess := *s
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		res, err := ops.Restart(ctx, cfg, &sess, ops.RestartRequest{
+			HookURL: hookURL,
+			Cols:    cols,
+			Rows:    rows,
+		})
+		msg := restartMsg{id: sess.ID, bulk: bulk, err: err}
+		if res != nil {
+			msg.tmuxSession, msg.resumed, msg.warnings = res.TmuxSession, res.Resumed, res.Warnings
+		}
+		return msg
 	}
 }
 

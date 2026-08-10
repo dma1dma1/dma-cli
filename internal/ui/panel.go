@@ -369,7 +369,7 @@ func (m Model) previewBody(rows, width int) []string {
 	if strings.TrimSpace(m.preview) == "" {
 		hint := "waiting for output…"
 		if !s.TmuxAlive {
-			hint = "this session's terminal is gone (press D to clear, x to prune)"
+			hint = "this session's terminal is gone (press c to restart it, x to prune)"
 		}
 		return centered(rows, width, st.Faint.Render(hint))
 	}

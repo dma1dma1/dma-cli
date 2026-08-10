@@ -1,4 +1,5 @@
-// Package ops orchestrates session lifecycle: create, observe, tear down.
+// Package ops orchestrates session lifecycle: create, observe, restart, tear
+// down.
 package ops
 
 import (
@@ -427,6 +428,123 @@ func Kill(ctx context.Context, s *core.Session) error {
 		return nil
 	}
 	return tmuxx.KillSession(ctx, s.TmuxSession)
+}
+
+// RestartRequest carries what a restart needs from the running board, which is
+// the same pair of things a create needs: where to report hooks, and how big the
+// terminal it is about to draw into is.
+type RestartRequest struct {
+	// HookURL points at this board's hook listener. It is reinstalled on every
+	// restart rather than trusted from the worktree, because the address is not
+	// stable: a board that found its configured port taken listens on an ephemeral
+	// one instead, so the settings written when the session was created can point
+	// at a port nothing is on.
+	HookURL string
+	// Cols and Rows size the rebuilt terminal, for the reason given on
+	// CreateRequest: a detached tmux session otherwise defaults to 80x24.
+	Cols, Rows int
+}
+
+// RestartResult reports what came back up.
+type RestartResult struct {
+	// TmuxSession is the session's terminal now. It is normally the name the
+	// session already had, and differs only in the rare case that name could not
+	// be reclaimed.
+	TmuxSession string
+	// Resumed is whether the agent was started on the conversation it had here, or
+	// as a fresh one that knows nothing about the task. The difference is invisible
+	// on the board, so the caller has to say it.
+	Resumed  bool
+	Warnings []string
+}
+
+// Restart rebuilds a session's terminal and puts its agent back in it, resuming
+// the conversation it was having in this worktree.
+//
+// This is what a session needs after the machine it was running on restarted:
+// tmux takes every agent with it, and what comes back is a board of cards
+// describing worktrees with no process in them. Everything durable survived --
+// the worktree, its branch, its commits, and the agent's own transcript -- so the
+// session does not need creating again, only running again.
+//
+// The worktree is left exactly as it is. It is not re-fetched, re-based or
+// re-bootstrapped: it holds work in progress, and a restart that moved the ground
+// under it would be a different and much more destructive operation than the one
+// the user asked for. Dependencies materialized when the session was created are
+// still there, since they live in the worktree too.
+//
+// A live tmux session is killed first, which makes this the way to restart a
+// wedged agent as well as a dead one. Callers confirm that with the user; nothing
+// here can tell an agent mid-thought from one that has been stuck for an hour.
+func Restart(ctx context.Context, cfg *core.Config, s *core.Session, req RestartRequest) (*RestartResult, error) {
+	prof, ok := cfg.Profile(s.AgentProfile)
+	if !ok {
+		return nil, fmt.Errorf("unknown agent profile %q", s.AgentProfile)
+	}
+
+	// The worktree is the session: an agent has nowhere to be resumed without it,
+	// and starting tmux at a missing directory would produce a live session whose
+	// pane is an error message -- which reads as running. A worktree can go missing
+	// for undramatic reasons, most often a prune whose state write did not land, so
+	// this is a distinct error the board can offer the right key for.
+	info, err := os.Stat(s.WorktreePath)
+	if err != nil || !info.IsDir() {
+		return nil, &WorktreeMissingError{Path: s.WorktreePath}
+	}
+
+	if tmuxx.HasSession(ctx, s.TmuxSession) {
+		if err := tmuxx.KillSession(ctx, s.TmuxSession); err != nil {
+			return nil, fmt.Errorf("stop the running agent: %w", err)
+		}
+	}
+	// The old name is reclaimed rather than replaced, so a session keeps the
+	// terminal name it has been referred to by since it was created. uniqueTmux is
+	// the fallback for the name that outlived the kill -- a session tmux is still
+	// tearing down, or one this board does not own.
+	name := uniqueTmux(ctx, s.TmuxSession)
+
+	var warnings []string
+	if req.HookURL != "" {
+		if err := hooks.InstallInWorktree(ctx, s.WorktreePath, req.HookURL); err != nil {
+			warnings = append(warnings, fmt.Sprintf("install hooks: %v", err))
+		}
+	}
+
+	if err := tmuxx.NewSession(ctx, name, s.WorktreePath, req.Cols, req.Rows); err != nil {
+		return nil, fmt.Errorf("start tmux session: %w", err)
+	}
+	// SendLiteral for the same reason Create uses it: the line carries whatever the
+	// profile's command is, and only the literal path keeps tmux from reading part
+	// of it as a command of its own.
+	if err := tmuxx.SendLiteral(ctx, name, prof.RestartCommand()); err != nil {
+		// The terminal is ours and was made a moment ago, so taking it back leaves
+		// the session exactly as it was found -- not running, and restartable again.
+		// The worktree is never touched here: unlike a failed create, there is
+		// nothing new on disk to undo, and it holds the user's work.
+		//
+		// On a context of its own, for the reason abort explains: the usual way to
+		// reach this line is the caller's context expiring, and a dead context cannot
+		// run the tmux command that undoes the damage.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		_ = tmuxx.KillSession(cleanup, name)
+		cancel()
+		return nil, fmt.Errorf("launch agent: %w", err)
+	}
+
+	return &RestartResult{
+		TmuxSession: name,
+		Resumed:     strings.TrimSpace(prof.ResumeCommand) != "",
+		Warnings:    warnings,
+	}, nil
+}
+
+// WorktreeMissingError reports that a session's worktree is no longer on disk.
+// There is nothing left to run an agent in, so the card describes work that
+// cannot be picked up again.
+type WorktreeMissingError struct{ Path string }
+
+func (e *WorktreeMissingError) Error() string {
+	return fmt.Sprintf("worktree is gone: %s", e.Path)
 }
 
 // Observation is the periodically refreshed view of a session.

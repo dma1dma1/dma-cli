@@ -282,6 +282,9 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 	case "X":
 		return m.pruneMerged()
 
+	case "C":
+		return m.restartDead()
+
 	case "R":
 		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
 			probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt, m.hookSeen))
@@ -313,6 +316,79 @@ func (m Model) pruneMerged() (tea.Model, tea.Cmd) {
 	}
 	return m.askConfirm(fmt.Sprintf("Prune worktrees and branches for %d merged %s?", len(merged), noun),
 		func(mm *Model) tea.Cmd { return teardownAllCmd(mm.cfg, merged) })
+}
+
+// restartDead brings back every session on the board whose terminal is gone.
+//
+// This is the keystroke a machine restart needs. tmux does not survive a reboot,
+// so every agent goes with it, and what comes back is a board of cards describing
+// worktrees with no process in them -- restarting them one at a time is the most
+// repetitive thing there is to do with dma, and the reason this key exists.
+//
+// It follows the filters, the same rule X follows: what C restarts is the board
+// as it is on screen.
+//
+// Nothing is destroyed and nothing running is interrupted -- only dead sessions
+// are touched -- so unlike X it asks nothing first. The count goes on the notice
+// line instead, because a restart of a dozen sessions is several seconds of
+// sequenced work whose only other sign is cards changing badge one by one.
+func (m Model) restartDead() (tea.Model, tea.Cmd) {
+	dead := m.stoppedSessions()
+	if len(dead) == 0 {
+		return m, errStatus(fmt.Errorf("every session on the board is already running"))
+	}
+	noun := "sessions"
+	if len(dead) == 1 {
+		noun = "session"
+	}
+	m.notice, m.noticeErr, m.noticeAt = fmt.Sprintf("restarting %d %s…", len(dead), noun), false, now()
+	cols, rows := m.previewDims()
+	return m, restartAllCmd(m.cfg, dead, m.hookURL, cols, rows)
+}
+
+// stoppedSessions is what C restarts: the sessions the board is showing that
+// nothing is running.
+func (m Model) stoppedSessions() []*core.Session {
+	var out []*core.Session
+	for _, s := range m.visible() {
+		if restartable(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// restartable reports whether a session is one C should bring back.
+//
+// A merged card is left alone: its work has landed, so an agent started in it
+// would be an agent with nothing to do, and a board kept as a record of merged
+// work would answer one keystroke by launching a dozen of them. c still restarts
+// one on request -- a merged PR with review feedback on it is a real reason to
+// want that agent back.
+//
+// Whether the worktree is still on disk is deliberately not checked here.
+// ops.Restart is where that failure belongs: a directory can go missing between
+// the check and the start, so the answer has to come from the operation rather
+// than from a look beforehand.
+func restartable(s *core.Session) bool {
+	return !s.TmuxAlive && s.Lifecycle != core.LifecycleMerged
+}
+
+// restartSelected rebuilds one session's terminal and puts its agent back in it.
+//
+// A live agent is confirmed first, because restarting it stops whatever it is
+// doing. A dead one is not: there is nothing to lose and nothing to think about,
+// which is the whole point of the key.
+func (m Model) restartSelected(s *core.Session) (tea.Model, tea.Cmd) {
+	restart := func(mm *Model) tea.Cmd {
+		cols, rows := mm.previewDims()
+		return restartCmd(mm.cfg, s, mm.hookURL, cols, rows)
+	}
+	if !s.TmuxAlive {
+		return m, restart(&m)
+	}
+	return m.askConfirm(fmt.Sprintf("Restart the agent for %q? Whatever it is doing now stops.", s.Title),
+		restart)
 }
 
 // sessionAction handles keys that mean the same thing wherever you are.
@@ -374,6 +450,9 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		}
 		return m.askConfirm(prompt,
 			func(mm *Model) tea.Cmd { return teardownCmd(mm.cfg, s, ops.TeardownOptions{}) })
+
+	case "c":
+		return m.restartSelected(s)
 
 	case "D":
 		return m.askConfirm(fmt.Sprintf("Kill the agent for %q? (worktree kept)", s.Title),
