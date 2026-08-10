@@ -141,6 +141,20 @@ type AgentProfile struct {
 	// the shell-quoted staged image path. Profiles without one receive image
 	// paths in the opening prompt instead.
 	ImageArgument string `json:"image_argument,omitempty"`
+	// ResumeCommand is the shell line that starts this agent back on the
+	// conversation it already had in a worktree. It is what a restart runs; see
+	// RestartCommand. Empty means this agent has no resume form dma knows, and a
+	// restart falls back to Command -- a working agent with no memory of the task.
+	//
+	// It must identify the conversation from the working directory alone, because
+	// that is the only thing distinguishing one session from another: dma gives
+	// each its own worktree and starts the agent in it, so "the most recent
+	// conversation in this directory" names exactly one session's history and
+	// cannot reach across to another card's. A resume form that took the most
+	// recent conversation anywhere -- which is what both built-in agents do if you
+	// let them look past the working directory -- would hand every session on a
+	// restarted board the same one.
+	ResumeCommand string `json:"resume_command,omitempty"`
 	// Hooks is true when the agent reports its own state through dma's hook
 	// listener, as Claude Code does. Agents without that channel fall back to
 	// liveness plus a pane-change heuristic, which is coarser but never blocks
@@ -180,6 +194,30 @@ func (p AgentProfile) LaunchCommand(prompt string, images ...string) string {
 		return strings.ReplaceAll(command, promptPlaceholder, quoted)
 	}
 	return command + " " + quoted
+}
+
+// RestartCommand is the shell line that brings this agent back up in a worktree
+// it has already worked in, which is what a session whose terminal died needs.
+//
+// It is the resume line with the plain launch line behind it, joined by "||" so
+// the shell runs the second only if the first fails. That fallback is for the
+// worktree with nothing to resume: a session whose agent never reached a first
+// turn -- started and killed, or interrupted while its dependencies were still
+// arriving -- has no conversation on disk, and both built-in agents treat being
+// asked for one as an error. Left there, the restart would leave a live tmux
+// session sitting at a shell prompt, which the board reads as running while no
+// agent is in it. That is worse than the plain relaunch the fallback gets.
+//
+// A profile with no resume line restarts as a plain launch, and callers tell the
+// user which of the two they got: an agent that came back without its history
+// looks identical on the board and is not the same thing at all.
+func (p AgentProfile) RestartCommand() string {
+	launch := p.LaunchCommand("")
+	resume := strings.TrimSpace(p.ResumeCommand)
+	if resume == "" {
+		return launch
+	}
+	return resume + " || " + launch
 }
 
 const (
@@ -262,10 +300,29 @@ const (
 // The flag rides in Command because that string is typed into the pane as a
 // shell line, so profiles carry their own arguments and dma needs no schema for
 // per-agent flags.
+//
+// The resume lines are both scoped to the working directory, which is what makes
+// restarting a board of sessions at once correct rather than a shuffle -- see
+// ResumeCommand. "claude --continue" says so in as many words: it continues the
+// most recent conversation in the current directory. Codex filters its session
+// list by the directory it is run in unless asked for --all, so "resume --last"
+// is the most recent session in this worktree and not the most recent one on the
+// machine.
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
-		{Name: "claude", Command: "claude --permission-mode auto", Hooks: true},
-		{Name: "codex", Command: "codex", ImageArgument: "--image {path}", Hooks: false},
+		{
+			Name:          "claude",
+			Command:       "claude --permission-mode auto",
+			ResumeCommand: "claude --permission-mode auto --continue",
+			Hooks:         true,
+		},
+		{
+			Name:          "codex",
+			Command:       "codex",
+			ImageArgument: "--image {path}",
+			ResumeCommand: "codex resume --last",
+			Hooks:         false,
+		},
 	}
 }
 
@@ -335,6 +392,7 @@ func (c *Config) normalize() {
 	}
 	c.adoptDefaultFlags()
 	c.adoptDefaultImageArguments()
+	c.adoptDefaultResumeCommands()
 	if c.DefaultProfile == "" {
 		c.DefaultProfile = c.AgentProfiles[0].Name
 	}
@@ -363,6 +421,31 @@ func (c *Config) adoptDefaultImageArguments() {
 		p := &c.AgentProfiles[i]
 		if p.Name == "codex" && p.Command == "codex" && p.ImageArgument == "" {
 			p.ImageArgument = "--image {path}"
+		}
+	}
+}
+
+// adoptDefaultResumeCommands gives built-in profiles the resume line they were
+// written without, so a config that predates restarting does not restart its
+// agents with no memory of what they were doing.
+//
+// It fires only for a profile still on the current default command, the rule
+// adoptDefaultFlags follows and for the same reason: a resume line is that
+// command plus a flag, so pairing a generated one with a command the user
+// replaced -- a wrapper script, a different binary, an agent that only shares the
+// name -- would restart something other than what starts a session. Those
+// profiles restart as a plain launch until their owner writes a resume_command,
+// which the board says out loud each time.
+func (c *Config) adoptDefaultResumeCommands() {
+	for _, p := range DefaultProfiles() {
+		if p.ResumeCommand == "" {
+			continue
+		}
+		for i := range c.AgentProfiles {
+			mine := &c.AgentProfiles[i]
+			if mine.Name == p.Name && mine.ResumeCommand == "" && mine.Command == p.Command {
+				mine.ResumeCommand = p.ResumeCommand
+			}
 		}
 	}
 }

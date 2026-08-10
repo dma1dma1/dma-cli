@@ -145,6 +145,10 @@ type Model struct {
 	noticeErr bool
 	noticeAt  time.Time
 
+	// restartHinted marks that this launch has already offered to restart the
+	// sessions nothing is running; see hintRestart.
+	restartHinted bool
+
 	// lastPreviewCols/Rows are the size agents were last told to render at, so a
 	// resize is only issued when it actually changes.
 	lastPreviewCols int
@@ -474,6 +478,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.save()
 		}
 		m.rebuild()
+		// Hoisted out of the return: it writes the notice line, and Go does not
+		// order that against copying m into the return value.
+		m.hintRestart()
 		return m, nil
 
 	case prSyncMsg:
@@ -525,6 +532,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case teardownMsg:
 		return m.handleTeardown(msg)
+
+	case restartMsg:
+		return m.handleRestart(msg)
 
 	case killedMsg:
 		if msg.err != nil {
@@ -1263,6 +1273,100 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 	// The card is gone but its files are not: teardown renamed them into the
 	// trash, and this is where the unlink gets paid for.
 	return m, sweepTrashCmd(m.cfg)
+}
+
+// hintRestart says once per launch that the board is holding sessions nothing is
+// running, and which key answers that.
+//
+// It exists for the launch after a reboot, which is the one time this is the first
+// thing about the board worth knowing: every card is a session whose agent went
+// away with the machine, and the cards themselves look much as they did before.
+// The per-card "not running" marker and the panel say the same thing a card at a
+// time; this is the only place the board says how many and offers the bulk key.
+//
+// It yields to a notice already on screen rather than overwriting one, the rule
+// the launch notices follow among themselves: the line is one row, and a repo
+// that was just registered is news the user has not read yet. The next poll
+// offers this again.
+func (m *Model) hintRestart() {
+	if m.restartHinted || m.noticeActive() {
+		return
+	}
+	// The board as it is on screen, because that is what the key it offers acts on.
+	dead := len(m.stoppedSessions())
+	if dead == 0 {
+		return
+	}
+	m.restartHinted = true
+	line := "1 session is not running — press c to restart it"
+	if dead > 1 {
+		line = fmt.Sprintf(
+			"%d sessions are not running — press C to restart them, or c for the selected one", dead)
+	}
+	m.notice, m.noticeErr, m.noticeAt = line, false, now()
+}
+
+// handleRestart puts a session that has just been given a terminal back on the
+// board as running.
+//
+// The state it lands in is idle, not working. Nothing was asked of the agent: it
+// is coming up on its own history with the floor open, and whether it then does
+// anything is its to report -- a hook within seconds for Claude, the prober's next
+// look for an agent without one. Claiming working here would put the card in the
+// active column on the strength of dma having typed a command.
+func (m Model) handleRestart(msg restartMsg) (tea.Model, tea.Cmd) {
+	s := core.FindByID(m.sessions, msg.id)
+	if msg.err != nil {
+		// A bulk restart's failures are reported per session and never asked about:
+		// several are in flight behind this one, and a question would hide the next.
+		if msg.bulk {
+			return m, errText(fmt.Sprintf("%s: %v", nameOf(s), msg.err))
+		}
+		return m, errStatus(msg.err)
+	}
+	if s == nil {
+		return m, nil
+	}
+
+	s.TmuxSession = msg.tmuxSession
+	s.TmuxAlive = true
+	// An agent that came back without its history is the one thing about a restart
+	// worth saying out loud, so the detail records which kind this was.
+	detail := "restarted"
+	if !msg.resumed {
+		detail = "restarted with no history"
+	}
+	s.SetAgentState(core.AgentIdle, detail)
+	// A state read off disk is a claim about a board that is no longer running, and
+	// this session's agent is a new process that has reported nothing yet. Dropping
+	// the mark is what lets the prober take another look; see stranded.
+	delete(m.hookSeen, s.ID)
+	m.save()
+
+	// The agent is about to draw its whole UI into a terminal dma just sized, and
+	// none of that repaint is work it chose to do.
+	m.touchedAt[s.ID] = now()
+	cols, rows := m.previewDims()
+
+	var note tea.Cmd
+	switch {
+	case len(msg.warnings) > 0:
+		note = errText(strings.Join(msg.warnings, "; "))
+	case !msg.resumed:
+		note = errText(fmt.Sprintf("%s: restarted without its history — %s has no resume_command",
+			s.Title, s.AgentProfile))
+	}
+
+	var preview tea.Cmd
+	if m.selectedID == s.ID {
+		// The panel is holding the last frame of an agent that is gone. Only the
+		// selected session is ever captured, so this is the one that needs asking for.
+		m.preview, m.previewCursor = "", tmuxx.Cursor{}
+		m.previewScroll = 0
+		preview = previewCmd(s)
+	}
+	return m, tea.Batch(note, preview, observeCmd(m.sessions),
+		resizeSessionsCmd([]*core.Session{s}, cols, rows))
 }
 
 func nameOf(s *core.Session) string {

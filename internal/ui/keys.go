@@ -99,6 +99,9 @@ func (m Model) hints() []hint {
 		// The pair again: X is the merged column's bulk form of x, and the two
 		// only make sense read together.
 		{"x/X", "prune one/merged"},
+		// And again: C is c over every session nothing is running, which is the
+		// form a machine restart needs.
+		{"c/C", "restart one/all stopped"},
 		// One entry for the three selectors, in chip order: three separate hints
 		// would cost more of the bar than the pair of PR keys already does.
 		{"A/r/p", "agent/repo/project"},
@@ -125,6 +128,8 @@ var helpText = [][3]string{
 	{"", "m", "merge the PR; with pending CI, enable auto-merge; queue it where the base branch requires a merge queue"},
 	{"", "x", "prune the worktree and branch, closing the PR if it is open"},
 	{"", "X", "prune every merged session on the board"},
+	{"", "c", "restart the agent where it left off, in the worktree it already has"},
+	{"", "C", "restart every stopped session on the board — what a reboot needs"},
 	{"", "D", "kill the agent, keep the worktree"},
 	{"", "R", "refresh PR and session state now"},
 	{"", "A", "pick the agent new sessions start with"},

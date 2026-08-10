@@ -251,6 +251,136 @@ func TestLoadConfigCreatesDefaultWithAutoMode(t *testing.T) {
 	}
 }
 
+// Every built-in profile has to know how to come back on the conversation it was
+// having, or a restart after a reboot hands the user an agent that has forgotten
+// the task.
+func TestDefaultProfilesKnowHowToResume(t *testing.T) {
+	for _, p := range DefaultProfiles() {
+		if p.ResumeCommand == "" {
+			t.Errorf("built-in profile %q has no resume command", p.Name)
+		}
+	}
+}
+
+// The resume lines must identify the conversation by the directory they are run
+// in, which is the only thing that tells two of this board's sessions apart. A
+// form that reached past it would give every session on a restarted board the
+// same conversation.
+func TestDefaultResumeCommandsAreScopedToTheWorktree(t *testing.T) {
+	claude, _ := DefaultConfig().Profile("claude")
+	if claude.ResumeCommand != "claude --permission-mode auto --continue" {
+		t.Errorf("claude resume = %q, want --continue, which is scoped to the current directory",
+			claude.ResumeCommand)
+	}
+	// Codex filters its session list by the directory it runs in unless it is asked
+	// for --all, so that flag must never appear here.
+	codex, _ := DefaultConfig().Profile("codex")
+	if codex.ResumeCommand != "codex resume --last" {
+		t.Errorf("codex resume = %q, want the most recent session in this directory",
+			codex.ResumeCommand)
+	}
+	if strings.Contains(codex.ResumeCommand, "--all") {
+		t.Error("codex resume looks past the working directory; every restarted session would resume the same conversation")
+	}
+}
+
+// A resume that finds nothing must not leave a live terminal sitting at a shell
+// prompt: the board reads that as an agent running.
+func TestRestartCommandFallsBackToAPlainLaunch(t *testing.T) {
+	p, _ := DefaultConfig().Profile("claude")
+	got := p.RestartCommand()
+	if want := "claude --permission-mode auto --continue || claude --permission-mode auto"; got != want {
+		t.Errorf("restart command = %q, want %q", got, want)
+	}
+}
+
+// A profile with no resume line still restarts -- as a fresh agent, which callers
+// are expected to say out loud.
+func TestRestartCommandWithoutAResumeLineIsThePlainLaunch(t *testing.T) {
+	p := AgentProfile{Name: "custom", Command: "my-agent --flag"}
+	if got := p.RestartCommand(); got != "my-agent --flag" {
+		t.Errorf("restart command = %q, want the plain launch", got)
+	}
+}
+
+// The prompt placeholder belongs to a launch, and a restart carries no prompt: a
+// {prompt} left in the line would reach the shell as a literal word.
+func TestRestartCommandDropsThePromptPlaceholder(t *testing.T) {
+	p := AgentProfile{Name: "custom", Command: "my-agent {prompt} --tail"}
+	if got := p.RestartCommand(); strings.Contains(got, "{prompt}") {
+		t.Errorf("restart command = %q, want the placeholder resolved", got)
+	}
+}
+
+// A config written before restarting existed has a claude profile already, so
+// the profile backfill skips it. Without this the resume line would reach new
+// installs and nobody else.
+func TestNormalizeBackfillsResumeCommands(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{
+		{Name: "claude", Command: "claude --permission-mode auto", Hooks: true},
+		{Name: "codex", Command: "codex", ImageArgument: "--image {path}"},
+	}}
+	c.normalize()
+
+	for _, want := range []struct{ name, resume string }{
+		{"claude", "claude --permission-mode auto --continue"},
+		{"codex", "codex resume --last"},
+	} {
+		got, _ := c.Profile(want.name)
+		if got.ResumeCommand != want.resume {
+			t.Errorf("%s resume = %q, want %q", want.name, got.ResumeCommand, want.resume)
+		}
+	}
+}
+
+// A resume line is the command plus a flag, so a command the user replaced must
+// not be handed a generated one: it would restart something other than what
+// starts a session.
+func TestNormalizeLeavesCustomizedCommandsWithoutAResumeLine(t *testing.T) {
+	for _, cmd := range []string{
+		"claude --model opus",
+		"/usr/local/bin/my-claude-wrapper",
+	} {
+		c := &Config{AgentProfiles: []AgentProfile{{Name: "claude", Command: cmd, Hooks: true}}}
+		c.normalize()
+		got, _ := c.Profile("claude")
+		if got.ResumeCommand != "" {
+			t.Errorf("command %q was given resume line %q", cmd, got.ResumeCommand)
+		}
+	}
+}
+
+// A resume line the user wrote is theirs, whatever the command beside it.
+func TestNormalizeKeepsAWrittenResumeCommand(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{
+		Name:          "claude",
+		Command:       "claude --permission-mode auto",
+		ResumeCommand: "claude --resume-my-way",
+	}}}
+	c.normalize()
+
+	got, _ := c.Profile("claude")
+	if got.ResumeCommand != "claude --resume-my-way" {
+		t.Errorf("resume command = %q, want the user's untouched", got.ResumeCommand)
+	}
+}
+
+// The upgrade of a bare command and the resume backfill have to compose: a
+// profile still on "claude" gets both, in that order, or it lands on the current
+// command with no way to resume it.
+func TestNormalizeUpgradesBareClaudeAndGivesItAResumeLine(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{Name: "claude", Command: "claude", Hooks: true}}}
+	c.normalize()
+
+	got, _ := c.Profile("claude")
+	if got.Command != "claude --permission-mode auto" {
+		t.Fatalf("claude command = %q, want auto mode", got.Command)
+	}
+	if got.ResumeCommand != "claude --permission-mode auto --continue" {
+		t.Errorf("claude resume = %q, want the current default", got.ResumeCommand)
+	}
+}
+
 // The prompt goes on the command line as one shell argument. Typing it into the
 // agent's UI instead loses characters: codex reads its composer through a vim
 // keymap, so "how are you" arrives as cursor motions.
