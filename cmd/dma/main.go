@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	zone "github.com/lrstanley/bubblezone/v2"
 
+	"github.com/dma1dma1/dma-cli/internal/convo"
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/ghx"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
@@ -31,6 +32,9 @@ const usage = `dma — a kanban board for parallel coding agent sessions
 
 usage:
   dma                       open the board (registers the repo you are in)
+  dma attach <agent> [id]   put an agent conversation you already have onto the
+                            board, in a worktree of its own; without an id,
+                            lists that agent's recent conversations
   dma repo add <path>       register a repository
   dma repo list             list registered repositories
   dma repo remove <id>      unregister a repository
@@ -57,6 +61,8 @@ func run(args []string) error {
 		return runBoard()
 	}
 	switch args[0] {
+	case "attach":
+		return runAttach(args[1:])
 	case "repo":
 		return runRepo(args[1:])
 	case "ls":
@@ -224,6 +230,220 @@ func refreshRemotes(cfg *core.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	ops.RefreshRemotes(ctx, cfg)
+}
+
+// --- attach ---
+
+// attachUsage is spelled out rather than left to flag's own dump, because the
+// argument that matters is positional and the flags are all overrides for
+// something attach works out on its own.
+const attachUsage = `usage: dma attach <agent> [session-id] [flags]
+
+Puts a conversation you are already having with an agent onto the board: dma
+cuts a worktree for it, carries over whatever work is uncommitted where the
+conversation has been running, and reopens the same conversation there.
+
+  dma attach claude                     list recent claude conversations
+  dma attach claude <session-id>        attach one of them
+  dma attach codex <session-id>         the same, for codex
+
+flags:
+  -repo <id>       repo to cut the worktree in (default: the repo the
+                   conversation was running in, registering it if it is new)
+  -project <name>  file the session under a project
+  -title <text>    name the card (default: the conversation's opening prompt)
+  -clean           start from the base branch instead of carrying over the
+                   uncommitted work where the conversation has been running
+
+The directory the conversation came from is never modified.`
+
+// attachCols and attachRows size the agent's terminal until a board is opened
+// and lays it out for real. A detached tmux session is 80x24 otherwise, which is
+// narrow enough that an agent draws its whole UI into a strip; this is a
+// comfortable full-screen shape to be resumed into in the meantime.
+const (
+	attachCols = 120
+	attachRows = 40
+)
+
+func runAttach(args []string) error {
+	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, attachUsage) }
+	repoID := fs.String("repo", "", "repo to cut the worktree in")
+	project := fs.String("project", "", "project to file the session under")
+	title := fs.String("title", "", "name for the card")
+	clean := fs.Bool("clean", false, "start from the base branch, carrying nothing over")
+	positional, err := parseAnywhere(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 1 {
+		return fmt.Errorf("%s", attachUsage)
+	}
+	agent := positional[0]
+
+	// Listing needs neither tmux nor a repo, so the requirement is checked on
+	// the path that actually starts something.
+	if len(positional) < 2 {
+		return runAttachList(agent)
+	}
+	if !tmuxx.Available() {
+		return fmt.Errorf("tmux is required but not on PATH")
+	}
+
+	cfg, err := core.LoadConfig()
+	if err != nil {
+		return err
+	}
+	sessions, err := core.LoadSessions()
+	if err != nil {
+		return err
+	}
+
+	// Generous, and for the same reason Create's budget is: the worktree this
+	// makes gets the repo's bootstrap run into it, which on a large repo is
+	// minutes of copying dependency trees.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	res, err := ops.Attach(ctx, cfg, ops.AttachRequest{
+		Profile:   agent,
+		SessionID: positional[1],
+		RepoID:    *repoID,
+		Group:     *project,
+		Title:     *title,
+		Clean:     *clean,
+		Existing:  sessions,
+		HookURL:   hookURL(cfg),
+		Cols:      attachCols,
+		Rows:      attachRows,
+	})
+	if err != nil {
+		return err
+	}
+
+	// The session is appended to whatever is on disk now rather than to the list
+	// read at the top, so a board that started a session while the bootstrap was
+	// running does not lose it. A board already running picks this up on its next
+	// poll; see the board's own merge of externally added sessions.
+	current, err := core.LoadSessions()
+	if err != nil {
+		current = sessions
+	}
+	s := res.Session
+	if err := core.SaveSessions(append(current, s)); err != nil {
+		// The agent is already up in a worktree of its own by this point, so a
+		// failed write is a session that exists and is not on the board rather
+		// than a session that did not happen. Naming both halves is what makes
+		// it recoverable -- otherwise the only trace is a tmux session the user
+		// has no reason to look for.
+		return fmt.Errorf("save state: %w\n"+
+			"the agent is running in %s (tmux session %s), but is not on the board",
+			err, s.WorktreePath, s.TmuxSession)
+	}
+
+	for _, w := range res.Warnings {
+		fmt.Fprintln(os.Stderr, "warning: "+w)
+	}
+	fmt.Printf("attached %q\n", s.Title)
+	fmt.Printf("  agent       %s (%s)\n", s.AgentProfile, s.AgentSessionID)
+	fmt.Printf("  repo        %s\n", s.RepoID)
+	fmt.Printf("  worktree    %s\n", s.WorktreePath)
+	fmt.Printf("  tmux        %s\n", s.TmuxSession)
+	if res.Conversation.Cwd != "" {
+		fmt.Printf("  came from   %s\n", shortenHome(res.Conversation.Cwd))
+	}
+	fmt.Printf("  carried     %s\n", res.Carried)
+	fmt.Println("\nrun dma to see it on the board.")
+	return nil
+}
+
+func runAttachList(agent string) error {
+	conversations, err := convo.List(agent, 15)
+	if err != nil {
+		return err
+	}
+	if len(conversations) == 0 {
+		fmt.Printf("no %s conversations recorded\n", agent)
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SESSION ID\tAGO\tWHERE\tTITLE")
+	for _, c := range conversations {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.ID, core.FormatDuration(time.Since(c.Updated)),
+			shortenHome(c.Cwd), truncateTitle(c.Title))
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("\nattach one with: dma attach %s <session-id>\n", agent)
+	return nil
+}
+
+// hookURL is where an attached session should report its state.
+//
+// It is the configured port rather than a listener this process owns, because
+// this process is about to exit: the session outlives it, and the board that
+// picks the session up is the thing that will be listening. A board that had to
+// fall back to an ephemeral port reinstalls the right address on its next
+// restart of the session, which is the same recovery every other session gets.
+func hookURL(cfg *core.Config) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", cfg.HookPort, hooks.Path)
+}
+
+// parseAnywhere parses flags that appear on either side of the positional
+// arguments, returning the positionals in order.
+//
+// Go's flag package stops at the first argument that is not a flag, so
+// `dma attach claude <id> -clean` would otherwise parse no flags at all and
+// carry the work over regardless -- silently doing the opposite of what was
+// asked. The agent and the id sit in the middle of that line naturally enough
+// that requiring the flags in front of them is not a rule worth having.
+func parseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+// shortenHome renders a path with the home directory as ~, so the list stays
+// narrow enough to read on one line.
+func shortenHome(p string) string {
+	if p == "" {
+		return "-"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(p, home) {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest := strings.TrimPrefix(p, home); strings.HasPrefix(rest, string(filepath.Separator)) {
+		return "~" + rest
+	}
+	return p
+}
+
+// truncateTitle keeps one opening prompt to a single readable cell. Prompts are
+// paragraphs as often as they are sentences.
+func truncateTitle(s string) string {
+	const limit = 60
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+	if len([]rune(s)) <= limit {
+		return s
+	}
+	return string([]rune(s)[:limit-1]) + "…"
 }
 
 // --- repo ---

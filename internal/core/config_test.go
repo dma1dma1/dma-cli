@@ -561,3 +561,118 @@ func TestProjectRepoIgnoresUnregisteredRepos(t *testing.T) {
 		t.Errorf("project repo = %q, want none for an unregistered repo", repo)
 	}
 }
+
+// --- resuming one named conversation ---
+
+func TestDefaultProfilesKnowHowToResumeByID(t *testing.T) {
+	c := DefaultConfig()
+	for _, want := range []struct{ name, line string }{
+		{"claude", "claude --permission-mode auto --resume 'abc-123'"},
+		{"codex", "codex resume 'abc-123'"},
+	} {
+		p, ok := c.Profile(want.name)
+		if !ok {
+			t.Fatalf("no %s profile", want.name)
+		}
+		if got := p.ResumeIDLine("abc-123"); got != want.line {
+			t.Errorf("%s resume-by-id = %q, want %q", want.name, got, want.line)
+		}
+	}
+}
+
+// A profile whose command has no placeholder gets the id appended, so a custom
+// agent needs no template syntax to be attachable.
+func TestResumeIDLineAppendsWhenThereIsNoPlaceholder(t *testing.T) {
+	p := AgentProfile{Name: "custom", ResumeIDCommand: "my-agent --resume"}
+	if got := p.ResumeIDLine("abc"); got != "my-agent --resume 'abc'" {
+		t.Errorf("resume-by-id = %q", got)
+	}
+}
+
+// The line is typed into a pane as a shell command, so an id is quoted for the
+// same reason a prompt is.
+func TestResumeIDLineQuotesTheID(t *testing.T) {
+	p := AgentProfile{Name: "custom", ResumeIDCommand: "my-agent --resume {session}"}
+	got := p.ResumeIDLine("abc; rm -rf /")
+	if want := `my-agent --resume 'abc; rm -rf /'`; got != want {
+		t.Errorf("resume-by-id = %q, want %q", got, want)
+	}
+}
+
+func TestResumeIDLineIsEmptyWithoutBothHalves(t *testing.T) {
+	withCommand := AgentProfile{Name: "custom", ResumeIDCommand: "my-agent {session}"}
+	if got := withCommand.ResumeIDLine(""); got != "" {
+		t.Errorf("resume-by-id with no id = %q, want none", got)
+	}
+	withoutCommand := AgentProfile{Name: "custom", Command: "my-agent"}
+	if got := withoutCommand.ResumeIDLine("abc"); got != "" {
+		t.Errorf("resume-by-id with no command = %q, want none", got)
+	}
+}
+
+// An attached session's transcript lives where the conversation began, not in
+// the worktree dma made for it, so restarting one has to name the id rather
+// than ask for "the most recent conversation here".
+func TestRestartCommandForPrefersTheConversationID(t *testing.T) {
+	p, _ := DefaultConfig().Profile("claude")
+	got := p.RestartCommandFor("abc-123")
+	want := "claude --permission-mode auto --resume 'abc-123' || claude --permission-mode auto"
+	if got != want {
+		t.Errorf("restart = %q, want %q", got, want)
+	}
+}
+
+// A session dma started itself has no conversation id, and restarts by
+// directory exactly as before.
+func TestRestartCommandForWithoutAnIDIsUnchanged(t *testing.T) {
+	p, _ := DefaultConfig().Profile("claude")
+	if got, want := p.RestartCommandFor(""), p.RestartCommand(); got != want {
+		t.Errorf("restart = %q, want %q", got, want)
+	}
+}
+
+// An existing config has to gain the by-id line without being edited, or
+// attaching would work on new installs and nowhere else.
+func TestNormalizeBackfillsResumeIDCommands(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{
+		{Name: "claude", Command: "claude --permission-mode auto", ResumeCommand: "claude --permission-mode auto --continue"},
+		{Name: "codex", Command: "codex", ImageArgument: "--image {path}"},
+	}}
+	c.normalize()
+
+	for _, want := range []struct{ name, line string }{
+		{"claude", "claude --permission-mode auto --resume {session}"},
+		{"codex", "codex resume {session}"},
+	} {
+		got, _ := c.Profile(want.name)
+		if got.ResumeIDCommand != want.line {
+			t.Errorf("%s resume_id_command = %q, want %q", want.name, got.ResumeIDCommand, want.line)
+		}
+	}
+}
+
+// The same rule the by-directory resume line follows: a command the user
+// replaced is not handed a generated flag for a binary dma knows nothing about.
+func TestNormalizeLeavesCustomizedCommandsWithoutAResumeIDLine(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{
+		{Name: "claude", Command: "/usr/local/bin/my-claude-wrapper"},
+	}}
+	c.normalize()
+	got, _ := c.Profile("claude")
+	if got.ResumeIDCommand != "" {
+		t.Errorf("a replaced command was given resume_id_command %q", got.ResumeIDCommand)
+	}
+}
+
+func TestNormalizeKeepsAWrittenResumeIDCommand(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{
+		Name:            "claude",
+		Command:         "claude --permission-mode auto",
+		ResumeIDCommand: "claude --resume-my-way {session}",
+	}}}
+	c.normalize()
+	got, _ := c.Profile("claude")
+	if got.ResumeIDCommand != "claude --resume-my-way {session}" {
+		t.Errorf("resume_id_command = %q, want the one that was written", got.ResumeIDCommand)
+	}
+}

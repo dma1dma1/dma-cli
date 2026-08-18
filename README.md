@@ -209,6 +209,60 @@ nothing else on screen moves. Select the card when you want to watch it.
 An empty panel is the exception: with no session to be pulled away from, the
 first card to arrive fills it.
 
+### Attaching a session you already started
+
+`dma attach` takes a conversation you are already having with an agent — one you
+started in an ordinary terminal, before you thought to put it on the board — and
+gives it a worktree and a card.
+
+```sh
+dma attach claude                   # list your recent claude conversations
+dma attach claude 033386ad-09ec-40e3-af51-348bc2b680ef
+dma attach codex 019ff3ca-7e37-7b61-9c5e-b2eb790ab560
+```
+
+The conversation is not copied or restarted. `dma` reopens the same one by id,
+so the agent comes back knowing everything it knew a moment ago. What changes is
+where it is standing: it moves from wherever you were working into a worktree of
+its own, alongside every other session on the board.
+
+Because a conversation that has been running for a while has usually been
+editing files, the work in progress moves with it. The new worktree is cut from
+the commit your directory is sitting on, and that directory's uncommitted
+changes — modified files, new files, deletions — are replayed into it. Ignored
+paths such as `node_modules` are not copied; the usual worktree setup provides
+those. Pass `-clean` to skip all of this and start from the base branch instead.
+
+**The directory you were working in is never modified.** It keeps its files, its
+branch and its own copy of the work. Note the other side of that: after
+attaching, the work exists in two places, and edits in one do not reach the
+other. Carry on in the worktree, and treat the original as the copy you left
+behind.
+
+The repository is worked out from where the conversation was running, and
+registered if `dma` has not seen it before. Use `-repo <id>` to override that,
+which is also what to do when the conversation was not being held inside a
+repository at all.
+
+| Flag | Effect |
+|---|---|
+| `-repo <id>` | Cut the worktree in this repository instead of the inferred one |
+| `-project <name>` | File the session under a project |
+| `-title <text>` | Name the card yourself instead of using the opening prompt |
+| `-clean` | Start from the base branch, carrying nothing over |
+
+If the board is already open in another terminal, the attached session appears
+on it within one poll interval. Otherwise run `dma` and it will be there.
+
+Only agents `dma` knows how to reopen by id can be attached — Claude Code and
+Codex out of the box. A custom profile needs a `resume_id_command`; see
+[Agent permissions and profiles](#agent-permissions-and-profiles).
+
+Session ids come from the agent: `/status` in Claude Code, or the header line in
+Codex. `dma attach <agent>` with no id lists recent conversations with their
+ids, directories and opening prompts, which is usually the faster way to find
+one.
+
 ### Repository expectations
 
 The checkout must be a git repository. An `origin` remote is strongly
@@ -314,6 +368,7 @@ The built-in profiles are:
     "name": "claude",
     "command": "claude --permission-mode auto",
     "resume_command": "claude --permission-mode auto --continue",
+    "resume_id_command": "claude --permission-mode auto --resume {session}",
     "hooks": true
   },
   {
@@ -321,6 +376,7 @@ The built-in profiles are:
     "command": "codex",
     "image_argument": "--image {path}",
     "resume_command": "codex resume --last",
+    "resume_id_command": "codex resume {session}",
     "hooks": false
   }
 ]
@@ -358,12 +414,25 @@ the current directory, and `codex resume --last` picks the most recent session i
 it unless asked for `--all`. That is what makes restarting a whole board at once
 correct, since each session has a worktree of its own.
 
+`resume_id_command` names one conversation instead of a directory, with
+`{session}` replaced by its id. It is what [`dma attach`](#attaching-a-session-you-already-started)
+runs, and what `c` and `C` run for a session that was attached. The distinction
+matters because an attached conversation's transcript stays filed under the
+directory it began in, even after the agent is resumed elsewhere — so
+"the most recent conversation here" finds nothing in the worktree `dma` made for
+it, and only the id reaches across. A profile without a `resume_id_command`
+cannot be attached at all: falling back to a plain launch would put an agent with
+no memory of the task behind a card named after your conversation.
+
 You can add another agent by adding an entry to `agent_profiles`. The command
 runs inside the new worktree. The task is appended as a positional argument;
 use `{prompt}` in the command if it needs to appear somewhere else. Add a
 `resume_command` if the agent can continue a previous conversation; without one,
 a restart launches `command` instead and the board says the agent came back
-without its history.
+without its history. Add a `resume_id_command` too if it can reopen a
+conversation by id, which is what makes the agent attachable — though `dma` also
+has to know where that agent records its conversations, which today means Claude
+Code and Codex.
 
 For images attached to a new session, `image_argument` is repeated once per
 image and `{path}` is replaced with the shell-quoted path to its staged PNG.
@@ -447,6 +516,9 @@ Some more detail on what the two keys pick:
 - An agent whose profile has no `resume_command` restarts as a fresh agent with
   no memory of the task, and the board says so rather than letting the two look
   alike.
+- A session brought on with [`dma attach`](#attaching-a-session-you-already-started)
+  restarts by conversation id rather than by directory, because its transcript
+  is filed where the conversation began and not in the worktree `dma` gave it.
 
 Outside the board, `dma ls` names the sessions nothing is running in its `TMUX`
 column.
@@ -622,14 +694,16 @@ An example configuration, shown as valid JSON:
 ## Commands
 
 ```text
-dma                    Open the board and register the current repository
-dma repo add <path>    Register a repository explicitly
-dma repo list          List registered repositories
-dma repo remove <id>   Unregister a repository
-dma ls                 List sessions without opening the board
-dma hooks print        Print the Claude hook configuration
-dma doctor             Check runtime tools and GitHub authentication
-dma version            Print the commit this binary was built from
+dma                        Open the board and register the current repository
+dma attach <agent>         List that agent's recent conversations
+dma attach <agent> <id>    Put one of them on the board, in a new worktree
+dma repo add <path>        Register a repository explicitly
+dma repo list              List registered repositories
+dma repo remove <id>       Unregister a repository
+dma ls                     List sessions without opening the board
+dma hooks print            Print the Claude hook configuration
+dma doctor                 Check runtime tools and GitHub authentication
+dma version                Print the commit this binary was built from
 ```
 
 Unregistering a repository never modifies the repository itself. A repository

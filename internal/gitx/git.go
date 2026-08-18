@@ -46,16 +46,25 @@ func firstLine(s string) string {
 	return s
 }
 
-// Run executes git in dir and returns trimmed stdout.
-func Run(ctx context.Context, dir string, args ...string) (string, error) {
-	full := append([]string{"-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+// gitCommand builds a git invocation with the environment every call in this
+// package needs. Callers pass the whole argument list, "-C <dir>" included, so
+// the one command that has to write to git's stdin can be built the same way as
+// the ones that only read from it.
+func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	// Keep git non-interactive: a credential prompt inside a TUI would hang
 	// the whole board with no visible cause.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	return cmd
+}
+
+// Run executes git in dir and returns trimmed stdout.
+func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	full := append([]string{"-C", dir}, args...)
+	cmd := gitCommand(ctx, full...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return stdout.String(), &Error{Args: full, Stderr: stderr.String(), Err: err}
 	}
@@ -65,11 +74,10 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 // RunRaw is Run without trimming, for diff output where trailing bytes matter.
 func RunRaw(ctx context.Context, dir string, args ...string) (string, error) {
 	full := append([]string{"-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd := gitCommand(ctx, full...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if err := cmd.Run(); err != nil {
 		return stdout.String(), &Error{Args: full, Stderr: stderr.String(), Err: err}
 	}

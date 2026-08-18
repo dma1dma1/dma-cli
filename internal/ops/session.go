@@ -516,7 +516,7 @@ func Restart(ctx context.Context, cfg *core.Config, s *core.Session, req Restart
 	// SendLiteral for the same reason Create uses it: the line carries whatever the
 	// profile's command is, and only the literal path keeps tmux from reading part
 	// of it as a command of its own.
-	if err := tmuxx.SendLiteral(ctx, name, prof.RestartCommand()); err != nil {
+	if err := tmuxx.SendLiteral(ctx, name, prof.RestartCommandFor(s.AgentSessionID)); err != nil {
 		// The terminal is ours and was made a moment ago, so taking it back leaves
 		// the session exactly as it was found -- not running, and restartable again.
 		// The worktree is never touched here: unlike a failed create, there is
@@ -533,8 +533,10 @@ func Restart(ctx context.Context, cfg *core.Config, s *core.Session, req Restart
 
 	return &RestartResult{
 		TmuxSession: name,
-		Resumed:     strings.TrimSpace(prof.ResumeCommand) != "",
-		Warnings:    warnings,
+		// An attached session resumes by id, which is a form of resume the
+		// profile can have without having the by-directory one.
+		Resumed:  prof.ResumeIDLine(s.AgentSessionID) != "" || strings.TrimSpace(prof.ResumeCommand) != "",
+		Warnings: warnings,
 	}, nil
 }
 
