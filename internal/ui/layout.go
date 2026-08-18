@@ -108,12 +108,17 @@ func (m Model) moveV(dir int) *core.Session {
 }
 
 // flatOrder is the board read left to right, top to bottom, for stepping
-// through every session regardless of column.
+// through established sessions in review. A preparing card has no worktree to
+// review yet, so [ and ] skip it while it remains visible on the board.
 func (m Model) flatOrder() []*core.Session {
 	var flat []*core.Session
 	cols := m.columns()
 	for c := range cols {
-		flat = append(flat, cols[c]...)
+		for _, s := range cols[c] {
+			if !s.Starting {
+				flat = append(flat, s)
+			}
+		}
 	}
 	return flat
 }

@@ -161,6 +161,9 @@ func (s Styles) columnAccent(l core.Lifecycle) color.Color {
 // badgeText is the plain badge: state plus time in state. "needs you" alone is
 // not actionable; "needs you 8m" is.
 func (s Styles) badgeText(sess *core.Session) string {
+	if sess.Starting {
+		return "◌ preparing " + core.FormatDuration(sess.TimeInState())
+	}
 	return sess.AgentState.Badge() + " " + core.FormatDuration(sess.TimeInState())
 }
 

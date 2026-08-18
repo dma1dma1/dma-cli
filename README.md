@@ -203,11 +203,13 @@ Sessions start in the background because a start is not instant: the fetch and
 the worktree take seconds, so moving the panel to the new session would move it
 whenever the start finishes — usually once you have gone back to reading another
 agent. Lining up work therefore costs you nothing of the session in front of you.
-The card appears in its column, and the notice line names what started, since
+The card appears immediately as `preparing`, while dma fetches the base branch,
+creates the worktree, and prepares its dependencies. It changes to the agent's
+live state when the terminal is ready; the notice line names what started since
 nothing else on screen moves. Select the card when you want to watch it.
 
 An empty panel is the exception: with no session to be pulled away from, the
-first card to arrive fills it.
+pending card fills it immediately and explains what it is waiting for.
 
 ### Attaching a session you already started
 

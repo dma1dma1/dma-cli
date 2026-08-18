@@ -26,11 +26,11 @@ func TestTheWholeTaskIsWhatGetsSummarized(t *testing.T) {
 	s := sess("a", "", core.LifecycleActive, core.AgentWorking, "r")
 	s.Title = "have a look at this please"
 
-	if got := summaryInput(createdMsg{task: task}, s); got != task {
+	if got := summaryInput(task, s); got != task {
 		t.Errorf("summarizing %q, want the whole task", got)
 	}
 	// Anything that did not carry the task still has the title to work from.
-	if got := summaryInput(createdMsg{}, s); got != s.Title {
+	if got := summaryInput("", s); got != s.Title {
 		t.Errorf("summarizing %q, want the title as a fallback", got)
 	}
 }

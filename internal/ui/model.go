@@ -222,6 +222,19 @@ func (m Model) selected() *core.Session {
 	return core.FindByID(m.sessions, m.selectedID)
 }
 
+// establishedSessions excludes cards whose Create operation is still in
+// flight. Pending cards belong in the layout, but they have no worktree or tmux
+// target yet and must never be handed to git, probes, persistence, or resize.
+func (m Model) establishedSessions() []*core.Session {
+	out := make([]*core.Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if !s.Starting {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // selectSession aims the board's cursor and the panel at one session.
 //
 // The preview goes with it: it is the previous session's output, and left in
@@ -261,7 +274,7 @@ func (m *Model) dropSelectionIfHidden() {
 }
 
 func (m *Model) save() {
-	if err := core.SaveSessions(m.sessions); err != nil {
+	if err := core.SaveSessions(m.establishedSessions()); err != nil {
 		m.notice, m.noticeErr, m.noticeAt = "save state: "+err.Error(), true, time.Now()
 	}
 }
@@ -337,14 +350,15 @@ func (m Model) diffPaneHeight() int {
 }
 
 func (m Model) Init() tea.Cmd {
+	sessions := m.establishedSessions()
 	return tea.Batch(
 		tickCmd(),
 		pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
 		previewTickCmd(),
 		probeTickCmd(),
 		waitForHook(m.hookEvents),
-		observeCmd(m.sessions),
-		pollPRsCmd(m.cfg, m.sessions),
+		observeCmd(sessions),
+		pollPRsCmd(m.cfg, sessions),
 		// Whatever the last run left in the trash: a sweep the quit cut short, or
 		// one that never ran because the process went away with the prune.
 		sweepTrashCmd(m.cfg),
@@ -417,17 +431,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(echoTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
 
 	case probeTickMsg:
-		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt, m.hookSeen))
+		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.establishedSessions(), m.touchedAt, m.hookSeen))
 
 	case pollTickMsg:
 		// Hoisted out of the batch: refreshDiff drops the rendered-diff cache, and
 		// that has to happen to the model being returned rather than to a copy
 		// made while the arguments were being evaluated.
 		diff := m.refreshDiff()
+		sessions := m.establishedSessions()
 		return m, tea.Batch(
 			pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
-			pollPRsCmd(m.cfg, m.sessions),
-			observeCmd(m.sessions),
+			pollPRsCmd(m.cfg, sessions),
+			observeCmd(sessions),
 			adoptExternalCmd(m.sessions),
 			diff,
 			// A resize normally arrives as a signal, but this program hands the
@@ -648,7 +663,7 @@ func (m *Model) syncAgentSize() tea.Cmd {
 	}
 	m.lastPreviewCols, m.lastPreviewRows = cols, rows
 	m.touchAll()
-	return resizeSessionsCmd(m.sessions, cols, rows)
+	return resizeSessionsCmd(m.establishedSessions(), cols, rows)
 }
 
 // attach hands the terminal to one session, recording the handover. Attaching
@@ -670,6 +685,9 @@ func (m Model) attach(s *core.Session) tea.Cmd {
 func (m *Model) touchAll() {
 	at := now()
 	for _, s := range m.sessions {
+		if s.Starting {
+			continue
+		}
 		m.touchedAt[s.ID] = at
 	}
 }
@@ -690,7 +708,7 @@ func (m *Model) refreshDiff() tea.Cmd {
 		return nil
 	}
 	s := m.selected()
-	if s == nil {
+	if s == nil || s.Starting {
 		return nil
 	}
 	// The cache describes the worktree as it was; a refresh exists because that
@@ -876,7 +894,7 @@ func (m Model) handleHook(ev hooks.Event) (tea.Model, tea.Cmd) {
 	if !out.Known {
 		return m, next
 	}
-	s := hooks.Correlate(m.sessions, ev)
+	s := hooks.Correlate(m.establishedSessions(), ev)
 	if s == nil {
 		return m, next
 	}
@@ -1166,18 +1184,46 @@ func (m Model) handleAdoptedSessions(msg adoptedSessionsMsg) (tea.Model, tea.Cmd
 
 func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
+		// A failed Create owns no durable session. Remove only its pending card;
+		// other starts may be running concurrently and must stay put.
+		for i, s := range m.sessions {
+			if s.ID == msg.id && s.Starting {
+				m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
+				break
+			}
+		}
+		m.rebuild()
 		return m, errStatus(msg.err)
 	}
 	s := msg.res.Session
-	m.sessions = append(m.sessions, s)
+	if msg.id != "" {
+		s.ID = msg.id
+	}
+	replaced := false
+	for i, pending := range m.sessions {
+		if pending.ID != s.ID || !pending.Starting {
+			continue
+		}
+		// A summary may have landed while Create was bootstrapping. Keep the
+		// better title when replacing the temporary record with the real one.
+		if pending.Title != "" {
+			s.Title = pending.Title
+		}
+		m.sessions[i] = s
+		replaced = true
+		break
+	}
+	if !replaced {
+		// Messages made without a pending card still occur in tests and keep the
+		// old append behavior; it is also the safest recovery for a future caller.
+		m.sessions = append(m.sessions, s)
+	}
 	if s.Group != "" && m.cfg.AddProject(s.Group, s.RepoID) {
 		_ = core.SaveConfig(m.cfg)
 	}
 	m.save()
-	// rebuild rather than select: a start never moves the panel to the new card.
-	// It still fills an empty one -- a board whose panel is empty has nothing to be
-	// pulled away from, so the first card to arrive may as well fill it. A panel
-	// emptied on purpose is left empty, which rebuild already knows.
+	// rebuild rather than select: completion never moves the panel. The pending
+	// card already made the selection decision when the task was submitted.
 	m.rebuild()
 	// watching is whether the panel ended up on the new session, which is what
 	// decides both of the questions below.
@@ -1206,22 +1252,17 @@ func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 		// other one is dropped on arrival.
 		preview = previewCmd(s)
 	}
-	return m, tea.Batch(note, observeCmd(m.sessions), preview,
-		resizeSessionsCmd([]*core.Session{s}, cols, rows),
-		// The card starts out titled with the first line of the task; naming it
-		// properly happens off to the side, now that there is something on
-		// screen.
-		titleCmd(s, summaryInput(msg, s)))
+	return m, tea.Batch(note, observeCmd(m.establishedSessions()), preview,
+		resizeSessionsCmd([]*core.Session{s}, cols, rows))
 }
 
 // summaryInput is the text a card's name is written from.
 //
-// It is the whole task, which only the create message still carries: the session
-// record keeps just the first line of it, and the line that says what the work is
-// is as often below the first one as in it. A caller that carried no task at all
-// falls back to the title, which is the best text there is in that case.
-func summaryInput(msg createdMsg, s *core.Session) string {
-	if task := strings.TrimSpace(msg.task); task != "" {
+// It is the whole task rather than the first line kept as the card's initial
+// title. A caller with no task falls back to that title, which is the best text
+// there is in that case.
+func summaryInput(task string, s *core.Session) string {
+	if task = strings.TrimSpace(task); task != "" {
 		return task
 	}
 	return s.Title
@@ -1409,7 +1450,7 @@ func (m Model) handleRestart(msg restartMsg) (tea.Model, tea.Cmd) {
 		m.previewScroll = 0
 		preview = previewCmd(s)
 	}
-	return m, tea.Batch(note, preview, observeCmd(m.sessions),
+	return m, tea.Batch(note, preview, observeCmd(m.establishedSessions()),
 		resizeSessionsCmd([]*core.Session{s}, cols, rows))
 }
 
