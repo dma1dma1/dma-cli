@@ -1,6 +1,9 @@
 package main
 
 import (
+	"flag"
+	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,5 +50,59 @@ func TestNotifierNoticeIsSaidOnce(t *testing.T) {
 	}
 	if again := notifierNotice(reloaded); again != "" {
 		t.Errorf("notice repeated on a later launch: %q", again)
+	}
+}
+
+// Go's flag package stops at the first positional argument, so a flag written
+// after the session id would be dropped -- and -clean being dropped means the
+// work in progress is carried when the user asked for it not to be.
+func TestFlagsParseOnEitherSideOfTheArguments(t *testing.T) {
+	cases := [][]string{
+		{"-clean", "-repo", "web", "claude", "abc-123"},
+		{"claude", "abc-123", "-clean", "-repo", "web"},
+		{"claude", "-clean", "abc-123", "-repo", "web"},
+	}
+	for _, args := range cases {
+		fs := flag.NewFlagSet("attach", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		repo := fs.String("repo", "", "")
+		clean := fs.Bool("clean", false, "")
+
+		positional, err := parseAnywhere(fs, args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if len(positional) != 2 || positional[0] != "claude" || positional[1] != "abc-123" {
+			t.Errorf("%v: positional = %v", args, positional)
+		}
+		if !*clean {
+			t.Errorf("%v: -clean was dropped", args)
+		}
+		if *repo != "web" {
+			t.Errorf("%v: -repo = %q", args, *repo)
+		}
+	}
+}
+
+func TestParseAnywhereReportsUnknownFlags(t *testing.T) {
+	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if _, err := parseAnywhere(fs, []string{"claude", "-nonsense"}); err == nil {
+		t.Fatal("an unknown flag was accepted")
+	}
+}
+
+func TestShortenHomeAbbreviatesOnlyWholeSegments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := shortenHome(filepath.Join(home, "code", "proj")); got != filepath.Join("~", "code", "proj") {
+		t.Errorf("shortenHome = %q", got)
+	}
+	// A path that merely starts with the same characters is not under it.
+	if got := shortenHome(home + "-other"); got != home+"-other" {
+		t.Errorf("shortenHome abbreviated a sibling directory: %q", got)
+	}
+	if got := shortenHome(""); got != "-" {
+		t.Errorf("shortenHome(\"\") = %q", got)
 	}
 }

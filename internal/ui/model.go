@@ -428,6 +428,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
 			pollPRsCmd(m.cfg, m.sessions),
 			observeCmd(m.sessions),
+			adoptExternalCmd(m.sessions),
 			diff,
 			// A resize normally arrives as a signal, but this program hands the
 			// terminal to tmux and takes it back, so asking outright is the cheap
@@ -482,6 +483,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// order that against copying m into the return value.
 		m.hintRestart()
 		return m, nil
+
+	case adoptedSessionsMsg:
+		return m.handleAdoptedSessions(msg)
 
 	case prSyncMsg:
 		return m.handlePRSync(msg)
@@ -1119,6 +1123,46 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 }
 
 // --- action results ---
+
+// handleAdoptedSessions takes on sessions that arrived in the state file from
+// outside the board -- `dma attach` run in another terminal.
+//
+// They arrive the way a session started here does: filed under their project,
+// sized to this board's panel, and announced, since the card appears in a column
+// the user may not be looking at. The panel is not moved onto them, for the same
+// reason starting a session in the background does not move it.
+func (m Model) handleAdoptedSessions(msg adoptedSessionsMsg) (tea.Model, tea.Cmd) {
+	if len(msg.sessions) == 0 {
+		return m, nil
+	}
+	configChanged := false
+	for _, s := range msg.sessions {
+		m.sessions = append(m.sessions, s)
+		if s.Group != "" && m.cfg.AddProject(s.Group, s.RepoID) {
+			configChanged = true
+		}
+		// The size is dma's doing, so the reflow it causes must not be read as
+		// the agent working -- the same bookkeeping every other resize gets.
+		m.touchedAt[s.ID] = now()
+	}
+	if configChanged {
+		_ = core.SaveConfig(m.cfg)
+	}
+	// Saved rather than left alone: the board's list is what gets written from
+	// here on, so it has to be the one holding these before anything else
+	// prompts a save.
+	m.save()
+	m.rebuild()
+
+	title := msg.sessions[0].Title
+	if len(msg.sessions) > 1 {
+		title = fmt.Sprintf("%d sessions", len(msg.sessions))
+	}
+	m.notice, m.noticeErr, m.noticeAt = "attached: "+title, false, time.Now()
+
+	cols, rows := m.previewDims()
+	return m, resizeSessionsCmd(msg.sessions, cols, rows)
+}
 
 func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {

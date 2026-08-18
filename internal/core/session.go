@@ -207,7 +207,22 @@ type Session struct {
 	// ClaudeSessionID is learned from hook payloads and used as a secondary
 	// correlation key once seen.
 	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+
+	// AgentSessionID is the agent's own id for the conversation this session is
+	// holding, set when the session was attached to an existing one rather than
+	// started fresh.
+	//
+	// It is what a restart resumes from. An attached session's transcript lives
+	// where the conversation began, not in the worktree dma made for it, so the
+	// by-directory resume every other session restarts with finds nothing here;
+	// see AgentProfile.ResumeIDCommand. Empty on a session dma started itself,
+	// which restarts by directory as before.
+	AgentSessionID string `json:"agent_session_id,omitempty"`
 }
+
+// Attached reports whether this session is continuing a conversation that began
+// outside dma.
+func (s *Session) Attached() bool { return s.AgentSessionID != "" }
 
 func (s *Session) Key() Key { return Key{RepoID: s.RepoID, Branch: s.Branch} }
 

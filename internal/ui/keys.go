@@ -129,6 +129,7 @@ var helpText = [][3]string{
 	{"", "x", "prune the worktree and branch, closing the PR if it is open"},
 	{"", "X", "prune every merged session on the board"},
 	{"", "c", "restart the agent where it left off, in the worktree it already has"},
+	{"", "", "a session attached from a shell resumes by conversation id, not by directory"},
 	{"", "C", "restart every stopped session on the board — what a reboot needs"},
 	{"", "D", "kill the agent, keep the worktree"},
 	{"", "R", "refresh PR and session state now"},

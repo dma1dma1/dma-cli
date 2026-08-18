@@ -440,6 +440,47 @@ func observeCmd(sessions []*core.Session) tea.Cmd {
 	}
 }
 
+// adoptedSessionsMsg carries sessions that appeared in the state file while the
+// board was running.
+type adoptedSessionsMsg struct{ sessions []*core.Session }
+
+// adoptExternalCmd looks for sessions something else added to the state file.
+//
+// `dma attach` is that something else: it starts a session from a shell, and
+// the board it is meant to appear on is usually already open. The board holds
+// its sessions in memory and writes the whole list every time it saves, so
+// without this the attached session would not merely be invisible -- the next
+// save would erase its record, leaving a worktree and a running agent that
+// nothing on disk points at.
+//
+// Only additions are taken. Sessions the board already knows are left exactly
+// as they are, because the board's copy is the newer one: it holds this poll's
+// liveness, diff and PR state, none of which is written to disk. Nothing here
+// removes a session either -- an absence on disk is far more likely to be a
+// stale read than a prune, and dropping a live card over one would be the
+// worse mistake.
+func adoptExternalCmd(known []*core.Session) tea.Cmd {
+	ids := make(map[string]bool, len(known))
+	for _, s := range known {
+		ids[s.ID] = true
+	}
+	return func() tea.Msg {
+		stored, err := core.LoadSessions()
+		if err != nil {
+			// A state file being written as it is read is the expected failure
+			// here, and the next poll gets a clean look at it.
+			return adoptedSessionsMsg{}
+		}
+		var fresh []*core.Session
+		for _, s := range stored {
+			if !ids[s.ID] {
+				fresh = append(fresh, s)
+			}
+		}
+		return adoptedSessionsMsg{sessions: fresh}
+	}
+}
+
 // pollPRsCmd polls the branches the board is tracking, grouped by repo. A repo
 // with nothing running is skipped rather than polled for completeness, and only
 // the branches on screen are asked about -- the board has no use for the rest

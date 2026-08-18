@@ -155,6 +155,24 @@ type AgentProfile struct {
 	// let them look past the working directory -- would hand every session on a
 	// restarted board the same one.
 	ResumeCommand string `json:"resume_command,omitempty"`
+	// ResumeIDCommand is the shell line that starts this agent on one named
+	// conversation, wherever that conversation was first held. {session} is
+	// replaced by the id; a command without the placeholder gets it appended.
+	//
+	// It is what attaching runs, and the difference from ResumeCommand is the
+	// whole reason attaching works. ResumeCommand identifies a conversation by
+	// the directory it is in, and an attached session is by definition being
+	// resumed somewhere else: both agents keep a transcript filed under the
+	// directory it was born in and go on writing to it from wherever they are
+	// resumed, so a worktree dma cut a moment ago has no conversation of its own
+	// for "the most recent one here" to find. Naming the id is the only form
+	// that reaches across.
+	//
+	// A profile without one cannot be attached. That is stricter than the
+	// fallback ResumeCommand gets, and deliberately so: falling back would open
+	// an agent with no memory of the task under a card claiming to be the
+	// session you asked for.
+	ResumeIDCommand string `json:"resume_id_command,omitempty"`
 	// Hooks is true when the agent reports its own state through dma's hook
 	// listener, as Claude Code does. Agents without that channel fall back to
 	// liveness plus a pane-change heuristic, which is coarser but never blocks
@@ -212,7 +230,22 @@ func (p AgentProfile) LaunchCommand(prompt string, images ...string) string {
 // user which of the two they got: an agent that came back without its history
 // looks identical on the board and is not the same thing at all.
 func (p AgentProfile) RestartCommand() string {
+	return p.RestartCommandFor("")
+}
+
+// RestartCommandFor is RestartCommand for a session whose conversation dma
+// knows the id of, which is what an attached session has.
+//
+// The id is preferred over the directory whenever there is one. It is the more
+// precise of the two everywhere, and for an attached session it is the only one
+// that works at all -- see ResumeIDCommand. It stays correct afterwards because
+// both agents keep the id across a resume rather than minting a new one, so the
+// value learned at attach time still names the conversation many restarts later.
+func (p AgentProfile) RestartCommandFor(sessionID string) string {
 	launch := p.LaunchCommand("")
+	if line := p.ResumeIDLine(sessionID); line != "" {
+		return line + " || " + launch
+	}
 	resume := strings.TrimSpace(p.ResumeCommand)
 	if resume == "" {
 		return launch
@@ -220,10 +253,29 @@ func (p AgentProfile) RestartCommand() string {
 	return resume + " || " + launch
 }
 
+// ResumeIDLine is the shell line that reopens one conversation by id, or "" if
+// this profile has no such form or there is no id to use.
+func (p AgentProfile) ResumeIDLine(sessionID string) string {
+	command := strings.TrimSpace(p.ResumeIDCommand)
+	sessionID = strings.TrimSpace(sessionID)
+	if command == "" || sessionID == "" {
+		return ""
+	}
+	// Quoted for the same reason the prompt is: this is typed into a pane as a
+	// shell line, and an id is not something to trust the shell's word splitting
+	// with just because the ids seen so far have been tidy.
+	quoted := shellQuote(sessionID)
+	if strings.Contains(command, sessionPlaceholder) {
+		return strings.ReplaceAll(command, sessionPlaceholder, quoted)
+	}
+	return command + " " + quoted
+}
+
 const (
 	promptPlaceholder    = "{prompt}"
 	imagePlaceholder     = "{images}"
 	imagePathPlaceholder = "{path}"
+	sessionPlaceholder   = "{session}"
 )
 
 func (p AgentProfile) imageArguments(images []string) string {
@@ -311,17 +363,19 @@ const (
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
 		{
-			Name:          "claude",
-			Command:       "claude --permission-mode auto",
-			ResumeCommand: "claude --permission-mode auto --continue",
-			Hooks:         true,
+			Name:            "claude",
+			Command:         "claude --permission-mode auto",
+			ResumeCommand:   "claude --permission-mode auto --continue",
+			ResumeIDCommand: "claude --permission-mode auto --resume {session}",
+			Hooks:           true,
 		},
 		{
-			Name:          "codex",
-			Command:       "codex",
-			ImageArgument: "--image {path}",
-			ResumeCommand: "codex resume --last",
-			Hooks:         false,
+			Name:            "codex",
+			Command:         "codex",
+			ImageArgument:   "--image {path}",
+			ResumeCommand:   "codex resume --last",
+			ResumeIDCommand: "codex resume {session}",
+			Hooks:           false,
 		},
 	}
 }
@@ -436,15 +490,20 @@ func (c *Config) adoptDefaultImageArguments() {
 // name -- would restart something other than what starts a session. Those
 // profiles restart as a plain launch until their owner writes a resume_command,
 // which the board says out loud each time.
+// It fills in the by-id resume line on the same terms, which is what lets an
+// existing config attach a session without being edited first.
 func (c *Config) adoptDefaultResumeCommands() {
 	for _, p := range DefaultProfiles() {
-		if p.ResumeCommand == "" {
-			continue
-		}
 		for i := range c.AgentProfiles {
 			mine := &c.AgentProfiles[i]
-			if mine.Name == p.Name && mine.ResumeCommand == "" && mine.Command == p.Command {
+			if mine.Name != p.Name || mine.Command != p.Command {
+				continue
+			}
+			if mine.ResumeCommand == "" {
 				mine.ResumeCommand = p.ResumeCommand
+			}
+			if mine.ResumeIDCommand == "" {
+				mine.ResumeIDCommand = p.ResumeIDCommand
 			}
 		}
 	}
