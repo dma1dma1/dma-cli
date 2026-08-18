@@ -271,7 +271,7 @@ func (m Model) cardLines(s *core.Session, selected bool, width int) []string {
 			fill(lipgloss.NewStyle().Foreground(st.P.Danger)).Render(fmt.Sprintf("−%d", s.DiffRemoved))
 		push(stat)
 	}
-	if !s.TmuxAlive {
+	if !s.Starting && !s.TmuxAlive {
 		push(fill(detail).Render(truncate("⚠ not running", textW)))
 	}
 	for i := range lines {
@@ -283,6 +283,9 @@ func (m Model) cardLines(s *core.Session, selected bool, width int) []string {
 // branchOrPR shows the PR and its most urgent fact once one exists, and the
 // branch name before that.
 func (m Model) branchOrPR(s *core.Session) string {
+	if s.Starting {
+		return "worktree + dependencies"
+	}
 	if !s.HasPR() {
 		// Sessions start with no branch at all; the agent names one when it has
 		// something to commit.

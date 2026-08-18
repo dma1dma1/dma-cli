@@ -185,6 +185,12 @@ func (m *Model) onFocusChange() tea.Cmd {
 // --- board focus ---
 
 func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
+	// Navigation and board-wide controls remain available while a selected card
+	// is preparing. Session actions do not: there is no worktree, terminal, diff,
+	// or PR for them to operate on yet.
+	if s := m.selected(); s != nil && s.Starting && !startingKeyAllowed(key) {
+		return m, errStatus(fmt.Errorf("%s is still preparing its worktree and dependencies", s.Title))
+	}
 	switch key {
 	case "q":
 		m.quitting = true
@@ -286,11 +292,22 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		return m.restartDead()
 
 	case "R":
-		return m, tea.Batch(pollPRsCmd(m.cfg, m.sessions), observeCmd(m.sessions),
-			probeCmd(m.prober, m.cfg, m.sessions, m.touchedAt, m.hookSeen))
+		sessions := m.establishedSessions()
+		return m, tea.Batch(pollPRsCmd(m.cfg, sessions), observeCmd(sessions),
+			probeCmd(m.prober, m.cfg, sessions, m.touchedAt, m.hookSeen))
 	}
 
 	return m.sessionAction(key)
+}
+
+func startingKeyAllowed(key string) bool {
+	switch key {
+	case "q", "?", "i", "n",
+		"h", "left", "l", "right", "j", "down", "k", "up",
+		"r", "p", "A", "X", "C", "R":
+		return true
+	}
+	return false
 }
 
 // pruneMerged clears out the merged column in one keystroke. Merged work is
@@ -371,7 +388,7 @@ func (m Model) stoppedSessions() []*core.Session {
 // the check and the start, so the answer has to come from the operation rather
 // than from a look beforehand.
 func restartable(s *core.Session) bool {
-	return !s.TmuxAlive && s.Lifecycle != core.LifecycleMerged
+	return !s.Starting && !s.TmuxAlive && s.Lifecycle != core.LifecycleMerged
 }
 
 // restartSelected rebuilds one session's terminal and puts its agent back in it.
@@ -578,12 +595,11 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 
 // startTask hands the composed task to a new session and returns to the board.
 //
-// The board's cursor stays where it is rather than following the new card.
-// Deciding to start work is not the same as deciding to watch it: the worktree,
-// the fetch, and the agent's first frame take seconds, so moving the panel to the
-// new session would pull it off whatever you went back to reading in the
-// meantime, which is the one moment you did not ask for it to move. The card is
-// on the board and the notice names it; select it when you want to watch it.
+// A pending card is added before the Create command is returned, so an expensive
+// fetch or dependency bootstrap has visible progress instead of making enter
+// look ignored. The board's cursor stays where it is rather than following that
+// card: lining up more work must not pull the panel off the agent being read.
+// An empty board selects the pending card because there is nothing to displace.
 //
 // An empty composer closes. There is no task to start and nothing to keep the box
 // open for.
@@ -597,11 +613,38 @@ func (m Model) startTask() (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m, errStatus(err)
 	}
+	startedAt := now()
+	pending := &core.Session{
+		ID:              core.NewID(),
+		Title:           req.Title,
+		RepoID:          req.RepoID,
+		Group:           req.Group,
+		BaseBranch:      req.BaseBranch,
+		AgentProfile:    req.Profile,
+		CreatedAt:       startedAt,
+		Lifecycle:       core.LifecycleActive,
+		AgentState:      core.AgentWorking,
+		AgentStateSince: startedAt,
+		PRState:         core.PRNone,
+		PRCI:            core.CINone,
+		PRReview:        core.ReviewNone,
+		PRMergeable:     core.MergeUnknown,
+		Starting:        true,
+	}
+	m.sessions = append(m.sessions, pending)
+	m.rebuild()
 	m.input.SetValue("")
 	m.pendingImages = nil
 	m.layoutSizes()
 	m.focus = focusBoard
-	return m, tea.Batch(m.onFocusChange(), createCmd(m.cfg, req))
+	return m, tea.Batch(
+		m.onFocusChange(),
+		createCmd(m.cfg, pending.ID, req),
+		// Naming can finish while dependencies are still being prepared, so the
+		// pending card need not spend the whole bootstrap showing a pasted first
+		// line that says little about the task.
+		titleCmd(pending, summaryInput(task, pending)),
+	)
 }
 
 // newSessionRequest describes the session the chips currently add up to.
@@ -1256,6 +1299,9 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// because misclicks on a dense board are frequent.
 		if m.selectedID == s.ID && m.lastClickID == s.ID &&
 			timeSince(m.lastClickAt) < doubleClickWindow {
+			if s.Starting {
+				return m, errStatus(fmt.Errorf("%s is still preparing its worktree and dependencies", s.Title))
+			}
 			cmd := m.openDiff()
 			return m, cmd
 		}

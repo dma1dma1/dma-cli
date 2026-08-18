@@ -73,13 +73,9 @@ type adoptedMsg struct {
 }
 
 type createdMsg struct {
+	id  string
 	res *ops.CreateResult
-	// task is the whole text the session was started on, which the session
-	// record does not keep: its title is only the first line of it. Naming the
-	// card wants all of it -- the line that matters is as often in the stack
-	// trace below the first one as in the first one.
-	task string
-	err  error
+	err error
 }
 
 // titledMsg carries a summary of the task back to the card that is currently
@@ -243,7 +239,7 @@ func previewCmd(s *core.Session) tea.Cmd {
 // into copy mode. requestedScroll travels with the result so a slow capture
 // from an older wheel position cannot overwrite a newer one.
 func previewCmdAt(s *core.Session, requestedScroll int) tea.Cmd {
-	if s == nil {
+	if s == nil || s.Starting || s.TmuxSession == "" {
 		return nil
 	}
 	sess := *s
@@ -545,12 +541,12 @@ func prDetailCmd(remote, sessionID string, number int) tea.Cmd {
 // the rest of the start. Two minutes here used to expire mid-clone on a
 // monorepo, and every start in that repo then failed reporting tmux -- the step
 // after the one that actually ran out of time.
-func createCmd(cfg *core.Config, req ops.CreateRequest) tea.Cmd {
+func createCmd(cfg *core.Config, id string, req ops.CreateRequest) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 		res, err := ops.Create(ctx, cfg, req)
-		return createdMsg{res: res, task: req.InitialPrompt, err: err}
+		return createdMsg{id: id, res: res, err: err}
 	}
 }
 

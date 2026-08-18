@@ -199,6 +199,10 @@ type Session struct {
 	PRSyncedAt          time.Time `json:"pr_synced_at"`
 
 	// Runtime-only fields, recomputed at startup and on poll.
+	// Starting marks the temporary card shown while a new worktree is being
+	// fetched and bootstrapped. It never reaches disk: a board restart cannot
+	// resume a Create operation that died with the previous process.
+	Starting      bool `json:"-"`
 	TmuxAlive     bool `json:"-"`
 	DiffAdded     int  `json:"-"`
 	DiffRemoved   int  `json:"-"`

@@ -307,6 +307,9 @@ func (m Model) panelTitle() (string, string) {
 	if m.dropdown.open && m.dropdown.target != "" {
 		return s.Title, "move to a project"
 	}
+	if s.Starting {
+		return s.Title, "preparing worktree and dependencies"
+	}
 	sub := s.TmuxSession
 	if !s.TmuxAlive {
 		sub += " (not running)"
@@ -365,6 +368,9 @@ func (m Model) previewBody(rows, width int) []string {
 	s := m.selected()
 	if s == nil {
 		return centered(rows, width, st.Faint.Render("no session selected — type a task below to start one"))
+	}
+	if s.Starting {
+		return centered(rows, width, st.Faint.Render("preparing worktree and dependencies…"))
 	}
 	if strings.TrimSpace(m.preview) == "" {
 		hint := "waiting for output…"
