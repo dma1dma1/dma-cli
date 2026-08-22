@@ -4,9 +4,9 @@
 Each task gets its own git worktree and persistent tmux session, while the board
 shows which agents need attention and the state of their GitHub pull requests.
 
-Use it when you want to run several Claude Code, Codex, or other command-line
-coding agents in parallel without manually creating worktrees, switching
-terminals, or checking every session for progress.
+Use it when you want to run several Claude Code, Codex, pi, or other
+command-line coding agents in parallel without manually creating worktrees,
+switching terminals, or checking every session for progress.
 
 Agents keep running when you quit the board.
 
@@ -35,13 +35,13 @@ Required at runtime:
 |---|---|
 | `git` | Creates worktrees and manages branches and diffs |
 | `tmux` | Hosts persistent agent sessions |
-| A coding-agent CLI | `claude`, `codex`, or another configured command |
+| A coding-agent CLI | `claude`, `codex`, `pi`, or another configured command |
 | `terminal-notifier` | Desktop notifications on macOS |
 
 Install and authenticate at least one coding-agent CLI before starting a
-session. `dma` includes profiles for Claude Code and Codex and uses Claude Code
-by default. If you only have Codex installed, select it with `A` before starting
-your first task.
+session. `dma` includes profiles for Claude Code, Codex and pi, and uses Claude
+Code by default. If you have one of the others installed instead, select it with
+`A` before starting your first task.
 
 On macOS, install the notifier:
 
@@ -108,7 +108,7 @@ Verify the installation:
 
 ```sh
 command -v dma
-command -v claude || command -v codex
+command -v claude || command -v codex || command -v pi
 dma doctor
 dma version
 ```
@@ -221,12 +221,22 @@ gives it a worktree and a card.
 dma attach claude                   # list your recent claude conversations
 dma attach claude 033386ad-09ec-40e3-af51-348bc2b680ef
 dma attach codex 019ff3ca-7e37-7b61-9c5e-b2eb790ab560
+dma attach pi 01a026e1-2d8d-797c-81fe-28cb9e09b760
 ```
 
-The conversation is not copied or restarted. `dma` reopens the same one by id,
-so the agent comes back knowing everything it knew a moment ago. What changes is
-where it is standing: it moves from wherever you were working into a worktree of
-its own, alongside every other session on the board.
+The conversation is not restarted: the agent comes back knowing everything it
+knew a moment ago. What changes is where it is standing — it moves from wherever
+you were working into a worktree of its own, alongside every other session on
+the board.
+
+For Claude Code and Codex the same conversation is reopened by id. pi is
+different, because a pi session records the directory it was started in and runs
+its tools there wherever you resume it from — reopening one in a new worktree
+would leave the agent editing the checkout it came from. So an attached pi
+conversation is copied into the worktree instead, with its full history, under a
+new id `dma` chooses. The card says `forked from` when that happened. The
+original is left exactly as it was, and turns taken on the board do not appear
+in it.
 
 Because a conversation that has been running for a while has usually been
 editing files, the work in progress moves with it. The new worktree is cut from
@@ -256,14 +266,15 @@ repository at all.
 If the board is already open in another terminal, the attached session appears
 on it within one poll interval. Otherwise run `dma` and it will be there.
 
-Only agents `dma` knows how to reopen by id can be attached — Claude Code and
-Codex out of the box. A custom profile needs a `resume_id_command`; see
-[Agent permissions and profiles](#agent-permissions-and-profiles).
+Only agents `dma` can both read the conversations of and open one in a new
+worktree can be attached — Claude Code, Codex and pi out of the box. A custom
+profile needs a `resume_id_command`, or a `fork_command` if it behaves the way pi
+does; see [Agent permissions and profiles](#agent-permissions-and-profiles).
 
-Session ids come from the agent: `/status` in Claude Code, or the header line in
-Codex. `dma attach <agent>` with no id lists recent conversations with their
-ids, directories and opening prompts, which is usually the faster way to find
-one.
+Session ids come from the agent: `/status` in Claude Code, the header line in
+Codex, `/session` in pi. `dma attach <agent>` with no id lists recent
+conversations with their ids, directories and opening prompts, which is usually
+the faster way to find one.
 
 ### Repository expectations
 
@@ -380,6 +391,15 @@ The built-in profiles are:
     "resume_command": "codex resume --last",
     "resume_id_command": "codex resume {session}",
     "hooks": false
+  },
+  {
+    "name": "pi",
+    "command": "pi -a",
+    "image_argument": "@{path}",
+    "resume_command": "pi -a -c",
+    "resume_id_command": "pi -a --session {session}",
+    "fork_command": "pi -a --fork {session} --session-id {new}",
+    "hooks": false
   }
 ]
 ```
@@ -389,9 +409,16 @@ sessions can make progress without stopping at every ordinary permission
 prompt. Review whether that permission mode is appropriate for your environment
 before using it. You can change the command in `~/.dma/config.json`.
 
+pi needs no permission flag: it has no per-tool approval prompt, so a pi session
+never stops to ask before running a command. Its `-a` answers a different
+question — whether to trust the project's own `.pi` settings, extensions and
+skills — which pi would otherwise ask at startup, before the opening prompt is
+read. Change it to `-na` if you would rather those stayed unloaded. Either way,
+review whether an agent that never asks is appropriate for your environment.
+
 Claude Code reports its state through hooks installed only in worktrees created
-by `dma`. Codex and custom profiles are read off their terminal instead, in this
-order of trust: the agent's own interrupt hint (`esc to interrupt`) says a turn
+by `dma`. Codex, pi and custom profiles are read off their terminal instead, in
+this order of trust: the agent's own interrupt hint (`esc to interrupt`) says a turn
 is running, a menu with a selection marker on one row or a line naming a key to
 press means `needs you`, and for an agent that shows neither, a pane quiet for 25
 seconds means the turn ended. It is a good signal rather than an exact one — a
@@ -410,21 +437,32 @@ question, which is what the badge says.
 
 `resume_command` is what `c` and `C` run to bring an agent back in a worktree it
 has already worked in — see [Restarting sessions](#restarting-sessions). It must
-identify the conversation from the working directory alone, which both built-in
-resume commands do: `claude --continue` continues the most recent conversation in
-the current directory, and `codex resume --last` picks the most recent session in
-it unless asked for `--all`. That is what makes restarting a whole board at once
+identify the conversation from the working directory alone, which all three
+built-in resume commands do: `claude --continue` continues the most recent
+conversation in the current directory, `codex resume --last` picks the most
+recent session in it unless asked for `--all`, and `pi -c` looks only in the
+directory it is run in. That is what makes restarting a whole board at once
 correct, since each session has a worktree of its own.
 
 `resume_id_command` names one conversation instead of a directory, with
 `{session}` replaced by its id. It is what [`dma attach`](#attaching-a-session-you-already-started)
-runs, and what `c` and `C` run for a session that was attached. The distinction
+runs for Claude Code and Codex, and what `c` and `C` run for any session that was
+attached. The distinction
 matters because an attached conversation's transcript stays filed under the
 directory it began in, even after the agent is resumed elsewhere — so
 "the most recent conversation here" finds nothing in the worktree `dma` made for
 it, and only the id reaches across. A profile without a `resume_id_command`
 cannot be attached at all: falling back to a plain launch would put an agent with
 no memory of the task behind a card named after your conversation.
+
+`fork_command` is for an agent that reopens a conversation in the directory the
+conversation remembers rather than the one it is run in. pi does, so attaching a
+pi conversation by id would leave the agent working in the checkout it came from
+while the new worktree sat empty. The fork line copies the history into the
+worktree instead: `{session}` is the conversation copied from, and `{new}` the id
+`dma` mints for the copy, so later restarts can name it. Attach prefers this line
+over `resume_id_command` where a profile has both, and a restart never runs it —
+forking again would abandon everything the session had done since.
 
 You can add another agent by adding an entry to `agent_profiles`. The command
 runs inside the new worktree. The task is appended as a positional argument;
@@ -434,11 +472,11 @@ a restart launches `command` instead and the board says the agent came back
 without its history. Add a `resume_id_command` too if it can reopen a
 conversation by id, which is what makes the agent attachable — though `dma` also
 has to know where that agent records its conversations, which today means Claude
-Code and Codex.
+Code, Codex and pi.
 
 For images attached to a new session, `image_argument` is repeated once per
 image and `{path}` is replaced with the shell-quoted path to its staged PNG.
-The built-in Codex profile uses `--image {path}`. Profiles without an
+Codex uses `--image {path}` and pi `@{path}`. Profiles without an
 `image_argument`, including Claude Code, receive the image paths in their
 opening prompt.
 
@@ -679,6 +717,14 @@ An example configuration, shown as valid JSON:
       "image_argument": "--image {path}",
       "resume_command": "codex resume --last",
       "hooks": false
+    },
+    {
+      "name": "pi",
+      "command": "pi -a",
+      "image_argument": "@{path}",
+      "resume_command": "pi -a -c",
+      "fork_command": "pi -a --fork {session} --session-id {new}",
+      "hooks": false
     }
   ],
   "default_profile": "claude",
@@ -755,8 +801,8 @@ worktrees stayed. Press `C` to restart them all, or `c` for one. See
 **A restarted agent has forgotten what it was doing**
 
 Its profile has no `resume_command`, so the restart launched `command` instead.
-Add one; the built-in profiles use `claude --permission-mode auto --continue` and
-`codex resume --last`. A profile whose `command` you edited is never given a
+Add one; the built-in profiles use `claude --permission-mode auto --continue`,
+`codex resume --last` and `pi -a -c`. A profile whose `command` you edited is never given a
 generated resume line, since the two have to name the same program.
 
 **A session is safe to remove**

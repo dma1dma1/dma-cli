@@ -151,8 +151,8 @@ type AgentProfile struct {
 	// each its own worktree and starts the agent in it, so "the most recent
 	// conversation in this directory" names exactly one session's history and
 	// cannot reach across to another card's. A resume form that took the most
-	// recent conversation anywhere -- which is what both built-in agents do if you
-	// let them look past the working directory -- would hand every session on a
+	// recent conversation anywhere -- which is what every built-in agent does if
+	// you let it look past the working directory -- would hand every session on a
 	// restarted board the same one.
 	ResumeCommand string `json:"resume_command,omitempty"`
 	// ResumeIDCommand is the shell line that starts this agent on one named
@@ -162,7 +162,7 @@ type AgentProfile struct {
 	// It is what attaching runs, and the difference from ResumeCommand is the
 	// whole reason attaching works. ResumeCommand identifies a conversation by
 	// the directory it is in, and an attached session is by definition being
-	// resumed somewhere else: both agents keep a transcript filed under the
+	// resumed somewhere else: these agents keep a transcript filed under the
 	// directory it was born in and go on writing to it from wherever they are
 	// resumed, so a worktree dma cut a moment ago has no conversation of its own
 	// for "the most recent one here" to find. Naming the id is the only form
@@ -173,6 +173,25 @@ type AgentProfile struct {
 	// an agent with no memory of the task under a card claiming to be the
 	// session you asked for.
 	ResumeIDCommand string `json:"resume_id_command,omitempty"`
+	// ForkCommand is the shell line that opens a copy of one named conversation in
+	// the directory it is run in, rather than reopening the original where it
+	// already lives. {session} is the id copied from; {new} is the id dma has
+	// minted for the copy.
+	//
+	// It exists for agents that record a working directory in the conversation and
+	// then work there wherever they are resumed from. pi does: its session file
+	// carries the directory it was started in, and reopening one by id runs its
+	// tools against that directory -- so attaching would leave the agent editing
+	// the checkout the conversation came from while the worktree dma cut for it sat
+	// empty, with two cards' work landing in one tree. Forking re-roots the history
+	// where the agent is now standing, which is what attaching means for an agent
+	// that carries its own idea of where it lives.
+	//
+	// Attach prefers it over ResumeIDCommand for a profile that has both, and the
+	// preference is one-way: a restart must never run this line. It would fork the
+	// original a second time, and everything the attached session had done since
+	// would be left in a conversation nothing points at any more.
+	ForkCommand string `json:"fork_command,omitempty"`
 	// Hooks is true when the agent reports its own state through dma's hook
 	// listener, as Claude Code does. Agents without that channel fall back to
 	// liveness plus a pane-change heuristic, which is coarser but never blocks
@@ -221,10 +240,12 @@ func (p AgentProfile) LaunchCommand(prompt string, images ...string) string {
 // the shell runs the second only if the first fails. That fallback is for the
 // worktree with nothing to resume: a session whose agent never reached a first
 // turn -- started and killed, or interrupted while its dependencies were still
-// arriving -- has no conversation on disk, and both built-in agents treat being
-// asked for one as an error. Left there, the restart would leave a live tmux
-// session sitting at a shell prompt, which the board reads as running while no
-// agent is in it. That is worse than the plain relaunch the fallback gets.
+// arriving -- has no conversation on disk. An agent asked for one anyway either
+// treats it as an error, which claude and codex do, or quietly opens a fresh
+// conversation, which pi does. The first is what the fallback is for: left there,
+// the restart would leave a live tmux session sitting at a shell prompt, which
+// the board reads as running while no agent is in it. That is worse than the
+// plain relaunch the fallback gets.
 //
 // A profile with no resume line restarts as a plain launch, and callers tell the
 // user which of the two they got: an agent that came back without its history
@@ -239,7 +260,7 @@ func (p AgentProfile) RestartCommand() string {
 // The id is preferred over the directory whenever there is one. It is the more
 // precise of the two everywhere, and for an attached session it is the only one
 // that works at all -- see ResumeIDCommand. It stays correct afterwards because
-// both agents keep the id across a resume rather than minting a new one, so the
+// these agents keep the id across a resume rather than minting a new one, so the
 // value learned at attach time still names the conversation many restarts later.
 func (p AgentProfile) RestartCommandFor(sessionID string) string {
 	launch := p.LaunchCommand("")
@@ -271,11 +292,53 @@ func (p AgentProfile) ResumeIDLine(sessionID string) string {
 	return command + " " + quoted
 }
 
+// ForkLine is the shell line that copies one conversation into the working
+// directory, or "" if this profile has no such form, there is no id to copy, or
+// the line asks for an id for the copy and none was minted.
+//
+// The id for the copy is quoted for the same reason the one being copied is: both
+// are typed into a pane as part of a shell line.
+func (p AgentProfile) ForkLine(sessionID, newID string) string {
+	command := strings.TrimSpace(p.ForkCommand)
+	sessionID = strings.TrimSpace(sessionID)
+	if command == "" || sessionID == "" {
+		return ""
+	}
+	// The id for the copy goes in first, and both substitutions read the command
+	// rather than the result of the one before: an id typed with a placeholder in
+	// it is then a strange id, not a second placeholder. dma mints the id for the
+	// copy itself, so only the one being copied comes from anybody's typing.
+	if strings.Contains(command, newSessionPlaceholder) {
+		if newID = strings.TrimSpace(newID); newID == "" {
+			return ""
+		}
+		command = strings.ReplaceAll(command, newSessionPlaceholder, shellQuote(newID))
+	}
+	quoted := shellQuote(sessionID)
+	if strings.Contains(command, sessionPlaceholder) {
+		return strings.ReplaceAll(command, sessionPlaceholder, quoted)
+	}
+	return command + " " + quoted
+}
+
+// ForkMintsID reports whether this profile's fork line can be told which id to
+// give the copy.
+//
+// It is what decides whether dma records a conversation id for an attached
+// session at all. Told the id, the session restarts by naming it, which is exact.
+// Not told, dma does not know what the agent called the copy -- and does not need
+// to: a forked conversation is filed under the directory it was forked into, so
+// the by-directory resume every other session restarts with finds it there.
+func (p AgentProfile) ForkMintsID() bool {
+	return strings.Contains(p.ForkCommand, newSessionPlaceholder)
+}
+
 const (
-	promptPlaceholder    = "{prompt}"
-	imagePlaceholder     = "{images}"
-	imagePathPlaceholder = "{path}"
-	sessionPlaceholder   = "{session}"
+	promptPlaceholder     = "{prompt}"
+	imagePlaceholder      = "{images}"
+	imagePathPlaceholder  = "{path}"
+	sessionPlaceholder    = "{session}"
+	newSessionPlaceholder = "{new}"
 )
 
 func (p AgentProfile) imageArguments(images []string) string {
@@ -353,13 +416,22 @@ const (
 // shell line, so profiles carry their own arguments and dma needs no schema for
 // per-agent flags.
 //
-// The resume lines are both scoped to the working directory, which is what makes
+// The resume lines are all scoped to the working directory, which is what makes
 // restarting a board of sessions at once correct rather than a shuffle -- see
 // ResumeCommand. "claude --continue" says so in as many words: it continues the
 // most recent conversation in the current directory. Codex filters its session
 // list by the directory it is run in unless asked for --all, so "resume --last"
 // is the most recent session in this worktree and not the most recent one on the
-// machine.
+// machine. pi files sessions in a directory named after the directory they were
+// held in and looks only in that one, so "pi -c" is the same promise.
+//
+// pi needs no permission flag: it has no per-tool approval prompt to put a
+// session into needs_you in the first place. Its -a is about startup rather than
+// tools -- a worktree carrying .pi resources or project skills would otherwise
+// stop at a trust dialog before the opening prompt was ever read, which on a
+// board is a session that never starts. It trusts the repo the user is already
+// running an agent in; -na is the profile edit for anyone who would rather those
+// resources stayed unloaded.
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
 		{
@@ -375,6 +447,15 @@ func DefaultProfiles() []AgentProfile {
 			ImageArgument:   "--image {path}",
 			ResumeCommand:   "codex resume --last",
 			ResumeIDCommand: "codex resume {session}",
+			Hooks:           false,
+		},
+		{
+			Name:            "pi",
+			Command:         "pi -a",
+			ImageArgument:   "@{path}",
+			ResumeCommand:   "pi -a -c",
+			ResumeIDCommand: "pi -a --session {session}",
+			ForkCommand:     "pi -a --fork {session} --session-id {new}",
 			Hooks:           false,
 		},
 	}
@@ -490,8 +571,8 @@ func (c *Config) adoptDefaultImageArguments() {
 // name -- would restart something other than what starts a session. Those
 // profiles restart as a plain launch until their owner writes a resume_command,
 // which the board says out loud each time.
-// It fills in the by-id resume line on the same terms, which is what lets an
-// existing config attach a session without being edited first.
+// It fills in the by-id resume and fork lines on the same terms, which is what
+// lets an existing config attach a session without being edited first.
 func (c *Config) adoptDefaultResumeCommands() {
 	for _, p := range DefaultProfiles() {
 		for i := range c.AgentProfiles {
@@ -504,6 +585,9 @@ func (c *Config) adoptDefaultResumeCommands() {
 			}
 			if mine.ResumeIDCommand == "" {
 				mine.ResumeIDCommand = p.ResumeIDCommand
+			}
+			if mine.ForkCommand == "" {
+				mine.ForkCommand = p.ForkCommand
 			}
 		}
 	}

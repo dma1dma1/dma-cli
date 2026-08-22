@@ -143,6 +143,121 @@ func TestFindCodexReadsMetaAndUserEvent(t *testing.T) {
 	}
 }
 
+// piHome points the package at a temp session store and returns the sessions
+// directory inside it.
+func piHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", dir)
+	return filepath.Join(dir, "sessions")
+}
+
+func TestFindPiReadsHeaderAndPrompt(t *testing.T) {
+	root := piHome(t)
+	writeJSONL(t, filepath.Join(root, "--Users-someone-proj--", "2026-08-21T13-39-02-451Z_019ff3ca.jsonl"),
+		`{"type":"session","version":3,"id":"019ff3ca","timestamp":"2026-08-21T13:39:02.451Z","cwd":"/Users/someone/proj"}`,
+		`{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Rewrite the retry loop"}}`,
+		`{"type":"message","id":"b","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"on it"}]}}`,
+	)
+
+	c, err := Find("pi", "019ff3ca")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if c.Cwd != "/Users/someone/proj" {
+		t.Errorf("cwd = %q", c.Cwd)
+	}
+	if c.Title != "Rewrite the retry loop" {
+		t.Errorf("title = %q", c.Title)
+	}
+	if c.ID != "019ff3ca" || c.Profile != "pi" {
+		t.Errorf("id/profile = %q/%q", c.ID, c.Profile)
+	}
+}
+
+// A block-shaped prompt is what an opening turn with an image in it looks like.
+func TestFindPiReadsBlockContent(t *testing.T) {
+	root := piHome(t)
+	writeJSONL(t, filepath.Join(root, "--p--", "2026-08-21T13-39-02-451Z_abc.jsonl"),
+		`{"type":"session","id":"abc","cwd":"/p"}`,
+		`{"type":"message","message":{"role":"user","content":[{"type":"image","data":"AA","mimeType":"image/png"},{"type":"text","text":"Match this mock"}]}}`,
+	)
+	c, err := Find("pi", "abc")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if c.Title != "Match this mock" {
+		t.Errorf("title = %q", c.Title)
+	}
+}
+
+// The name the session was given beats its opening prompt, and a later rename
+// beats an earlier one.
+func TestFindPiPrefersTheLatestSessionName(t *testing.T) {
+	root := piHome(t)
+	writeJSONL(t, filepath.Join(root, "--p--", "2026-08-21T13-39-02-451Z_abc.jsonl"),
+		`{"type":"session","id":"abc","cwd":"/p"}`,
+		`{"type":"message","message":{"role":"user","content":"a paragraph about the retry loop"}}`,
+		`{"type":"session_info","id":"c","parentId":"a","name":"retry loop"}`,
+		`{"type":"session_info","id":"d","parentId":"c"}`,
+		`{"type":"session_info","id":"e","parentId":"d","name":"retry backoff"}`,
+	)
+	c, err := Find("pi", "abc")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	// The cleared name in the middle is ignored rather than emptying the title.
+	if c.Title != "retry backoff" {
+		t.Errorf("title = %q", c.Title)
+	}
+}
+
+// The header is the only record naming the session, so a file that lost it falls
+// back to the id in the filename.
+func TestFindPiFallsBackToTheFilenameID(t *testing.T) {
+	root := piHome(t)
+	writeJSONL(t, filepath.Join(root, "--p--", "2026-08-21T13-39-02-451Z_abc-123.jsonl"),
+		`not json at all`,
+		`{"type":"message","message":{"role":"user","content":"hi"}}`,
+	)
+	c, err := Find("pi", "abc-123")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if c.ID != "abc-123" {
+		t.Errorf("id = %q", c.ID)
+	}
+}
+
+// A configured session directory holds session files directly, with no directory
+// per working directory above them.
+func TestFindPiReadsAFlatSessionDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", dir)
+	writeJSONL(t, filepath.Join(dir, "2026-08-21T13-39-02-451Z_abc.jsonl"),
+		`{"type":"session","id":"abc","cwd":"/Users/someone/proj"}`,
+		`{"type":"message","message":{"role":"user","content":"Rewrite the retry loop"}}`,
+	)
+	c, err := Find("pi", "abc")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if c.Cwd != "/Users/someone/proj" || c.Title != "Rewrite the retry loop" {
+		t.Errorf("cwd/title = %q/%q", c.Cwd, c.Title)
+	}
+}
+
+// An id is compared as a filename suffix, so one holding a glob character must
+// fail to match rather than matching somebody else's session.
+func TestFindPiDoesNotTreatTheIDAsAPattern(t *testing.T) {
+	root := piHome(t)
+	writeJSONL(t, filepath.Join(root, "--p--", "2026-08-21T13-39-02-451Z_abc.jsonl"),
+		`{"type":"session","id":"abc","cwd":"/p"}`)
+	if _, err := Find("pi", "ab*"); err == nil {
+		t.Fatal("a wildcard id matched a real session")
+	}
+}
+
 func TestFindReportsMissingSessions(t *testing.T) {
 	claudeHome(t)
 	_, err := Find("claude", "nope")
@@ -219,6 +334,7 @@ func TestListSurvivesAnUnreadableStore(t *testing.T) {
 	// who has not used that agent should be told so plainly.
 	claudeHome(t)
 	codexHome(t)
+	piHome(t)
 	for _, agent := range Supported() {
 		got, err := List(agent, 5)
 		if err != nil {

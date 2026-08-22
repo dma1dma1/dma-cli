@@ -47,6 +47,92 @@ func attachConfig(t *testing.T, repoPath string) *core.Config {
 	}
 }
 
+// recordPiSession writes a pi session file where the real agent would put one:
+// under a directory named after the directory the conversation was held in.
+func recordPiSession(t *testing.T, id, cwd, prompt string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", home)
+	dir := filepath.Join(home, "sessions", "--"+strings.ReplaceAll(strings.TrimPrefix(cwd, "/"), "/", "-")+"--")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := `{"type":"session","version":3,"id":"` + id + `","cwd":"` + cwd + `"}` + "\n" +
+		`{"type":"message","message":{"role":"user","content":"` + prompt + `"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "2026-08-21T13-39-02-451Z_"+id+".jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// attachForkConfig is a config whose agent has to be forked to be attached, which
+// is what an agent that records its own working directory needs. Its commands do
+// nothing when launched.
+func attachForkConfig(t *testing.T, repoPath string) *core.Config {
+	t.Helper()
+	cfg := attachConfig(t, repoPath)
+	cfg.AgentProfiles = []core.AgentProfile{{
+		Name: "pi", Command: "true",
+		ResumeIDCommand: "true --session {session}",
+		ForkCommand:     "true --fork {session} --session-id {new}",
+	}}
+	cfg.DefaultProfile = "pi"
+	return cfg
+}
+
+// The session ends up holding the copy, not the original. Recording the original
+// instead would send every later restart back to a conversation that stopped
+// where the fork began.
+func TestAttachForksForAnAgentThatCarriesItsOwnDirectory(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "attachfork")
+	recordPiSession(t, "01a026e1-source", repoPath, "Rewrite the retry loop")
+	cfg := attachForkConfig(t, repoPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := Attach(ctx, cfg, AttachRequest{Profile: "pi", SessionID: "01a026e1-source"})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	s := res.Session
+	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), s.TmuxSession) })
+
+	if s.ForkedFrom != "01a026e1-source" {
+		t.Errorf("forked from = %q, want the conversation it was made from", s.ForkedFrom)
+	}
+	if s.AgentSessionID == "" || s.AgentSessionID == "01a026e1-source" {
+		t.Errorf("agent session id = %q, want the minted id of the copy", s.AgentSessionID)
+	}
+	if s.Title != "Rewrite the retry loop" {
+		t.Errorf("title = %q", s.Title)
+	}
+}
+
+// A copy already on the board is the same work as the conversation it was made
+// from, so attaching that conversation again is refused.
+func TestAttachRefusesAConversationAlreadyForkedOntoTheBoard(t *testing.T) {
+	repoPath := newTestRepo(t, "attachforkdup")
+	recordPiSession(t, "01a026e1-twice", repoPath, "Twice over")
+	cfg := attachForkConfig(t, repoPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := Attach(ctx, cfg, AttachRequest{
+		Profile:   "pi",
+		SessionID: "01a026e1-twice",
+		Existing: []*core.Session{{
+			Title: "Twice over", AgentSessionID: "some-minted-id",
+			ForkedFrom: "01a026e1-twice", WorktreePath: "/somewhere",
+		}},
+	})
+	var already *AlreadyAttachedError
+	if !errorAs(err, &already) {
+		t.Fatalf("err = %v, want AlreadyAttachedError", err)
+	}
+}
+
 func TestAttachCarriesWorkInProgress(t *testing.T) {
 	if !tmuxx.Available() {
 		t.Skip("tmux not installed")

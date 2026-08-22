@@ -82,6 +82,48 @@ const codexTrust = `> You are in ~/.dma/worktrees/dma-cli/hello
 
   Press enter to continue`
 
+// The frames pi draws. Its dialogs carry no numbers -- the rows are plain labels
+// with an arrow on the selected one -- so the only thing separating one from an
+// agent that started a line with an arrow is the line saying which keys move the
+// selection.
+const piTrustPrompt = `────────────────────────────────────────
+Trust project folder?
+/Users/someone/.dma/worktrees/proj/rate-limiter
+
+This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.
+
+→ Yes, and remember for this folder
+  Yes, for this session only
+  No
+
+↑↓ navigate  enter select  escape cancel
+────────────────────────────────────────`
+
+// The same shape with no question above it, which is what /trust looks like. The
+// marked row is then the best the badge can do.
+const piTrustPanel = `────────────────────────────────────────
+Project trust
+/Users/someone/.dma/worktrees/proj/rate-limiter
+
+Saved decision: none
+Current session: untrusted
+
+→ Yes, and remember for this folder
+  No
+
+↑↓ navigate  enter save  escape cancel
+────────────────────────────────────────`
+
+const piWorking = `⏺ Read src/limiter.go (84 lines)
+
+Working... (escape to interrupt)`
+
+// pi's own startup header names the interrupt key without the verb, which is the
+// difference between advertising a turn and listing a keybinding.
+const piIdleHeader = `pi v0.84.2
+escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+t more
+Press ctrl+t to show full startup help and loaded resources.`
+
 func TestClassifyWorkingWhileInterruptHintShows(t *testing.T) {
 	// Quiet long enough to be called idle on pane changes alone: the hint is
 	// what keeps it working.
@@ -376,6 +418,60 @@ func TestAwaitingInputIgnoresAMenuShapeMidTurn(t *testing.T) {
 	}
 	if _, ok := awaitingInput(content, false); !ok {
 		t.Error("the same options should count once the agent stops advertising a turn")
+	}
+}
+
+// A dialog whose rows are not numbered is still a dialog. Without this a pi
+// session sitting on its trust prompt reads as idle: nothing is changing on the
+// pane, which is exactly what a blocked agent looks like.
+func TestAwaitingInputRecognizesAnUnnumberedDialog(t *testing.T) {
+	cases := []struct{ name, content, detail string }{
+		{"trust prompt", piTrustPrompt, "Trust project folder?"},
+		{"no question above it", piTrustPanel, "→ Yes, and remember for this folder"},
+	}
+	for _, tc := range cases {
+		detail, ok := awaitingInput(tc.content, false)
+		if !ok {
+			t.Errorf("%s: did not recognize a dialog", tc.name)
+			continue
+		}
+		if detail != tc.detail {
+			t.Errorf("%s: detail = %q, want %q", tc.name, detail, tc.detail)
+		}
+	}
+}
+
+// A marker on its own is not a menu, and neither is a hint on its own. Both have
+// to be there, and exactly one row can be marked -- a quoted block where every
+// row opens the same way is not a selection.
+func TestAwaitingInputNeedsMoreThanAMarker(t *testing.T) {
+	cases := []struct{ name, content string }{
+		{"arrow in prose", "The flow is:\n→ parse\n→ validate\n→ write\nDone in 18s.\n"},
+		{"one arrow, no hint", "  → picked the shorter branch\n"},
+		{"hint, no marker", "Here is how the picker works:\n↑↓ navigate between the rows\n"},
+		{"quoted block", "> quoted line one\n> quoted line two\n↑↓ navigate  enter select\n"},
+		{"pi at rest", piIdleHeader},
+	}
+	for _, tc := range cases {
+		if detail, ok := awaitingInput(tc.content, false); ok {
+			t.Errorf("%s: false positive, reported %q", tc.name, detail)
+		}
+	}
+}
+
+// pi advertises its turns the way Codex does, so it gets the same treatment: the
+// hint means working, and its absence plus a still pane means the turn is over.
+func TestClassifyReadsAPiTurn(t *testing.T) {
+	state, _, sawBusy := classify(piWorking, IdleAfter+time.Minute, true, sample{}, false)
+	if state != core.AgentWorking {
+		t.Errorf("state = %q, want working", state)
+	}
+	if !sawBusy {
+		t.Error("did not remember that pi shows an interrupt hint")
+	}
+	prev := sample{previous: core.AgentWorking, sawBusy: true}
+	if state, _, _ := classify(piIdleHeader, SettleAfter, true, prev, true); state != core.AgentDone {
+		t.Errorf("state = %q, want done once the hint is gone", state)
 	}
 }
 

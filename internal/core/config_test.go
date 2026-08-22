@@ -284,6 +284,90 @@ func TestDefaultResumeCommandsAreScopedToTheWorktree(t *testing.T) {
 	}
 }
 
+// pi has no per-tool approval prompt, so its profile needs no permission flag --
+// only the startup one, without which a worktree carrying project resources stops
+// at a trust dialog before the opening prompt is read.
+func TestDefaultPiProfileStartsWithoutAskingAboutTheProject(t *testing.T) {
+	pi, ok := DefaultConfig().Profile("pi")
+	if !ok {
+		t.Fatal("no pi profile in the default config")
+	}
+	if pi.Command != "pi -a" {
+		t.Errorf("pi command = %q, want the startup trust question answered", pi.Command)
+	}
+	// -c is the most recent session filed under this directory, which is the
+	// promise every other resume line here makes.
+	if pi.ResumeCommand != "pi -a -c" {
+		t.Errorf("pi resume = %q, want the most recent session in this directory", pi.ResumeCommand)
+	}
+}
+
+// pi records the directory a conversation was held in and works there wherever it
+// is resumed from, so attaching one has to copy it rather than reopen it.
+func TestDefaultPiProfileForksWithAMintedID(t *testing.T) {
+	pi, _ := DefaultConfig().Profile("pi")
+	if !pi.ForkMintsID() {
+		t.Fatal("pi cannot be told what to call the copy it makes")
+	}
+	line := pi.ForkLine("01a026e1-2d8d", "abc123")
+	if line != "pi -a --fork '01a026e1-2d8d' --session-id 'abc123'" {
+		t.Errorf("fork line = %q", line)
+	}
+	// The fork line must never stand in for a resume: a restart running it would
+	// copy the original a second time and abandon everything done since.
+	if strings.Contains(pi.RestartCommandFor("abc123"), "--fork") {
+		t.Errorf("restart line forks: %q", pi.RestartCommandFor("abc123"))
+	}
+	if pi.ResumeIDLine("abc123") != "pi -a --session 'abc123'" {
+		t.Errorf("resume-by-id line = %q", pi.ResumeIDLine("abc123"))
+	}
+}
+
+func TestForkLineNeedsBothIDs(t *testing.T) {
+	p := AgentProfile{ForkCommand: "pi --fork {session} --session-id {new}"}
+	if got := p.ForkLine("source", ""); got != "" {
+		t.Errorf("fork line with no id for the copy = %q, want none", got)
+	}
+	if got := p.ForkLine("", "minted"); got != "" {
+		t.Errorf("fork line with nothing to copy = %q, want none", got)
+	}
+	// A profile that cannot be told an id still forks; dma just does not learn
+	// what the copy is called.
+	bare := AgentProfile{ForkCommand: "agent fork"}
+	if got := bare.ForkLine("source", "minted"); got != "agent fork 'source'" {
+		t.Errorf("bare fork line = %q", got)
+	}
+	if bare.ForkMintsID() {
+		t.Error("a fork command with no {new} claimed it could name the copy")
+	}
+}
+
+// A config written before dma knew pi forks must gain the fork line, or attaching
+// a pi conversation would resume it in place and leave the agent working in the
+// directory it came from.
+func TestNormalizeBackfillsForkCommand(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{Name: "pi", Command: "pi -a"}}}
+	c.normalize()
+
+	got, _ := c.Profile("pi")
+	want, _ := DefaultConfig().Profile("pi")
+	if got.ForkCommand != want.ForkCommand {
+		t.Errorf("pi fork command = %q, want %q", got.ForkCommand, want.ForkCommand)
+	}
+}
+
+// A command the user replaced is a deliberate choice, and a generated fork line
+// paired with it would fork something other than what starts a session.
+func TestNormalizeLeavesACustomizedCommandWithoutAForkLine(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{Name: "pi", Command: "my-pi-wrapper"}}}
+	c.normalize()
+
+	got, _ := c.Profile("pi")
+	if got.ForkCommand != "" {
+		t.Errorf("fork command = %q, want none for a replaced command", got.ForkCommand)
+	}
+}
+
 // A resume that finds nothing must not leave a live terminal sitting at a shell
 // prompt: the board reads that as an agent running.
 func TestRestartCommandFallsBackToAPlainLaunch(t *testing.T) {
@@ -674,5 +758,15 @@ func TestNormalizeKeepsAWrittenResumeIDCommand(t *testing.T) {
 	got, _ := c.Profile("claude")
 	if got.ResumeIDCommand != "claude --resume-my-way {session}" {
 		t.Errorf("resume_id_command = %q, want the one that was written", got.ResumeIDCommand)
+	}
+}
+
+// A conversation id is somebody's typing, and it must not be read as a
+// placeholder for the id dma is minting.
+func TestForkLineDoesNotTreatTheIDAsAPlaceholder(t *testing.T) {
+	p := AgentProfile{ForkCommand: "agent --fork {session} --id {new}"}
+	got := p.ForkLine("{new}", "minted")
+	if got != "agent --fork '{new}' --id 'minted'" {
+		t.Errorf("fork line = %q", got)
 	}
 }
