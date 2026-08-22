@@ -100,6 +100,24 @@ var (
 	choiceMarker = regexp.MustCompile(`^` + selectMarker + `\s*\d{1,2}[.)]\s`)
 )
 
+// markedRow matches the row a selection marker sits on where the rows carry no
+// numbers. See markerPrompt for what has to be true before it means anything.
+var markedRow = regexp.MustCompile(`^` + selectMarker + `\s*\S`)
+
+// navHints match the line a picker draws to say which keys move its selection.
+//
+// It is what makes an unnumbered menu recognizable at all. pi renders its rows as
+// plain labels with an arrow on the selected one -- "→ Yes, and remember" -- so
+// there are no numbers to key on, and the marker alone is far too common to trust:
+// a quoted line opens with ">", and agents draw arrows into their own prose. The
+// hint is drawn by a live picker and by nothing else, and only while one is open.
+//
+// Like everything else here it matches an idiom rather than product wording: a
+// pair of arrows, and the word for what they do.
+var navHints = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:↑↓|↑/↓|▲▼|up/down)\s*(?:to\s+)?(?:navigate|select|move|choose)\b`),
+}
+
 // busyPatterns match the affordance an agent shows while a turn is in flight.
 // A terminal agent that can be interrupted has to say which key does it, so the
 // hint is present for exactly as long as there is something to interrupt --
@@ -360,6 +378,9 @@ func awaitingInput(content string, busy bool) (string, bool) {
 		if q, ok := choicePrompt(lines); ok {
 			return truncate(q, 60), true
 		}
+		if q, ok := markerPrompt(lines); ok {
+			return truncate(q, 60), true
+		}
 	}
 	if line := matchAny(lines, promptPatterns); line != "" {
 		return truncate(line, 60), true
@@ -405,6 +426,39 @@ func choicePrompt(lines []string) (string, bool) {
 		return "", false
 	}
 	return question(lines[:start], marked), true
+}
+
+// markerPrompt reports whether the tail holds a dialog whose rows are not
+// numbered: exactly one row carrying a selection marker, alongside a line saying
+// which keys move it.
+//
+// It is asked after choicePrompt because a numbered menu is the more specific
+// shape of the same thing, and answering with the numbers when they are there
+// keeps the looser rule off frames that never needed it.
+//
+// Insisting on exactly one marked row is the same discipline choicePrompt
+// follows: a quoted or bulleted block where every row carries the same prefix is
+// not a selection. What this does not reach is a picker so long that the marked
+// row has scrolled past the window the tail looks at -- the question is then off
+// screen too, and a dialog nobody can see the top of is not one this can name.
+func markerPrompt(lines []string) (string, bool) {
+	if matchAny(lines, navHints) == "" {
+		return "", false
+	}
+	marked, at := "", -1
+	for i, line := range lines {
+		if !markedRow.MatchString(line) {
+			continue
+		}
+		if marked != "" {
+			return "", false
+		}
+		marked, at = line, i
+	}
+	if marked == "" {
+		return "", false
+	}
+	return question(lines[:at], marked), true
 }
 
 // question names what a dialog is asking. The options themselves are the

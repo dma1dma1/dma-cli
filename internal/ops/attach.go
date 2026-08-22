@@ -52,15 +52,15 @@ type AttachResult struct {
 }
 
 // Attach gives an agent conversation that was started outside dma a worktree
-// and a card, and reopens it there.
+// and a card, and opens it there.
 //
-// The conversation is not copied or restarted: the agent is launched on the
-// same conversation by id, so it comes up knowing everything it knew a moment
-// ago. What changes is where it is standing. That relocation is the whole
-// operation, and it is why the default is to bring the work in progress along:
-// a conversation whose last few turns were spent editing files, resumed in a
-// worktree cut clean from a commit, would be an agent confidently describing
-// changes that are not in front of it.
+// The conversation is not restarted: the agent comes up knowing everything it
+// knew a moment ago, either resumed on the conversation itself or on a copy of it,
+// whichever its profile offers -- see openConversation. What changes is where it
+// is standing. That relocation is the whole operation, and it is why the default
+// is to bring the work in progress along: a conversation whose last few turns
+// were spent editing files, resumed in a worktree cut clean from a commit, would
+// be an agent confidently describing changes that are not in front of it.
 //
 // So unless Clean is set, the worktree is cut from the commit the conversation's
 // directory is sitting on rather than from the fetched base tip, and that
@@ -80,8 +80,8 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 	// Checked before anything is looked up, because it is a fact about the
 	// configuration rather than about this conversation, and the answer is the
 	// same for every id the user might try next.
-	if strings.TrimSpace(prof.ResumeIDCommand) == "" {
-		return nil, fmt.Errorf("agent profile %q has no resume_id_command, so dma cannot reopen one of its conversations by id", req.Profile)
+	if strings.TrimSpace(prof.ForkCommand) == "" && strings.TrimSpace(prof.ResumeIDCommand) == "" {
+		return nil, fmt.Errorf("agent profile %q has no resume_id_command or fork_command, so dma cannot open one of its conversations in a worktree of its own", req.Profile)
 	}
 
 	conversation, err := convo.Find(req.Profile, req.SessionID)
@@ -89,9 +89,15 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 		return nil, err
 	}
 	for _, s := range req.Existing {
-		if s.AgentSessionID == conversation.ID {
+		// Either the board is holding that conversation, or it is holding a copy
+		// made from it. Both mean the same work already has a card.
+		if s.AgentSessionID == conversation.ID || s.ForkedFrom == conversation.ID {
 			return nil, &AlreadyAttachedError{Title: s.Title, Worktree: s.WorktreePath}
 		}
+	}
+	open := openConversation(prof, conversation.ID)
+	if open.Line == "" {
+		return nil, fmt.Errorf("agent profile %q cannot open conversation %s", req.Profile, conversation.ID)
 	}
 
 	var warnings []string
@@ -171,7 +177,7 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 	// No fallback launch line behind this one, unlike a restart: an attach that
 	// cannot find the conversation must not quietly become a fresh agent under
 	// a card named after the session the user asked for.
-	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.ResumeIDLine(conversation.ID)); err != nil {
+	if err := tmuxx.SendLiteral(ctx, tmuxName, open.Line); err != nil {
 		return nil, abort(ctx, repo, worktree, tmuxName, fmt.Errorf("resume agent: %w", err))
 	}
 
@@ -185,7 +191,8 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 		BaseBranch:     base,
 		TmuxSession:    tmuxName,
 		AgentProfile:   req.Profile,
-		AgentSessionID: conversation.ID,
+		AgentSessionID: open.SessionID,
+		ForkedFrom:     open.ForkedFrom,
 		CreatedAt:      now,
 		// Idle, not working: a resumed conversation opens on its history and
 		// waits, because nothing was sent with it. The first thing the agent
@@ -202,8 +209,8 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 	// For an agent that reports through hooks, the conversation id is the id the
 	// hooks arrive under, so filling it in now means the very first event
 	// correlates by id instead of falling back to matching on the directory.
-	if prof.Hooks {
-		s.ClaudeSessionID = conversation.ID
+	if prof.Hooks && open.SessionID != "" {
+		s.ClaudeSessionID = open.SessionID
 	}
 
 	return &AttachResult{
@@ -212,6 +219,44 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 		Carried:      carried,
 		Warnings:     warnings,
 	}, nil
+}
+
+// opened is how one conversation is being brought up in the worktree cut for it.
+type opened struct {
+	// Line is the shell line that does it.
+	Line string
+	// SessionID is the conversation the session holds afterwards. It is empty
+	// only for a fork whose agent could not be told what to call the copy, which
+	// then restarts by directory like a session dma started itself.
+	SessionID string
+	// ForkedFrom is the conversation copied, empty when the original was reopened
+	// where it stands.
+	ForkedFrom string
+}
+
+// openConversation decides how to put an existing conversation in front of an
+// agent standing in a new worktree.
+//
+// A fork wins wherever a profile offers one, and the session then holds the copy
+// rather than the original: an agent that carries its own idea of where it lives
+// would otherwise go on working in the directory the conversation came from, with
+// this card's worktree left empty and two cards' edits landing in one tree. See
+// AgentProfile.ForkCommand.
+//
+// The id for the copy is minted here rather than read back afterwards, because
+// the only other way to learn it is to guess which file in the agent's store
+// appeared just now.
+func openConversation(prof core.AgentProfile, sourceID string) opened {
+	if strings.TrimSpace(prof.ForkCommand) != "" {
+		minted := core.NewID()
+		if line := prof.ForkLine(sourceID, minted); line != "" {
+			if !prof.ForkMintsID() {
+				minted = ""
+			}
+			return opened{Line: line, SessionID: minted, ForkedFrom: sourceID}
+		}
+	}
+	return opened{Line: prof.ResumeIDLine(sourceID), SessionID: sourceID}
 }
 
 // AlreadyAttachedError reports a conversation that is already on the board.

@@ -71,8 +71,8 @@ func Find(profile, id string) (Conversation, error) {
 	if err != nil {
 		return Conversation{}, err
 	}
-	// The id is taken from the argument rather than from the file: for one of
-	// the two agents it is the filename that carries it, and a transcript that
+	// The id is taken from the argument rather than from the file: for some of
+	// these agents it is the filename that carries it, and a transcript that
 	// records nothing usable would otherwise produce a conversation whose id
 	// cannot be resumed.
 	c.ID, c.Profile = id, profile
@@ -118,11 +118,11 @@ func List(profile string, limit int) ([]Conversation, error) {
 
 // Supported names the agents attach can read conversations for, in the order
 // they should be offered.
-func Supported() []string { return []string{"claude", "codex"} }
+func Supported() []string { return []string{"claude", "codex", "pi"} }
 
 // NotFoundError reports that an agent has no conversation under that id. It
-// names the directory searched, since the usual cause is an id belonging to the
-// other agent.
+// names the directory searched, since the usual cause is an id belonging to a
+// different agent.
 type NotFoundError struct {
 	Profile string
 	ID      string
@@ -138,7 +138,19 @@ type UnsupportedError struct{ Profile string }
 
 func (e *UnsupportedError) Error() string {
 	return fmt.Sprintf("dma cannot read %s conversations; it knows how to attach %s",
-		e.Profile, strings.Join(Supported(), " and "))
+		e.Profile, prose(Supported()))
+}
+
+// prose joins names the way a sentence does, so an error naming three agents
+// does not read as "claude and codex and pi".
+func prose(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // --- sources ---
@@ -149,7 +161,7 @@ type source struct {
 	// test can move it with an environment variable.
 	root func() string
 	// locate finds the transcript holding one id, returning "" when there is
-	// none. It is separate from candidates because both agents can answer this
+	// none. It is separate from candidates because every agent here can answer it
 	// from a path or a filename, without reading anything.
 	locate func(id string) (string, error)
 	// candidates lists every transcript, for the recent list.
@@ -169,6 +181,8 @@ func sourceFor(profile string) (source, error) {
 		return claudeSource(), nil
 	case "codex":
 		return codexSource(), nil
+	case "pi":
+		return piSource(), nil
 	}
 	return source{}, &UnsupportedError{Profile: profile}
 }
@@ -307,49 +321,12 @@ func codexRoot() string {
 func codexSource() source {
 	return source{
 		root: codexRoot,
-		locate: func(id string) (string, error) {
-			// The id is the tail of the filename, but the date directories in
-			// front of it are not derivable from the id, so this is a walk. It
-			// reads directory entries only -- no transcript is opened.
-			var found string
-			suffix := "-" + id + ".jsonl"
-			err := filepath.WalkDir(codexRoot(), func(p string, d fs.DirEntry, err error) error {
-				if err != nil {
-					// An unreadable directory somewhere in the tree is not a
-					// reason to abandon the search of the rest of it.
-					return nil //nolint:nilerr
-				}
-				if d.IsDir() || !strings.HasSuffix(d.Name(), suffix) {
-					return nil
-				}
-				found = p
-				return fs.SkipAll
-			})
-			if os.IsNotExist(err) {
-				return "", nil
-			}
-			return found, err
-		},
-		candidates: func() ([]candidate, error) {
-			var out []candidate
-			err := filepath.WalkDir(codexRoot(), func(p string, d fs.DirEntry, err error) error {
-				if err != nil {
-					return nil //nolint:nilerr
-				}
-				if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
-					return nil
-				}
-				if info, err := d.Info(); err == nil {
-					out = append(out, candidate{path: p, mod: info.ModTime()})
-				}
-				return nil
-			})
-			if os.IsNotExist(err) {
-				return nil, nil
-			}
-			return out, err
-		},
-		read: readCodex,
+		// The id is the tail of the filename, but the date directories in front
+		// of it are not derivable from the id, so this is a walk rather than a
+		// glob. It reads directory entries only -- no transcript is opened.
+		locate:     func(id string) (string, error) { return walkFor(codexRoot(), "-"+id+".jsonl") },
+		candidates: func() ([]candidate, error) { return walkAll(codexRoot()) },
+		read:       readCodex,
 	}
 }
 
@@ -405,6 +382,160 @@ func readCodex(path string) (Conversation, error) {
 		}
 	}
 	return c, err
+}
+
+// --- pi ---
+
+// piRoot is where pi files sessions: one directory per working directory the
+// agent has been run in, each holding one file per session named for the moment
+// it started and the id it was given.
+//
+// A configured session directory is taken as it is rather than having "sessions"
+// appended, because that is what pi does with it -- and files land in it directly
+// rather than under a directory per working directory. Nothing below depends on
+// which of the two layouts it is looking at: both are searched by walking.
+func piRoot() string {
+	if d := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_SESSION_DIR")); d != "" {
+		return d
+	}
+	if d := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); d != "" {
+		return filepath.Join(d, "sessions")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".pi/agent/sessions"
+	}
+	return filepath.Join(home, ".pi", "agent", "sessions")
+}
+
+func piSource() source {
+	return source{
+		root:       piRoot,
+		locate:     func(id string) (string, error) { return walkFor(piRoot(), "_"+id+".jsonl") },
+		candidates: func() ([]candidate, error) { return walkAll(piRoot()) },
+		read:       readPi,
+	}
+}
+
+// readPi pulls the working directory, the id and a title out of a pi session
+// file.
+//
+// The first two are on the header, which is the first line. The title prefers the
+// name the session was given over its opening prompt, for the reason readClaude
+// prefers a generated title: a name is a name, where a prompt is the first
+// sentence of a paragraph. A session can be renamed at any point, so the scan
+// goes on past a usable answer looking for a later one, bounded by
+// titleLookahead.
+func readPi(path string) (Conversation, error) {
+	c := Conversation{Path: path}
+	if info, err := os.Stat(path); err == nil {
+		c.Updated = info.ModTime()
+	}
+
+	var rec struct {
+		Type    string `json:"type"`
+		ID      string `json:"id"`
+		Cwd     string `json:"cwd"`
+		Name    string `json:"name"`
+		Message struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	seen := 0
+	err := scanJSONL(path, func(line []byte) bool {
+		seen++
+		rec.Type, rec.ID, rec.Cwd, rec.Name = "", "", "", ""
+		rec.Message.Role, rec.Message.Content = "", nil
+		if json.Unmarshal(line, &rec) != nil {
+			return true
+		}
+		switch rec.Type {
+		case "session":
+			// The header, and the only record whose id names the session: every
+			// entry after it carries an id of its own, which is its place in the
+			// tree the session is stored as.
+			if c.Cwd == "" {
+				c.Cwd = rec.Cwd
+			}
+			if c.ID == "" {
+				c.ID = rec.ID
+			}
+		case "session_info":
+			// A rename, and the later one wins. An entry that clears the name is
+			// left alone rather than clearing the title: a card with no name on it
+			// is worse than one carrying the name it had a moment ago.
+			if name := strings.TrimSpace(rec.Name); name != "" {
+				c.Title = name
+			}
+		case "message":
+			if c.Title == "" && rec.Message.Role == "user" {
+				c.Title = firstUserText(messageText(rec.Message.Content))
+			}
+		}
+		return c.Cwd == "" || c.ID == "" || c.Title == "" || seen < titleLookahead
+	})
+	if c.ID == "" {
+		// A file whose header did not parse still has the id in its name:
+		// <timestamp>_<id>.jsonl, where the timestamp has had its colons and
+		// dots replaced and so carries no underscore of its own.
+		base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		if i := strings.LastIndex(base, "_"); i >= 0 && len(base) > i+1 {
+			c.ID = base[i+1:]
+		}
+	}
+	return c, err
+}
+
+// --- shared search ---
+
+// walkFor is the path of the first file under root whose name ends in suffix, or
+// "" when there is none.
+//
+// The suffix is compared rather than matched, so an id carrying a character a
+// glob would read as a pattern fails to find anything rather than finding
+// something else.
+func walkFor(root, suffix string) (string, error) {
+	var found string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// An unreadable directory somewhere in the tree is not a reason to
+			// abandon the search of the rest of it.
+			return nil //nolint:nilerr
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), suffix) {
+			return nil
+		}
+		found = p
+		return fs.SkipAll
+	})
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	return found, err
+}
+
+// walkAll lists every transcript under root with its modification time. A store
+// that does not exist yet is an empty list rather than an error: an agent that
+// has never been run is not a failure to search.
+func walkAll(root string) ([]candidate, error) {
+	var out []candidate
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			out = append(out, candidate{path: p, mod: info.ModTime()})
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return out, err
 }
 
 // --- shared parsing ---
@@ -470,10 +601,11 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 
 // firstUserText reduces an opening prompt to something that can name a card.
 //
-// A prompt that opens with a tag is skipped: both agents inject context of
+// A prompt that opens with a tag is skipped: these agents inject context of
 // their own into the turn -- available plugins, the expansion of a slash
-// command -- and those arrive as user text with markup around them. What the
-// person typed is the first line that is not one of those.
+// command, the contents of an attached file -- and those arrive as user text with
+// markup around them. What the person typed is the first line that is not one of
+// those.
 func firstUserText(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)

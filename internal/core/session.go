@@ -222,6 +222,16 @@ type Session struct {
 	// see AgentProfile.ResumeIDCommand. Empty on a session dma started itself,
 	// which restarts by directory as before.
 	AgentSessionID string `json:"agent_session_id,omitempty"`
+
+	// ForkedFrom is the conversation this session's own conversation was copied
+	// from, set when attaching had to copy rather than reopen -- see
+	// AgentProfile.ForkCommand.
+	//
+	// Nothing resumes from it. It is kept so attaching the same conversation
+	// twice can still be refused: the session is holding a copy under a different
+	// id, so the id it was made from is the only thing left that says the two
+	// cards would be the same piece of work.
+	ForkedFrom string `json:"forked_from,omitempty"`
 }
 
 // Attached reports whether this session is continuing a conversation that began

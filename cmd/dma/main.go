@@ -246,6 +246,7 @@ conversation has been running, and reopens the same conversation there.
   dma attach claude                     list recent claude conversations
   dma attach claude <session-id>        attach one of them
   dma attach codex <session-id>         the same, for codex
+  dma attach pi <session-id>            the same, for pi
 
 flags:
   -repo <id>       repo to cut the worktree in (default: the repo the
@@ -346,7 +347,13 @@ func runAttach(args []string) error {
 		fmt.Fprintln(os.Stderr, "warning: "+w)
 	}
 	fmt.Printf("attached %q\n", s.Title)
-	fmt.Printf("  agent       %s (%s)\n", s.AgentProfile, s.AgentSessionID)
+	fmt.Printf("  agent       %s (%s)\n", s.AgentProfile, orDash(s.AgentSessionID))
+	if s.ForkedFrom != "" {
+		// Said out loud because it is a different bargain from the one the other
+		// agents make: this session holds a copy, so turns taken here do not
+		// appear in the conversation it was made from.
+		fmt.Printf("  forked from %s\n", s.ForkedFrom)
+	}
 	fmt.Printf("  repo        %s\n", s.RepoID)
 	fmt.Printf("  worktree    %s\n", s.WorktreePath)
 	fmt.Printf("  tmux        %s\n", s.TmuxSession)
