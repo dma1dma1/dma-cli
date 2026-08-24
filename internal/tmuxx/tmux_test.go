@@ -442,3 +442,49 @@ func TestCapturePaneAtScrollsHistory(t *testing.T) {
 		t.Errorf("scroll request was not clamped: actual=%d", actual)
 	}
 }
+
+// TestNewSessionClearsInheritedDirenvState covers the launch failure described
+// on direnvState: a session that starts believing another checkout's .envrc is
+// loaded has its PATH replaced at the first prompt, and the agent dma types is
+// then not on it.
+//
+// It asserts the override on the session rather than what the pane's shell ends
+// up with, and the reason is worth recording: direnv unsets these variables as
+// part of unloading. A pane asked what it inherited answers "nothing" either
+// way -- the state is gone by the first prompt, having already taken PATH with
+// it -- so reading them there tests nothing at all, which an earlier version of
+// this test did. What can be checked is the thing that decides the outcome:
+// whether the session carries an empty value, which is what direnv reads as
+// nothing to unload.
+//
+// tmux reports a variable it has no override for as an error, so the two cases
+// are distinguishable and the assertion cannot pass by inheriting.
+func TestNewSessionClearsInheritedDirenvState(t *testing.T) {
+	if !Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	name := "dma-tmuxx-test-" + strings.ReplaceAll(t.Name(), "/", "-")
+	if err := NewSession(ctx, name, os.TempDir(), 100, 30); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+
+	if len(direnvState) == 0 {
+		t.Fatal("direnvState is empty, so nothing is being cleared")
+	}
+	for _, key := range direnvState {
+		out, err := exec.Command("tmux", "show-environment", "-t", name, key).CombinedOutput()
+		got := strings.TrimSpace(string(out))
+		if err != nil {
+			t.Errorf("session does not clear %s, so it inherits whatever the "+
+				"server holds: tmux show-environment says %q", key, got)
+			continue
+		}
+		if want := key + "="; got != want {
+			t.Errorf("session has %s as %q, want %q", key, got, want)
+		}
+	}
+}

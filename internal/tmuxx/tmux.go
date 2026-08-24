@@ -84,18 +84,56 @@ func ListSessions(ctx context.Context) (map[string]bool, error) {
 	return live, nil
 }
 
+// direnvState names the variables direnv writes into a shell to record which
+// .envrc it has loaded and what that load changed.
+//
+// They have to be cleared out of a session dma creates, because tmux builds
+// every new session's environment from the server's, and the server's was
+// whatever the shell that first started tmux happened to have -- typically a
+// checkout with an .envrc of its own. The pane then starts believing that
+// .envrc is loaded, and direnv's shell hook, running at the first prompt in a
+// directory the .envrc does not cover, unloads it: it replaces PATH wholesale
+// with the snapshot DIRENV_DIFF holds from before that load.
+//
+// That snapshot predates the pane's own shell startup, so the unload also
+// discards every PATH entry the user's rc files just added -- and an agent
+// installed under one of them, as pi is under ~/.local/bin, is then not on PATH
+// at all. The launch line dma types into the pane is a command not found, and
+// what the board shows is a live terminal sitting at a shell prompt, which it
+// reads as an agent that started.
+//
+// Emptying them is what "nothing is loaded here" looks like to direnv, so there
+// is nothing to unload and the pane keeps the PATH its own startup built. It
+// does not disable direnv: a worktree carrying its own .envrc still loads it at
+// that first prompt, which is the whole point of authorizeMatchingDirenv.
+var direnvState = []string{"DIRENV_DIFF", "DIRENV_DIR", "DIRENV_FILE", "DIRENV_WATCHES"}
+
 // NewSession starts a detached session rooted at dir, sized to cols x rows.
 //
 // The size matters: a detached tmux session defaults to 80x24 regardless of the
 // terminal, so an agent launched without one renders its whole UI into 80
 // columns and the preview shows a narrow strip inside a wide panel.
 func NewSession(ctx context.Context, name, dir string, cols, rows int) error {
-	args := []string{"new-session", "-d", "-s", name, "-c", dir}
+	base := []string{"new-session", "-d", "-s", name, "-c", dir}
 	if cols > 0 && rows > 0 {
-		args = append(args, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+		base = append(base, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	}
+
+	args := base
+	for _, key := range direnvState {
+		args = append(args, "-e", key+"=")
 	}
 	if _, err := run(ctx, args...); err != nil {
-		return err
+		// -e is not in every tmux dma might be run against, and a session that
+		// cannot be created at all is a worse outcome than one that inherits a
+		// stale environment: without it the board has no terminal to put an
+		// agent in, which is every start failing rather than the subset of them
+		// direnvState describes. So the flags come off and the session is made
+		// the way it was before they were added, with the first error kept if
+		// that fails too -- it is the one that says what actually went wrong.
+		if _, plain := run(ctx, base...); plain != nil {
+			return err
+		}
 	}
 	if cols > 0 && rows > 0 {
 		// new-session -x/-y sets the initial size; pinning it manual keeps tmux
