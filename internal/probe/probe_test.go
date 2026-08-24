@@ -475,6 +475,17 @@ func TestClassifyReadsAPiTurn(t *testing.T) {
 	}
 }
 
+func TestClassifyReadsCurrentPiWorkingStatus(t *testing.T) {
+	state, _, sawBusy := classify("  Working...\n", IdleAfter+time.Minute, false,
+		sample{previous: core.AgentDone}, true)
+	if state != core.AgentWorking {
+		t.Errorf("state = %q, want working", state)
+	}
+	if !sawBusy {
+		t.Error("did not remember pi's working status")
+	}
+}
+
 // A prompt printed long ago is not a live prompt. Only the tail of the pane is
 // where a real request for input would sit.
 func TestAwaitingInputOnlyLooksAtTheTail(t *testing.T) {
