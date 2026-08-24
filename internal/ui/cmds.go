@@ -175,6 +175,29 @@ type noticeMsg struct{ text string }
 
 type attachDoneMsg struct{ err error }
 
+type paneInputKind uint8
+
+const (
+	paneInputKey paneInputKind = iota
+	paneInputPaste
+	paneInputPrepareComposer
+)
+
+type paneInput struct {
+	sessionID   string
+	title       string
+	tmuxSession string
+	kind        paneInputKind
+	key         forwardedKey
+	text        string
+}
+
+type paneInputDoneMsg struct {
+	sessionID string
+	actedAt   time.Time
+	err       error
+}
+
 type clipboardMsg struct {
 	content clip.Content
 	err     error
@@ -296,42 +319,80 @@ func echoTickCmd() tea.Cmd {
 	return tea.Tick(echoInterval, func(t time.Time) tea.Msg { return echoTickMsg(t) })
 }
 
-// sendKeyCmd forwards one keystroke to a session's terminal. The capture that
-// shows its effect is driven by the echo ticker, not from here.
-func sendKeyCmd(s *core.Session, fk forwardedKey) tea.Cmd {
-	if s == nil {
+func newPaneInput(s *core.Session, kind paneInputKind) paneInput {
+	return paneInput{
+		sessionID: s.ID, title: s.Title, tmuxSession: s.TmuxSession, kind: kind,
+	}
+}
+
+// enqueuePaneInput adds one terminal operation and starts the queue when it was
+// idle. Bubble Tea commands may run concurrently, so the model owns the order
+// and each command performs only the head operation it was given.
+func (m *Model) enqueuePaneInput(in paneInput) tea.Cmd {
+	m.paneInputs = append(m.paneInputs, in)
+	if m.paneInputSending {
 		return nil
 	}
-	sess := *s
+	return m.startPaneInput()
+}
+
+func (m *Model) startPaneInput() tea.Cmd {
+	in := m.paneInputs[0]
+	m.paneInputSending = true
+	if in.kind != paneInputPrepareComposer {
+		m.touchedAt[in.sessionID] = now()
+	}
+	return sendPaneInputCmd(in)
+}
+
+// finishPaneInput drains the completed head even when it failed, then starts
+// the next operation. Queue state only changes on Bubble Tea's update loop.
+func (m *Model) finishPaneInput(msg paneInputDoneMsg) tea.Cmd {
+	if len(m.paneInputs) > 0 {
+		m.paneInputs[0] = paneInput{}
+		m.paneInputs = m.paneInputs[1:]
+	}
+	m.paneInputSending = false
+	if !msg.actedAt.IsZero() {
+		m.touchedAt[msg.sessionID] = msg.actedAt
+	}
+	if msg.err != nil {
+		m.notice, m.noticeErr, m.noticeAt = msg.err.Error(), true, time.Now()
+	}
+	if len(m.paneInputs) == 0 {
+		return nil
+	}
+	return m.startPaneInput()
+}
+
+func sendPaneInputCmd(in paneInput) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		var err error
-		if fk.literal {
-			err = tmuxx.SendText(ctx, sess.TmuxSession, fk.arg)
-		} else {
-			err = tmuxx.SendKey(ctx, sess.TmuxSession, fk.arg)
+		actedAt := time.Time{}
+		switch in.kind {
+		case paneInputKey:
+			if in.key.literal {
+				err = tmuxx.SendText(ctx, in.tmuxSession, in.key.arg)
+			} else {
+				err = tmuxx.SendKey(ctx, in.tmuxSession, in.key.arg)
+			}
+			if err != nil {
+				err = fmt.Errorf("send to %s: %w", in.title, err)
+			}
+		case paneInputPaste:
+			err = tmuxx.SendPaste(ctx, in.tmuxSession, in.text)
+			if err != nil {
+				err = fmt.Errorf("paste to %s: %w", in.title, err)
+			}
+		case paneInputPrepareComposer:
+			if prepareComposer(ctx, in.tmuxSession) {
+				actedAt = now()
+			}
 		}
-		if err != nil {
-			return noticeMsg{text: fmt.Sprintf("send to %s: %v", sess.Title, err)}
-		}
-		return nil
-	}
-}
-
-func sendPasteCmd(s *core.Session, text string) tea.Cmd {
-	if s == nil || text == "" {
-		return nil
-	}
-	sess := *s
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, text); err != nil {
-			return noticeMsg{text: fmt.Sprintf("paste to %s: %v", sess.Title, err)}
-		}
-		return nil
+		return paneInputDoneMsg{sessionID: in.sessionID, actedAt: actedAt, err: err}
 	}
 }
 
@@ -580,30 +641,6 @@ const shipRequest = "Commit, push, and open a PR. You have full permission to do
 // s, then keeps the agent responsible for the PR until CI and review converge.
 // Merging remains a separate, explicit board action.
 const shepherdRequest = "Commit, push, and open a PR. You have full permission to do so. Then shepherd the PR: use the available PR shepherd skill, monitor CI and review threads, fix valid failures and feedback, commit and push each fix, and continue until CI passes and all review threads are resolved. Do not merge. Do not come back to me until the PR is ready to merge or you are genuinely blocked."
-
-// askShipCmd asks a session's agent to ship its work, with the requested stopping
-// point supplied by the board key that called it.
-//
-// A paste followed by a separate Enter, rather than a typed line: the paste
-// lands as one insertion the agent's input reads in a single go, and the Enter
-// is then unambiguously the submit.
-func askShipCmd(s *core.Session, request string) tea.Cmd {
-	if s == nil {
-		return nil
-	}
-	sess := *s
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := tmuxx.SendPaste(ctx, sess.TmuxSession, request); err != nil {
-			return noticeMsg{text: fmt.Sprintf("ask %s to ship: %v", sess.Title, err)}
-		}
-		if err := tmuxx.SendKey(ctx, sess.TmuxSession, "Enter"); err != nil {
-			return noticeMsg{text: fmt.Sprintf("ask %s to ship: %v", sess.Title, err)}
-		}
-		return nil
-	}
-}
 
 func mergeCmd(cfg *core.Config, s *core.Session) tea.Cmd {
 	sess := *s

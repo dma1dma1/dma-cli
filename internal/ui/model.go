@@ -110,6 +110,12 @@ type Model struct {
 	echoUntil time.Time
 	echoing   bool
 
+	// paneInputs is the keyboard's FIFO. The head stays in the queue while its
+	// command runs, and paneInputSending keeps later updates from starting it
+	// again.
+	paneInputs       []paneInput
+	paneInputSending bool
+
 	// touchedAt is when dma last did something to each session's terminal: sent a
 	// keystroke or a paste, forwarded a wheel event, or resized it. The prober
 	// needs it to tell the board's own doing apart from the agent's output -- both
@@ -639,6 +645,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clipboardMsg:
 		return m.handleClipboard(msg)
+
+	case paneInputDoneMsg:
+		return m, m.finishPaneInput(msg)
 
 	case attachDoneMsg:
 		if msg.err != nil {

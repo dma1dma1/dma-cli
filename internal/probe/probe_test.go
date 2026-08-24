@@ -127,7 +127,7 @@ Press ctrl+t to show full startup help and loaded resources.`
 func TestClassifyWorkingWhileInterruptHintShows(t *testing.T) {
 	// Quiet long enough to be called idle on pane changes alone: the hint is
 	// what keeps it working.
-	state, _, sawBusy := classify(codexWorking, IdleAfter+time.Minute, true, sample{}, false)
+	state, _, sawBusy := classify("", codexWorking, IdleAfter+time.Minute, true, sample{}, false)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working while the agent offers to be interrupted", state)
 	}
@@ -140,7 +140,7 @@ func TestClassifyWorkingWhileInterruptHintShows(t *testing.T) {
 // active column waiting out a 25s quiescence window.
 func TestClassifyDoneAsSoonAsTheHintGoes(t *testing.T) {
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
-	state, _, _ := classify(codexDone, SettleAfter, true, prev, true)
+	state, _, _ := classify("", codexDone, SettleAfter, true, prev, true)
 	if state != core.AgentDone {
 		t.Errorf("state = %q, want done once the interrupt hint is gone", state)
 	}
@@ -149,7 +149,7 @@ func TestClassifyDoneAsSoonAsTheHintGoes(t *testing.T) {
 // A repaint between turns must not read as a finished turn.
 func TestClassifyWaitsOutARepaintBeforeSettling(t *testing.T) {
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
-	state, _, _ := classify(codexDone, SettleAfter/2, true, prev, true)
+	state, _, _ := classify("", codexDone, SettleAfter/2, true, prev, true)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working until the pane holds still", state)
 	}
@@ -181,7 +181,7 @@ func TestClassifySettlesAStrandedClaudePane(t *testing.T) {
 	// Second sight of a pane that has not moved since the first: no change to
 	// attribute, and nothing this agent has ever been seen to advertise.
 	prev := sample{previous: core.AgentWorking}
-	state, detail, _ := classify(claudeStranded, 0, false, prev, true)
+	state, detail, _ := classify("", claudeStranded, 0, false, prev, true)
 	if state != core.AgentDone {
 		t.Errorf("state = %q (%q), want done: the turn ended before the board restarted", state, detail)
 	}
@@ -195,7 +195,7 @@ func TestAStrandedClaudePaneIsNotADialog(t *testing.T) {
 	if line, ok := awaitingInput(claudeStranded, false); ok {
 		t.Errorf("read %q as a request for input; it is a composer holding unsent text", line)
 	}
-	if isBusy(claudeStranded) {
+	if isBusy("", claudeStranded) {
 		t.Error("read a finished pane as a turn in flight")
 	}
 }
@@ -204,10 +204,10 @@ func TestAStrandedClaudePaneIsNotADialog(t *testing.T) {
 // than being called done the moment it pauses.
 func TestClassifyFallsBackToQuiescenceWithoutAHint(t *testing.T) {
 	prev := sample{previous: core.AgentWorking}
-	if state, _, _ := classify("some agent output\n", IdleAfter-time.Second, true, prev, true); state != core.AgentWorking {
+	if state, _, _ := classify("", "some agent output\n", IdleAfter-time.Second, true, prev, true); state != core.AgentWorking {
 		t.Errorf("state = %q, want working: nothing says this agent is finished", state)
 	}
-	if state, _, _ := classify("some agent output\n", IdleAfter, true, prev, true); state != core.AgentDone {
+	if state, _, _ := classify("", "some agent output\n", IdleAfter, true, prev, true); state != core.AgentDone {
 		t.Errorf("state = %q, want done after the pane has been quiet", state)
 	}
 }
@@ -220,7 +220,7 @@ func TestClassifyIgnoresARedrawOnAnIdlePane(t *testing.T) {
 	for _, was := range []core.AgentState{core.AgentIdle, core.AgentDone} {
 		prev := sample{previous: was, sawBusy: true}
 		// quiet is 0: the pane changed between this frame and the last.
-		if state, _, _ := classify(codexDone, 0, true, prev, true); state != was {
+		if state, _, _ := classify("", codexDone, 0, true, prev, true); state != was {
 			t.Errorf("state = %q after a redraw, want %q left alone", state, was)
 		}
 	}
@@ -263,7 +263,7 @@ func TestClassifyKeepsAWorkingAgentThroughALocalChange(t *testing.T) {
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
 	// quiet is inherited, so it is long: the last change was the user's, not a
 	// turn's. The hint is what has to keep the badge.
-	state, _, _ := classify(codexWorking, IdleAfter+time.Minute, true, prev, true)
+	state, _, _ := classify("", codexWorking, IdleAfter+time.Minute, true, prev, true)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working: the agent is still offering to be interrupted", state)
 	}
@@ -276,7 +276,7 @@ func TestClassifyKeepsAWorkingAgentThroughALocalChange(t *testing.T) {
 func TestClassifyNeedsAChangeBeforeCallingItWork(t *testing.T) {
 	for _, was := range []core.AgentState{core.AgentIdle, core.AgentDone} {
 		prev := sample{previous: was}
-		if state, _, _ := classify("some agent output\n", 0, false, prev, true); state != was {
+		if state, _, _ := classify("", "some agent output\n", 0, false, prev, true); state != was {
 			t.Errorf("state = %q on a pane that has never moved, want %q kept", state, was)
 		}
 	}
@@ -288,7 +288,7 @@ func TestClassifyNeedsAChangeBeforeCallingItWork(t *testing.T) {
 // finish it 25 seconds later.
 func TestClassifyKeepsTheKnownStateOnFirstSight(t *testing.T) {
 	for _, was := range []core.AgentState{core.AgentIdle, core.AgentDone, core.AgentWorking} {
-		state, _, _ := classify(codexDone, 0, true, sample{previous: was}, false)
+		state, _, _ := classify("", codexDone, 0, true, sample{previous: was}, false)
 		if state != was {
 			t.Errorf("state = %q on first sight, want %q kept until there is a baseline", state, was)
 		}
@@ -299,7 +299,7 @@ func TestClassifyKeepsTheKnownStateOnFirstSight(t *testing.T) {
 // to release the badge, or "needs you" outlives the question that raised it.
 func TestClassifyClearsNeedsYouOnceTheDialogGoes(t *testing.T) {
 	prev := sample{previous: core.AgentNeedsYou, sawBusy: true}
-	state, detail, _ := classify(codexDone, 0, true, prev, true)
+	state, detail, _ := classify("", codexDone, 0, true, prev, true)
 	if state != core.AgentIdle {
 		t.Errorf("state = %q, want idle: there is no dialog on the pane", state)
 	}
@@ -312,7 +312,7 @@ func TestClassifyClearsNeedsYouOnceTheDialogGoes(t *testing.T) {
 // their own prompts.
 func TestClassifyPrefersNeedsYouOverTheHint(t *testing.T) {
 	content := codexWorking + "\n  Do you want to proceed? [y/n]\n"
-	state, detail, _ := classify(content, 0, true, sample{}, false)
+	state, detail, _ := classify("", content, 0, true, sample{}, false)
 	if state != core.AgentNeedsYou {
 		t.Fatalf("state = %q, want needs_you", state)
 	}
@@ -331,7 +331,7 @@ func TestIsBusyRecognizesInterruptHints(t *testing.T) {
 		"stop with Esc",
 	}
 	for _, line := range cases {
-		if !isBusy("earlier output\n" + line + "\n") {
+		if !isBusy("", "earlier output\n"+line+"\n") {
 			t.Errorf("did not recognize a busy agent in %q", line)
 		}
 	}
@@ -348,7 +348,7 @@ func TestIsBusyIgnoresIdleChrome(t *testing.T) {
 		"  Interrupted the build to fix a flaky test.",
 	}
 	for _, content := range cases {
-		if isBusy(content) {
+		if isBusy("", content) {
 			t.Errorf("false positive on idle pane %q", content)
 		}
 	}
@@ -361,7 +361,7 @@ func TestIsBusyOnlyLooksAtTheTail(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		content += "later unrelated output line\n"
 	}
-	if isBusy(content) {
+	if isBusy("", content) {
 		t.Error("matched an interrupt hint that had scrolled far up the pane")
 	}
 }
@@ -462,7 +462,7 @@ func TestAwaitingInputNeedsMoreThanAMarker(t *testing.T) {
 // pi advertises its turns the way Codex does, so it gets the same treatment: the
 // hint means working, and its absence plus a still pane means the turn is over.
 func TestClassifyReadsAPiTurn(t *testing.T) {
-	state, _, sawBusy := classify(piWorking, IdleAfter+time.Minute, true, sample{}, false)
+	state, _, sawBusy := classify("", piWorking, IdleAfter+time.Minute, true, sample{}, false)
 	if state != core.AgentWorking {
 		t.Errorf("state = %q, want working", state)
 	}
@@ -470,8 +470,36 @@ func TestClassifyReadsAPiTurn(t *testing.T) {
 		t.Error("did not remember that pi shows an interrupt hint")
 	}
 	prev := sample{previous: core.AgentWorking, sawBusy: true}
-	if state, _, _ := classify(piIdleHeader, SettleAfter, true, prev, true); state != core.AgentDone {
+	if state, _, _ := classify("", piIdleHeader, SettleAfter, true, prev, true); state != core.AgentDone {
 		t.Errorf("state = %q, want done once the hint is gone", state)
+	}
+}
+
+func TestClassifyReadsCurrentPiWorkingStatus(t *testing.T) {
+	state, _, sawBusy := classify("pi", "  ⠦ Working...\n", IdleAfter+time.Minute, false,
+		sample{previous: core.AgentDone}, true)
+	if state != core.AgentWorking {
+		t.Errorf("state = %q, want working", state)
+	}
+	if !sawBusy {
+		t.Error("did not remember pi's working status")
+	}
+}
+
+func TestClassifyDoesNotGiveOtherAgentsPiStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile string
+	}{
+		{name: "other profile", profile: "custom"},
+		{name: "pi prose", profile: "pi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, _, sawBusy := classify(tc.profile, "  Working...\n", IdleAfter+time.Minute, false,
+				sample{previous: core.AgentDone}, true)
+			if state != core.AgentDone || sawBusy {
+				t.Errorf("state = %q, sawBusy = %t, want done without a busy hint", state, sawBusy)
+			}
+		})
 	}
 }
 

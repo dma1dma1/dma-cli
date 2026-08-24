@@ -102,12 +102,12 @@ func TestEachWordMustMatch(t *testing.T) {
 	}
 }
 
-// A section name carries its whole block through: "diff" is how you ask for the
-// review keys, and only two of them say "diff" in their own text.
+// A section name carries its whole block through, including rows that do not
+// repeat the name in their own text.
 func TestSectionNameMatchesItsRows(t *testing.T) {
-	hits := filterHelp("diff")
+	hits := filterHelp("review")
 	if !hasDesc(hits, "next/previous file, skipping directories") {
-		t.Errorf("\"diff\" did not carry the Diff section: %v", descs(hits))
+		t.Errorf("\"review\" did not carry the Review section: %v", descs(hits))
 	}
 }
 

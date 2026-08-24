@@ -133,6 +133,8 @@ var busyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(interrupt|cancel|stop)\b.{0,16}\bwith (esc|escape|ctrl[-+ ]?c)\b`),
 }
 
+var piBusyStatus = regexp.MustCompile(`^[\x{2800}-\x{28ff}]\s+Working\.\.\.$`)
+
 // tailLines is how many lines of content up the pane a live hint or dialog can
 // be. Both sit just above the composer, but a dialog is several lines tall and
 // carries its question above its options, so the window has to be deep enough to
@@ -230,7 +232,7 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session, actedAt time.Time) 
 
 	st := State{SessionID: s.ID, Alive: true, Content: content, Cursor: pane.Cursor}
 	var sawBusy bool
-	st.Agent, st.Detail, sawBusy = classify(content, now.Sub(changedAt), moved, prev, seen)
+	st.Agent, st.Detail, sawBusy = classify(s.AgentProfile, content, now.Sub(changedAt), moved, prev, seen)
 
 	p.last[s.ID] = sample{
 		hash: h, changed: changedAt, previous: st.Agent,
@@ -261,8 +263,8 @@ func caused(actedAt, probedAt time.Time) bool {
 //
 // quiet and moved both describe changes the agent is answerable for: attribution
 // is settled in Probe, so nothing below has to know who typed.
-func classify(content string, quiet time.Duration, moved bool, prev sample, seen bool) (core.AgentState, string, bool) {
-	busy := isBusy(content)
+func classify(agentProfile, content string, quiet time.Duration, moved bool, prev sample, seen bool) (core.AgentState, string, bool) {
+	busy := isBusy(agentProfile, content)
 	sawBusy := busy || prev.sawBusy
 
 	// A dialog outranks activity: the pane may still be animating a spinner, and
@@ -343,8 +345,11 @@ func held(prev sample) core.AgentState {
 // confirm or esc to cancel": the escape it offers cancels the question, not a
 // turn, and taking that for activity would leave a blocked session sitting in the
 // active column.
-func isBusy(content string) bool {
+func isBusy(agentProfile, content string) bool {
 	for _, line := range tail(content) {
+		if agentProfile == "pi" && piBusyStatus.MatchString(line) {
+			return true
+		}
 		if matches(line, busyPatterns) && !matches(line, promptPatterns) {
 			return true
 		}

@@ -136,16 +136,18 @@ func (m Model) keyPreview(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) 
 	// Typing means returning to the live terminal, just as leaving scrollback in
 	// an attached tmux client does before interacting with the application.
 	m.previewScroll = 0
-	// This keystroke is about to change the pane, and the prober must not read
-	// that change as the agent producing output.
 	m.touchedAt[s.ID] = now()
-	send := sendKeyCmd(s, fk)
+	var send tea.Cmd
 	if m.focus != focusPreview {
 		// A paste aimed at the board's selected session never passed through panel
-		// focus, so nothing has readied a modal composer for it -- and in vim's
-		// normal mode ctrl+v starts a block selection instead of pasting. Sequence,
-		// not batch: the mode has to change before the paste arrives.
-		send = tea.Sequence(insertModeCmd(s), send)
+		// focus, so nothing has readied a modal composer for it. Preparation enters
+		// the same queue, before the key, so a later event cannot overtake either.
+		send = m.enqueuePaneInput(newPaneInput(s, paneInputPrepareComposer))
+	}
+	in := newPaneInput(s, paneInputKey)
+	in.key = fk
+	if cmd := m.enqueuePaneInput(in); send == nil {
+		send = cmd
 	}
 	// Sequenced rather than inlined into the return: startEcho mutates m, and Go
 	// does not order that against copying m into the return value.
@@ -177,7 +179,10 @@ func (m *Model) onFocusChange() tea.Cmd {
 		// Every route into panel focus comes through here -- "t", tab, and a click
 		// on the preview -- so a modal composer is readied once per handover
 		// rather than once per entry point.
-		return insertModeCmd(m.selected())
+		s := m.selected()
+		if s != nil && s.TmuxAlive {
+			return m.enqueuePaneInput(newPaneInput(s, paneInputPrepareComposer))
+		}
 	}
 	return nil
 }
@@ -419,17 +424,20 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		if !s.TmuxAlive {
 			return m, errStatus(fmt.Errorf("terminal for this session is not running"))
 		}
-		// The agent is about to work and repaint, and the prober must not read
-		// that as output it produced on its own.
 		m.touchedAt[s.ID] = now()
 		// The request never passes through panel focus, so nothing has readied a
-		// modal composer for it. Sequence, not batch: the mode has to change
-		// before the request arrives.
+		// modal composer for it.
 		request := shipRequest
 		if key == "S" {
 			request = shepherdRequest
 		}
-		send := tea.Sequence(insertModeCmd(s), askShipCmd(s, request))
+		send := m.enqueuePaneInput(newPaneInput(s, paneInputPrepareComposer))
+		paste := newPaneInput(s, paneInputPaste)
+		paste.text = request
+		m.enqueuePaneInput(paste)
+		enter := newPaneInput(s, paneInputKey)
+		enter.key = forwardedKey{arg: "Enter"}
+		m.enqueuePaneInput(enter)
 		// Sequenced rather than inlined into the return: startEcho mutates m, and
 		// Go does not order that against copying m into the return value.
 		cmd := tea.Batch(send, m.startEcho())
@@ -711,7 +719,20 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		}
 		m.previewScroll = 0
 		m.touchedAt[s.ID] = now()
-		return m, tea.Batch(sendPasteCmd(s, msg.Content), m.startEcho())
+		var send tea.Cmd
+		if m.focus != focusPreview {
+			send = m.enqueuePaneInput(newPaneInput(s, paneInputPrepareComposer))
+		}
+		paste := newPaneInput(s, paneInputPaste)
+		paste.text = msg.Content
+		if cmd := m.enqueuePaneInput(paste); send == nil {
+			send = cmd
+		}
+		cmd := tea.Batch(send, m.startEcho())
+		if cmd == nil {
+			cmd = func() tea.Msg { return nil }
+		}
+		return m, cmd
 	}
 	return m, nil
 }
@@ -1035,7 +1056,12 @@ func (m Model) tellAgentAboutHunk() (tea.Model, tea.Cmd) {
 	// it: the review view forwards nothing.
 	m.mode = modeBoard
 	m.focus = focusPreview
-	return m, tea.Batch(sendPasteCmd(s, "look at "+ref+" "), m.onFocusChange())
+	m.touchedAt[s.ID] = now()
+	prepare := m.onFocusChange()
+	paste := newPaneInput(s, paneInputPaste)
+	paste.text = "look at " + ref + " "
+	m.enqueuePaneInput(paste)
+	return m, tea.Batch(prepare, m.startEcho())
 }
 
 // --- confirm ---

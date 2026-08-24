@@ -16,8 +16,7 @@ import (
 // The search is per word: each word you type has to appear in a row's keys, its
 // description, or the section it sits under, and every word has to land
 // somewhere for the row to survive. So "pr open" finds "open the PR in your
-// browser" without being the phrase, and "diff" pulls up the whole review
-// section.
+// browser" without being the phrase, and "review" pulls up that whole section.
 //
 // Fuzzy is the fallback rather than the rule. A word that appears literally
 // anywhere in the keymap is matched literally; only a word that appears nowhere
@@ -86,7 +85,7 @@ func filterHelp(query string) []helpHit {
 		for i, w := range words {
 			// A word may land in more than one field; every place it does is
 			// highlighted, and matching the section carries the whole section
-			// through, which is how "diff" shows the Diff block entire.
+			// through, which is how "review" shows that block entire.
 			kh, inKeys := matchWord(r.keys, w, loose[i])
 			dh, inDesc := matchWord(r.desc, w, loose[i])
 			_, inSection := matchWord(r.section, w, loose[i])

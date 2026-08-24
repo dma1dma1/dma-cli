@@ -185,16 +185,19 @@ func insertModeCmd(s *core.Session) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
-		pane, err := tmuxx.CapturePane(ctx, sess.TmuxSession, 0)
-		if err != nil || !inNormalMode(pane.Content) {
-			return nil
-		}
-		// Best effort, and silent: the panel still works if this does not land,
-		// and an error about a mode the user never asked about would be noise.
-		_ = tmuxx.SendText(ctx, sess.TmuxSession, insertKey)
+		prepareComposer(ctx, sess.TmuxSession)
 		return nil
 	}
+}
+
+func prepareComposer(ctx context.Context, tmuxSession string) bool {
+	pane, err := tmuxx.CapturePane(ctx, tmuxSession, 0)
+	if err != nil || !inNormalMode(pane.Content) {
+		return false
+	}
+	// Best effort, and silent: the panel still works if this does not land,
+	// and an error about a mode the user never asked about would be noise.
+	return tmuxx.SendText(ctx, tmuxSession, insertKey) == nil
 }
 
 // inNormalMode reports whether the pane shows a modal composer sitting in normal
