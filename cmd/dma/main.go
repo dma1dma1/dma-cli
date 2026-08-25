@@ -323,16 +323,11 @@ func runAttach(args []string) error {
 		return err
 	}
 
-	// The session is appended to whatever is on disk now rather than to the list
-	// read at the top, so a board that started a session while the bootstrap was
-	// running does not lose it. A board already running picks this up on its next
-	// poll; see the board's own merge of externally added sessions.
-	current, err := core.LoadSessions()
-	if err != nil {
-		current = sessions
-	}
+	// The upsert is locked with board saves, so a board that starts or prunes a
+	// session while this bootstrap is running cannot have its result overwritten.
+	// A board already running picks this up on its next poll.
 	s := res.Session
-	if err := core.SaveSessions(append(current, s)); err != nil {
+	if err := core.UpsertSessions([]*core.Session{s}); err != nil {
 		// The agent is already up in a worktree of its own by this point, so a
 		// failed write is a session that exists and is not on the board rather
 		// than a session that did not happen. Naming both halves is what makes

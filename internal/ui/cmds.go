@@ -498,28 +498,28 @@ func observeCmd(sessions []*core.Session) tea.Cmd {
 }
 
 // adoptedSessionsMsg carries sessions that appeared in the state file while the
-// board was running.
-type adoptedSessionsMsg struct{ sessions []*core.Session }
+// board was running, plus sessions another board durably pruned.
+type adoptedSessionsMsg struct {
+	sessions   []*core.Session
+	removedIDs []string
+}
 
 // adoptExternalCmd looks for sessions something else added to the state file.
 //
 // `dma attach` is that something else: it starts a session from a shell, and
-// the board it is meant to appear on is usually already open. The board holds
-// its sessions in memory and writes the whole list every time it saves, so
-// without this the attached session would not merely be invisible -- the next
-// save would erase its record, leaving a worktree and a running agent that
-// nothing on disk points at.
+// the board it is meant to appear on is usually already open. The same poll
+// carries a prune in the other direction when another board removed a session.
 //
-// Only additions are taken. Sessions the board already knows are left exactly
-// as they are, because the board's copy is the newer one: it holds this poll's
-// liveness, diff and PR state, none of which is written to disk. Nothing here
-// removes a session either -- an absence on disk is far more likely to be a
-// stale read than a prune, and dropping a live card over one would be the
-// worse mistake.
+// Sessions the board already knows are left exactly as they are, because the
+// board's copy holds this poll's liveness, diff and PR state. Absences are safe
+// to apply now that ordinary saves are merge-only and prune is the one explicit
+// operation that removes a persisted ID.
 func adoptExternalCmd(known []*core.Session) tea.Cmd {
 	ids := make(map[string]bool, len(known))
 	for _, s := range known {
-		ids[s.ID] = true
+		if !s.Starting {
+			ids[s.ID] = true
+		}
 	}
 	return func() tea.Msg {
 		stored, err := core.LoadSessions()
@@ -528,13 +528,21 @@ func adoptExternalCmd(known []*core.Session) tea.Cmd {
 			// here, and the next poll gets a clean look at it.
 			return adoptedSessionsMsg{}
 		}
+		storedIDs := make(map[string]bool, len(stored))
 		var fresh []*core.Session
 		for _, s := range stored {
+			storedIDs[s.ID] = true
 			if !ids[s.ID] {
 				fresh = append(fresh, s)
 			}
 		}
-		return adoptedSessionsMsg{sessions: fresh}
+		var removed []string
+		for id := range ids {
+			if !storedIDs[id] {
+				removed = append(removed, id)
+			}
+		}
+		return adoptedSessionsMsg{sessions: fresh, removedIDs: removed}
 	}
 }
 
