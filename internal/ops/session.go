@@ -372,7 +372,9 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 
 	// A session only has a branch once its agent made one, and the worktree is
 	// already gone by here, so there is nothing left to clean up without one.
-	if s.Branch == "" {
+	// A missing branch also means teardown already got this far before its board
+	// quit, so retrying the persisted prune is complete rather than an error.
+	if s.Branch == "" || !gitx.BranchExists(ctx, repo.Path, s.Branch) {
 		return nil
 	}
 	// A branch delete that would lose commits fails without -D; that is a

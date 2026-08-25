@@ -337,7 +337,10 @@ func (m Model) pruneMerged() (tea.Model, tea.Cmd) {
 		noun = "session"
 	}
 	return m.askConfirm(fmt.Sprintf("Prune worktrees and branches for %d merged %s?", len(merged), noun),
-		func(mm *Model) tea.Cmd { return teardownAllCmd(mm.cfg, merged) })
+		func(mm *Model) tea.Cmd {
+			mm.beginPruning(merged)
+			return teardownAllCmd(mm.cfg, merged)
+		})
 }
 
 // restartDead brings back every session on the board whose terminal is gone.
@@ -474,7 +477,10 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 			prompt = fmt.Sprintf("Close PR #%d and prune worktree and branch for %q?", s.PRNumber, s.Title)
 		}
 		return m.askConfirm(prompt,
-			func(mm *Model) tea.Cmd { return teardownCmd(mm.cfg, s, ops.TeardownOptions{}) })
+			func(mm *Model) tea.Cmd {
+				mm.beginPruning([]*core.Session{s})
+				return teardownCmd(mm.cfg, s, ops.TeardownOptions{})
+			})
 
 	case "c":
 		return m.restartSelected(s)

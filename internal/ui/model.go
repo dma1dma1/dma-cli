@@ -228,10 +228,9 @@ func (m Model) selected() *core.Session {
 	return core.FindByID(m.sessions, m.selectedID)
 }
 
-// establishedSessions excludes cards whose Create operation is still in
-// flight. Pending cards belong in the layout, but they have no worktree or tmux
-// target yet and must never be handed to git, probes, persistence, or resize.
-func (m Model) establishedSessions() []*core.Session {
+// persistedSessions excludes cards whose Create operation is still in flight.
+// A board restart cannot resume a Create operation that died with the process.
+func (m Model) persistedSessions() []*core.Session {
 	out := make([]*core.Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		if !s.Starting {
@@ -239,6 +238,26 @@ func (m Model) establishedSessions() []*core.Session {
 		}
 	}
 	return out
+}
+
+// establishedSessions contains cards safe to hand to ordinary background work.
+// A pruning card is persisted, but teardown owns it until the card disappears or
+// the operation fails.
+func (m Model) establishedSessions() []*core.Session {
+	out := make([]*core.Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if !s.Starting && !s.Pruning {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (m *Model) beginPruning(sessions []*core.Session) {
+	for _, s := range sessions {
+		s.Pruning = true
+	}
+	m.save()
 }
 
 // selectSession aims the board's cursor and the panel at one session.
@@ -280,7 +299,7 @@ func (m *Model) dropSelectionIfHidden() {
 }
 
 func (m *Model) save() {
-	if err := core.SaveSessions(m.establishedSessions()); err != nil {
+	if err := core.SaveSessions(m.persistedSessions()); err != nil {
 		m.notice, m.noticeErr, m.noticeAt = "save state: "+err.Error(), true, time.Now()
 	}
 }
@@ -357,6 +376,12 @@ func (m Model) diffPaneHeight() int {
 
 func (m Model) Init() tea.Cmd {
 	sessions := m.establishedSessions()
+	var pruning []*core.Session
+	for _, s := range m.sessions {
+		if s.Pruning {
+			pruning = append(pruning, s)
+		}
+	}
 	return tea.Batch(
 		tickCmd(),
 		pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
@@ -365,6 +390,7 @@ func (m Model) Init() tea.Cmd {
 		waitForHook(m.hookEvents),
 		observeCmd(sessions),
 		pollPRsCmd(m.cfg, sessions),
+		teardownAllCmd(m.cfg, pruning),
 		// Whatever the last run left in the trash: a sweep the quit cut short, or
 		// one that never ran because the process went away with the prune.
 		sweepTrashCmd(m.cfg),
@@ -1014,7 +1040,6 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 			}
 			continue
 		}
-		hadPR := s.HasPR()
 		if s.PRNumber != pr.Number || s.PRState != pr.State || s.PRCI != pr.CI ||
 			s.PRReview != pr.Review || s.PRMergeable != pr.Mergeable || s.PRURL != pr.URL ||
 			s.PRAutoMerge != pr.AutoMerge {
@@ -1031,14 +1056,15 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 			follow = append(follow, prQueueCmd(repo.Remote, s.ID, s.PRNumber))
 		}
 
-		// A PR appearing, and that PR merging, are the two durable events that
-		// move a card into the git-owned columns.
-		if !hadPR && s.HasPR() && s.Lifecycle != core.LifecycleMerged {
-			s.Lifecycle = core.LifecyclePROpen
-			dirty = true
+		// Pull request state owns the last two columns. Reconcile on every poll,
+		// not only on the first transition, so a stale persisted column or manual
+		// move cannot leave a known PR in an agent-owned column forever.
+		wantLifecycle := core.LifecyclePROpen
+		if pr.State == core.PRMerged {
+			wantLifecycle = core.LifecycleMerged
 		}
-		if pr.State == core.PRMerged && s.Lifecycle != core.LifecycleMerged {
-			s.Lifecycle = core.LifecycleMerged
+		if s.Lifecycle != wantLifecycle {
+			s.Lifecycle = wantLifecycle
 			dirty = true
 		}
 		if pr.State == core.PRMerged || pr.State == core.PRClosed {
@@ -1137,9 +1163,13 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 	s.PRAutoMerge = false
 	core.Touch(s)
 	// A PR closed without merging keeps its column and is labelled closed on the
-	// card, rather than vanishing from the board.
-	if msg.pr.State == core.PRMerged {
+	// card, rather than vanishing from the board. The detail request can also
+	// race with a PR reopening, in which case it restores the open-PR column.
+	switch msg.pr.State {
+	case core.PRMerged:
 		s.Lifecycle = core.LifecycleMerged
+	case core.PROpen, core.PRDraft:
+		s.Lifecycle = core.LifecyclePROpen
 	}
 	// This normally resolves a PR that has landed, which releases the claim. It
 	// can also find one still open -- the poll and this query are two requests,
@@ -1304,6 +1334,10 @@ func (m Model) handleTitled(msg titledMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		s := core.FindByID(m.sessions, msg.id)
+		if s != nil && s.Pruning {
+			s.Pruning = false
+			m.save()
+		}
 		// The recoveries below are per-session questions, and a bulk prune has
 		// several teardowns behind it: asking one would hide the next, and the
 		// answer would land on whichever card the confirm happened to hold. So a
@@ -1318,6 +1352,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
+					mm.beginPruning([]*core.Session{s})
 					return teardownCmd(mm.cfg, s, ops.TeardownOptions{Force: true})
 				})
 		case *ops.UnnamedCommitsError:
@@ -1326,6 +1361,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
+					mm.beginPruning([]*core.Session{s})
 					return teardownCmd(mm.cfg, s, ops.TeardownOptions{Force: true})
 				})
 		case *ops.BranchNotMergedError:
@@ -1334,6 +1370,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
+					mm.beginPruning([]*core.Session{s})
 					return teardownCmd(mm.cfg, s, ops.TeardownOptions{Force: true})
 				})
 		// The pull request is still open and nothing has been removed yet. The
@@ -1346,6 +1383,7 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 					if s == nil {
 						return nil
 					}
+					mm.beginPruning([]*core.Session{s})
 					return teardownCmd(mm.cfg, s, ops.TeardownOptions{KeepPR: true})
 				})
 		}

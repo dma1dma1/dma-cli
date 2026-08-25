@@ -31,13 +31,21 @@ func TestKeyStringDoesNotCollideAcrossSplits(t *testing.T) {
 	}
 }
 
-func TestSetAgentStateNeverTouchesLifecycle(t *testing.T) {
-	s := &Session{Lifecycle: LifecyclePROpen, AgentState: AgentIdle}
+func TestSetAgentStateNeverTouchesPRLifecycle(t *testing.T) {
+	s := &Session{Lifecycle: LifecyclePROpen, AgentState: AgentIdle, PRNumber: 7, PRState: PROpen}
 	for _, st := range []AgentState{AgentWorking, AgentNeedsYou, AgentDone, AgentIdle} {
 		s.SetAgentState(st, "")
 		if s.Lifecycle != LifecyclePROpen {
 			t.Fatalf("agent state %s moved lifecycle to %s", st, s.Lifecycle)
 		}
+	}
+}
+
+func TestSetAgentStateReclaimsPRColumnWithoutAPR(t *testing.T) {
+	s := &Session{Lifecycle: LifecyclePROpen, AgentState: AgentIdle, PRState: PRNone}
+	s.SetAgentState(AgentWorking, "")
+	if s.Lifecycle != LifecycleActive {
+		t.Fatalf("lifecycle = %s, want active for a working session with no PR", s.Lifecycle)
 	}
 }
 

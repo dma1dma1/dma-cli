@@ -736,6 +736,9 @@ func teardownCmd(cfg *core.Config, s *core.Session, opt ops.TeardownOptions) tea
 // once: teardown runs git against the shared repo, and concurrent worktree
 // removals and prunes on one repo race for the same lock.
 func teardownAllCmd(cfg *core.Config, sessions []*core.Session) tea.Cmd {
+	if len(sessions) == 0 {
+		return nil
+	}
 	cmds := make([]tea.Cmd, 0, len(sessions))
 	for _, s := range sessions {
 		cmds = append(cmds, teardownOne(cfg, s, ops.TeardownOptions{}, true))
