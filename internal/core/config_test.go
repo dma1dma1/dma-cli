@@ -179,6 +179,18 @@ func TestNormalizeUpgradesUntouchedClaudeCommand(t *testing.T) {
 	}
 }
 
+// The old pi default left a prompt beginning with a Markdown bullet open to
+// pi's option parser, where it was rejected instead of starting a session.
+func TestNormalizeUpgradesUntouchedPiCommand(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{Name: "pi", Command: "pi -a"}}}
+	c.normalize()
+
+	got, _ := c.Profile("pi")
+	if got.Command != "pi -a --" {
+		t.Errorf("pi command = %q, want the prompt protected from option parsing", got.Command)
+	}
+}
+
 // The migration must never overwrite a command the user chose. Anything other
 // than the exact old default is a deliberate edit.
 func TestNormalizeLeavesCustomizedClaudeCommandAlone(t *testing.T) {
@@ -292,8 +304,8 @@ func TestDefaultPiProfileStartsWithoutAskingAboutTheProject(t *testing.T) {
 	if !ok {
 		t.Fatal("no pi profile in the default config")
 	}
-	if pi.Command != "pi -a" {
-		t.Errorf("pi command = %q, want the startup trust question answered", pi.Command)
+	if pi.Command != "pi -a --" {
+		t.Errorf("pi command = %q, want trust approved and option parsing ended before the prompt", pi.Command)
 	}
 	// -c is the most recent session filed under this directory, which is the
 	// promise every other resume line here makes.
@@ -487,6 +499,12 @@ func TestLaunchCommandPassesThePromptAsOneArgument(t *testing.T) {
 			profile: AgentProfile{Command: "claude --permission-mode auto"},
 			prompt:  "ship it",
 			want:    "claude --permission-mode auto 'ship it'",
+		},
+		{
+			name:    "pi multiline bullet list follows the option separator",
+			profile: AgentProfile{Command: "pi -a --"},
+			prompt:  "- fix login\n- add a regression test",
+			want:    "pi -a -- '- fix login\n- add a regression test'",
 		},
 		{
 			name:    "quotes that would end the argument early",

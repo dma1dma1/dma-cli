@@ -177,6 +177,8 @@ In the board:
    session you were already watching.
 
 In the task input, `ctrl-v` attaches a clipboard image or pastes ordinary text.
+Pasted text keeps its line breaks. Use `shift-enter` to type a line break, or
+`alt-enter` or `ctrl-j` if your terminal reports `shift-enter` as plain enter.
 Press `ctrl-u` to start the task over: it clears the text and any attached
 images.
 Press `backspace` at the start of the input to remove the last attached image.
@@ -394,7 +396,7 @@ The built-in profiles are:
   },
   {
     "name": "pi",
-    "command": "pi -a",
+    "command": "pi -a --",
     "image_argument": "@{path}",
     "resume_command": "pi -a -c",
     "resume_id_command": "pi -a --session {session}",
@@ -720,7 +722,7 @@ An example configuration, shown as valid JSON:
     },
     {
       "name": "pi",
-      "command": "pi -a",
+      "command": "pi -a --",
       "image_argument": "@{path}",
       "resume_command": "pi -a -c",
       "fork_command": "pi -a --fork {session} --session-id {new}",
