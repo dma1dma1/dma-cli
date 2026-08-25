@@ -202,7 +202,11 @@ type Session struct {
 	// Starting marks the temporary card shown while a new worktree is being
 	// fetched and bootstrapped. It never reaches disk: a board restart cannot
 	// resume a Create operation that died with the previous process.
-	Starting      bool `json:"-"`
+	Starting bool `json:"-"`
+	// Pruning makes teardown durable across a board quit. The operation removes
+	// external resources before its completion message can remove the card, so
+	// the next launch retries any teardown whose message was never applied.
+	Pruning       bool `json:"pruning,omitempty"`
 	TmuxAlive     bool `json:"-"`
 	DiffAdded     int  `json:"-"`
 	DiffRemoved   int  `json:"-"`
@@ -267,9 +271,10 @@ func (s *Session) SetAgentState(st AgentState, detail string) (changed bool) {
 	return true
 }
 
-// syncColumn keeps the agent-owned columns in step with the badge.
+// syncColumn keeps the agent-owned columns in step with the badge. Pull request
+// facts, rather than a stale or manually moved column, decide when git owns it.
 func (s *Session) syncColumn() {
-	if s.Lifecycle.PRDriven() {
+	if s.HasPR() {
 		return
 	}
 	if s.AgentState == AgentWorking {

@@ -62,6 +62,7 @@ func TestPruneMergedWithNothingMergedSaysSo(t *testing.T) {
 // queue up, each hiding the last. The card stays put and x asks there instead.
 func TestBulkTeardownFailureKeepsTheCard(t *testing.T) {
 	m := testModel(nil, sess("done", "", core.LifecycleMerged, core.AgentIdle, "r"))
+	m.sessions[0].Pruning = true
 
 	mm, cmd := m.handleTeardown(teardownMsg{
 		id: "done", bulk: true, err: &ops.DirtyError{Path: "/tmp/wt"},
@@ -72,6 +73,9 @@ func TestBulkTeardownFailureKeepsTheCard(t *testing.T) {
 	}
 	if len(m.sessions) != 1 {
 		t.Errorf("the failed session left the board: %d sessions remain", len(m.sessions))
+	}
+	if m.sessions[0].Pruning {
+		t.Error("a failed prune remained marked for retry")
 	}
 	msg, ok := drainNotice(t, cmd)
 	if !ok || !strings.Contains(msg.text, "done") {

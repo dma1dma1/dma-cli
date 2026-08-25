@@ -92,6 +92,20 @@ func TestTeardownStillClearsTheRegistryAndTheBranch(t *testing.T) {
 	}
 }
 
+func TestTeardownCanResumeAfterResourcesAreAlreadyGone(t *testing.T) {
+	cfg, s := teardownFixture(t, "resume")
+	stubClosePR(t, nil)
+	s.PRState = core.PRMerged
+	ctx := context.Background()
+
+	if err := Teardown(ctx, cfg, s, TeardownOptions{}); err != nil {
+		t.Fatalf("first teardown: %v", err)
+	}
+	if err := Teardown(ctx, cfg, s, TeardownOptions{}); err != nil {
+		t.Fatalf("resumed teardown: %v", err)
+	}
+}
+
 // Every prune adds to the trash, so the sweep is what keeps it from being a leak.
 func TestSweepTrashUnlinksWhatTeardownLeft(t *testing.T) {
 	cfg, s := teardownFixture(t, "sweep")

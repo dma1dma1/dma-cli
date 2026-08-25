@@ -86,6 +86,12 @@ func TestAgentStateMovesBetweenIdleAndActive(t *testing.T) {
 func TestAgentStateCannotLeavePRColumns(t *testing.T) {
 	for _, col := range []core.Lifecycle{core.LifecyclePROpen, core.LifecycleMerged} {
 		s := sess("a", "", col, core.AgentIdle, "r")
+		s.PRNumber = 7
+		if col == core.LifecycleMerged {
+			s.PRState = core.PRMerged
+		} else {
+			s.PRState = core.PROpen
+		}
 		for _, st := range []core.AgentState{core.AgentWorking, core.AgentDone, core.AgentNeedsYou, core.AgentIdle} {
 			s.SetAgentState(st, "")
 			if s.Lifecycle != col {

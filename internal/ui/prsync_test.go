@@ -109,6 +109,22 @@ func TestPRSyncDoesNotCrossAssignBetweenRepos(t *testing.T) {
 	}
 }
 
+func TestPRSyncRestoresKnownPRToItsColumn(t *testing.T) {
+	s := branchSess("a", "r1", "feat-a", core.LifecycleActive)
+	s.PRNumber, s.PRState = 7, core.PROpen
+	m := testModel(nil, s)
+
+	m.handlePRSync(prSyncMsg{repoID: "r1", poll: ghx.Poll{
+		Open: map[string]ghx.PR{"feat-a": {
+			Number: 7, Branch: "feat-a", State: core.PROpen,
+		}},
+		Answered: map[string]bool{"feat-a": true},
+	}})
+	if s.Lifecycle != core.LifecyclePROpen {
+		t.Errorf("lifecycle = %q, want pr_open for a known open PR", s.Lifecycle)
+	}
+}
+
 func TestPRSyncTracksAutoMerge(t *testing.T) {
 	s := branchSess("a", "r1", "feat-a", core.LifecyclePROpen)
 	s.PRNumber, s.PRState = 7, core.PROpen
