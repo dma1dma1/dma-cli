@@ -919,8 +919,9 @@ func TestCreateHandsTheAgentThePromptAsOneArgument(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// A prompt carrying everything a shell would otherwise act on.
-	prompt := `don't stop; run $(whoami) && ls *.go`
+	// A multiline prompt carrying a leading dash and everything a shell would
+	// otherwise act on. The line breaks must stay inside the one prompt argument.
+	prompt := "- don't stop; run $(whoami)\n- then list *.go"
 	res, err := Create(ctx, cfg, CreateRequest{Title: "Shell Safety", InitialPrompt: prompt})
 	if err != nil {
 		t.Fatalf("Create: %v", err)

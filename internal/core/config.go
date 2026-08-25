@@ -431,7 +431,9 @@ const (
 // stop at a trust dialog before the opening prompt was ever read, which on a
 // board is a session that never starts. It trusts the repo the user is already
 // running an agent in; -na is the profile edit for anyone who would rather those
-// resources stayed unloaded.
+// resources stayed unloaded. The -- ends pi's option parsing before dma appends
+// the prompt. Multiline Markdown often starts with a dash, which pi would
+// otherwise reject as an unknown option instead of starting the session.
 func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
 		{
@@ -451,7 +453,7 @@ func DefaultProfiles() []AgentProfile {
 		},
 		{
 			Name:            "pi",
-			Command:         "pi -a",
+			Command:         "pi -a --",
 			ImageArgument:   "@{path}",
 			ResumeCommand:   "pi -a -c",
 			ResumeIDCommand: "pi -a --session {session}",
@@ -596,7 +598,10 @@ func (c *Config) adoptDefaultResumeCommands() {
 // bareCommands are the commands built-in profiles used to ship with, before the
 // defaults grew flags. A profile still holding one of these has never been
 // edited, so it is safe to move it onto the current default.
-var bareCommands = map[string]string{"claude": "claude"}
+var bareCommands = map[string]string{
+	"claude": "claude",
+	"pi":     "pi -a",
+}
 
 // adoptDefaultFlags brings profiles written by an older dma onto the current
 // default command.
