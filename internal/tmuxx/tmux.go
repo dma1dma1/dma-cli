@@ -41,6 +41,13 @@ func capturePaneContent(ctx context.Context, args ...string) (string, error) {
 	return isolateSGRRows(content), nil
 }
 
+// capturePaneArgs preserves trailing cells. Pi paints tool and status rows by
+// writing background-colored spaces to the pane edge; without -N tmux removes
+// those cells and the preview shrinks each fill to the text it contains.
+func capturePaneArgs(name string) []string {
+	return []string{"capture-pane", "-p", "-e", "-N", "-t", name}
+}
+
 // isolateSGRRows turns tmux's stateful ANSI stream into independently styled
 // rows. A style selected at the end of one row still begins the next row, but
 // cannot color padding or borders that the board appends to the current row.
@@ -359,7 +366,7 @@ type Pane struct {
 // holds whatever was on the normal screen beforehand and splicing the two
 // together renders stale fragments over the live view.
 func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
-	args := []string{"capture-pane", "-p", "-e", "-t", name}
+	args := capturePaneArgs(name)
 	if history > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", history))
 	}
@@ -438,8 +445,9 @@ func CapturePaneAt(ctx context.Context, name string, scroll int) (Pane, int, err
 	// capture-pane numbers the live screen from 0 and its history backwards
 	// from -1. Moving the whole height-row viewport up by scroll therefore
 	// shifts both ends of the capture range by that amount.
-	content, err := capturePaneContent(ctx, "capture-pane", "-p", "-e", "-t", name,
+	args := append(capturePaneArgs(name),
 		"-S", strconv.Itoa(-scroll), "-E", strconv.Itoa(height-1-scroll))
+	content, err := capturePaneContent(ctx, args...)
 	if err != nil {
 		return Pane{}, 0, err
 	}
