@@ -53,6 +53,55 @@ func TestIsolateSGRRowsLeavesPlainTextUnchanged(t *testing.T) {
 	}
 }
 
+// Pi fills tool and status rows by painting spaces through the pane's last
+// column. The preview needs those cells for the same row width and background
+// as the attached session, then a reset before dma adds its panel border.
+func TestCapturePanePreservesStyledTrailingCells(t *testing.T) {
+	if !Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	name := "dma-styled-row-" + strings.ReplaceAll(t.Name(), "/", "-")
+	if err := NewSession(ctx, name, os.TempDir(), 20, 5); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+
+	const command = `printf '\033[48;2;40;50;40m%-20s\033[0m\n' row`
+	if err := SendLiteral(ctx, name, command); err != nil {
+		t.Fatalf("paint row: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	pane, err := CapturePane(ctx, name, 0)
+	if err != nil {
+		t.Fatalf("CapturePane: %v", err)
+	}
+	var row string
+	for _, line := range strings.Split(pane.Content, "\n") {
+		plain := ansi.Strip(line)
+		if strings.TrimRight(plain, " ") == "row" && ansi.StringWidth(line) == 20 {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("captured pane lost the 20-cell painted row:\n%q", ansi.Strip(pane.Content))
+	}
+
+	screen := uv.NewScreenBuffer(21, 1)
+	uv.NewStyledString(row+"X").Draw(screen, screen.Bounds())
+	wantBackground := color.RGBA{R: 40, G: 50, B: 40, A: 255}
+	if bg := screen.CellAt(19, 0).Style.Bg; !sameColor(bg, wantBackground) {
+		t.Errorf("last pane cell background = %v, want %v", bg, wantBackground)
+	}
+	if style := screen.CellAt(20, 0).Style; !style.IsZero() {
+		t.Errorf("cell after pane row inherited style %#v", style)
+	}
+}
+
 func sameColor(got, want color.Color) bool {
 	if got == nil || want == nil {
 		return got == nil && want == nil
