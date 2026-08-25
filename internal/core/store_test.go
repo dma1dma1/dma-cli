@@ -1,9 +1,107 @@
 package core
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestDeletedSessionCannotBeResurrectedByAStaleBoard(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	a := &Session{ID: "a", Title: "pruned"}
+	b := &Session{ID: "b", Title: "kept"}
+	if err := SaveSessions([]*Session{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteSession(a.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the in-memory list held by a second board that was open before
+	// the prune and has not observed it yet.
+	if err := UpsertSessions([]*Session{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := ids(got); len(ids) != 1 || ids[0] != "b" {
+		t.Fatalf("sessions after stale save = %v, want only b", ids)
+	}
+}
+
+func TestUpsertSessionsPreservesAnotherBoardsAdditions(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	if err := UpsertSessions([]*Session{{ID: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertSessions([]*Session{{ID: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := ids(got); len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("merged sessions = %v, want a and b", ids)
+	}
+}
+
+func TestConcurrentSessionUpsertsDoNotLoseWriters(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	const writers = 20
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := UpsertSessions([]*Session{{ID: fmt.Sprintf("s-%02d", i)}}); err != nil {
+				t.Errorf("upsert %d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	got, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != writers {
+		t.Fatalf("concurrent upserts saved %d sessions, want %d", len(got), writers)
+	}
+}
+
+func TestStaleSaveCannotCancelPruningClaim(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	s := &Session{ID: "a"}
+	if err := SaveSessions([]*Session{s}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetSessionPruning(s.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertSessions([]*Session{s}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[0].Pruning {
+		t.Fatalf("stale save cleared pruning: %+v", got)
+	}
+	if err := SetSessionPruning(s.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Pruning {
+		t.Fatalf("explicit failure did not clear pruning: %+v", got)
+	}
+}
 
 // Two repos sharing a branch name is the case that breaks branch-only matching.
 func TestFindByKeyDistinguishesReposSharingABranch(t *testing.T) {

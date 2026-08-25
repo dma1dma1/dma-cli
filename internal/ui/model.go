@@ -299,7 +299,7 @@ func (m *Model) dropSelectionIfHidden() {
 }
 
 func (m *Model) save() {
-	if err := core.SaveSessions(m.persistedSessions()); err != nil {
+	if err := core.UpsertSessions(m.persistedSessions()); err != nil {
 		m.notice, m.noticeErr, m.noticeAt = "save state: "+err.Error(), true, time.Now()
 	}
 }
@@ -1189,12 +1189,40 @@ func (m Model) handlePRDetail(msg prDetailMsg) (tea.Model, tea.Cmd) {
 // the user may not be looking at. The panel is not moved onto them, for the same
 // reason starting a session in the background does not move it.
 func (m Model) handleAdoptedSessions(msg adoptedSessionsMsg) (tea.Model, tea.Cmd) {
-	if len(msg.sessions) == 0 {
+	if len(msg.sessions) == 0 && len(msg.removedIDs) == 0 {
 		return m, nil
 	}
+	removed := make(map[string]bool, len(msg.removedIDs))
+	for _, id := range msg.removedIDs {
+		removed[id] = true
+	}
+	removedSelected := removed[m.selectedID]
+	removedCount := 0
+	if len(removed) > 0 {
+		kept := m.sessions[:0]
+		for _, s := range m.sessions {
+			if removed[s.ID] {
+				removedCount++
+				delete(m.touchedAt, s.ID)
+				delete(m.hookSeen, s.ID)
+				continue
+			}
+			kept = append(kept, s)
+		}
+		m.sessions = kept
+		if removedSelected && removedCount > 0 {
+			m.preview, m.previewCursor = "", tmuxx.Cursor{}
+			m.previewScroll, m.previewMouseSGR = 0, false
+		}
+	}
 	configChanged := false
+	var added []*core.Session
 	for _, s := range msg.sessions {
+		if core.FindByID(m.sessions, s.ID) != nil {
+			continue
+		}
 		m.sessions = append(m.sessions, s)
+		added = append(added, s)
 		if s.Group != "" && m.cfg.AddProject(s.Group, s.RepoID) {
 			configChanged = true
 		}
@@ -1202,23 +1230,37 @@ func (m Model) handleAdoptedSessions(msg adoptedSessionsMsg) (tea.Model, tea.Cmd
 		// the agent working -- the same bookkeeping every other resize gets.
 		m.touchedAt[s.ID] = now()
 	}
+	// Two external polls can overlap. Once the first result has been applied,
+	// the second contains only facts this model already knows.
+	if len(added) == 0 && removedCount == 0 {
+		return m, nil
+	}
 	if configChanged {
 		_ = core.SaveConfig(m.cfg)
 	}
 	// Saved rather than left alone: the board's list is what gets written from
 	// here on, so it has to be the one holding these before anything else
 	// prompts a save.
-	m.save()
+	if len(added) > 0 {
+		m.save()
+	}
 	m.rebuild()
 
-	title := msg.sessions[0].Title
-	if len(msg.sessions) > 1 {
-		title = fmt.Sprintf("%d sessions", len(msg.sessions))
+	switch {
+	case len(added) > 0:
+		title := added[0].Title
+		if len(added) > 1 {
+			title = fmt.Sprintf("%d sessions", len(added))
+		}
+		m.notice, m.noticeErr, m.noticeAt = "attached: "+title, false, time.Now()
+	case removedCount == 1:
+		m.notice, m.noticeErr, m.noticeAt = "pruned on another board", false, time.Now()
+	default:
+		m.notice, m.noticeErr, m.noticeAt = fmt.Sprintf("pruned on another board: %d sessions", removedCount), false, time.Now()
 	}
-	m.notice, m.noticeErr, m.noticeAt = "attached: "+title, false, time.Now()
 
 	cols, rows := m.previewDims()
-	return m, resizeSessionsCmd(msg.sessions, cols, rows)
+	return m, resizeSessionsCmd(added, cols, rows)
 }
 
 func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
@@ -1336,6 +1378,9 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 		s := core.FindByID(m.sessions, msg.id)
 		if s != nil && s.Pruning {
 			s.Pruning = false
+			if err := core.SetSessionPruning(s.ID, false); err != nil {
+				return m, errStatus(fmt.Errorf("save prune failure: %w", err))
+			}
 			m.save()
 		}
 		// The recoveries below are per-session questions, and a bulk prune has
@@ -1389,6 +1434,9 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, errStatus(msg.err)
 	}
+	if err := core.DeleteSession(msg.id); err != nil {
+		return m, errStatus(fmt.Errorf("save completed prune: %w", err))
+	}
 
 	for i, s := range m.sessions {
 		if s.ID == msg.id {
@@ -1396,7 +1444,6 @@ func (m Model) handleTeardown(msg teardownMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 	}
-	m.save()
 	m.rebuild()
 	m.preview = ""
 	if m.selectedID == "" {

@@ -1,10 +1,8 @@
 package ui
 
-// `dma attach` starts a session from a shell, and the board it belongs on is
-// usually already open. These cover the board taking it on, which it has to do
-// for a reason stronger than visibility: the board writes its whole session list
-// every time it saves, so a session it has not noticed is a session its next
-// save deletes.
+// `dma attach` can add a session from a shell, and another open board can prune
+// one. These cover a board reconciling both directions without replacing newer
+// in-memory observation and PR facts on cards it already knows.
 
 import (
 	"testing"
@@ -80,6 +78,61 @@ func TestAdoptingNothingChangesNothing(t *testing.T) {
 	}
 	if got := next.(Model); got.notice != "something earlier" {
 		t.Errorf("notice = %q, want the earlier one left alone", got.notice)
+	}
+}
+
+func TestBoardDropsSessionPrunedByAnotherBoard(t *testing.T) {
+	a := sess("a", "", core.LifecycleIdle, core.AgentIdle, "r")
+	b := sess("b", "", core.LifecycleIdle, core.AgentIdle, "r")
+	m := testModel(nil, a, b)
+	m.selectSession(b)
+	m.preview = "b's old terminal"
+
+	next, cmd := m.handleAdoptedSessions(adoptedSessionsMsg{removedIDs: []string{"b"}})
+	got := next.(Model)
+	if cmd != nil {
+		t.Error("a remote prune tried to resize a session")
+	}
+	if ids := idsOf(got.sessions); len(ids) != 1 || ids[0] != "a" {
+		t.Fatalf("sessions after remote prune = %v, want only a", ids)
+	}
+	if got.selectedID != "a" || got.preview != "" {
+		t.Errorf("panel after remote prune = selected %q, preview %q", got.selectedID, got.preview)
+	}
+}
+
+func TestExternalPollReportsDurablyPrunedSessions(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	a := sess("a", "", core.LifecycleIdle, core.AgentIdle, "r")
+	b := sess("b", "", core.LifecycleIdle, core.AgentIdle, "r")
+	if err := core.SaveSessions([]*core.Session{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.DeleteSession("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, ok := adoptExternalCmd([]*core.Session{a, b})().(adoptedSessionsMsg)
+	if !ok {
+		t.Fatal("external poll returned the wrong message")
+	}
+	if len(msg.sessions) != 0 || len(msg.removedIDs) != 1 || msg.removedIDs[0] != "b" {
+		t.Fatalf("external poll = %+v, want b removed", msg)
+	}
+}
+
+func TestRepeatedExternalPollDoesNotRepeatPruneNotice(t *testing.T) {
+	a := sess("a", "", core.LifecycleIdle, core.AgentIdle, "r")
+	m := testModel(nil, a)
+	m.notice = "pruned on another board"
+
+	next, cmd := m.handleAdoptedSessions(adoptedSessionsMsg{
+		sessions:   []*core.Session{a},
+		removedIDs: []string{"already-gone"},
+	})
+	got := next.(Model)
+	if cmd != nil || got.notice != m.notice {
+		t.Errorf("repeated poll changed model: cmd=%v notice=%q", cmd != nil, got.notice)
 	}
 }
 
