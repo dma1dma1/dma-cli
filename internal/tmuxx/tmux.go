@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func run(ctx context.Context, args ...string) (string, error) {
@@ -28,6 +31,54 @@ func run(ctx context.Context, args ...string) (string, error) {
 		return stdout.String(), fmt.Errorf("tmux %s: %s", strings.Join(args, " "), msg)
 	}
 	return strings.TrimRight(stdout.String(), "\n"), nil
+}
+
+func capturePaneContent(ctx context.Context, args ...string) (string, error) {
+	content, err := run(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+	return isolateSGRRows(content), nil
+}
+
+// isolateSGRRows turns tmux's stateful ANSI stream into independently styled
+// rows. A style selected at the end of one row still begins the next row, but
+// cannot color padding or borders that the board appends to the current row.
+func isolateSGRRows(s string) string {
+	if !strings.ContainsRune(s, '\x1b') {
+		return s
+	}
+
+	parser := ansi.GetParser()
+	defer ansi.PutParser(parser)
+
+	var out strings.Builder
+	out.Grow(len(s))
+	var style uv.Style
+	var state byte
+	for len(s) > 0 {
+		seq, _, n, newState := ansi.DecodeSequence(s, state, parser)
+		if ansi.HasCsiPrefix(seq) && parser.Command() == 'm' {
+			uv.ReadStyle(parser.Params(), &style)
+		}
+		if seq == "\n" {
+			if !style.IsZero() {
+				out.WriteString(ansi.ResetStyle)
+			}
+			out.WriteByte('\n')
+			if !style.IsZero() {
+				out.WriteString(style.String())
+			}
+		} else {
+			out.WriteString(seq)
+		}
+		state = newState
+		s = s[n:]
+	}
+	if !style.IsZero() {
+		out.WriteString(ansi.ResetStyle)
+	}
+	return out.String()
 }
 
 // Available reports whether tmux is installed.
@@ -287,6 +338,8 @@ type Cursor struct {
 }
 
 // Pane is one snapshot of a pane: what is on screen, and where the cursor is.
+// Content preserves captured ANSI styling, but each row resets before its end
+// and restates any carried style at the start of the next row.
 //
 // The two travel together because they are only meaningful together -- a cursor
 // position describes a cell of a particular frame, and pairing it with a later
@@ -310,7 +363,7 @@ func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
 	if history > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", history))
 	}
-	content, err := run(ctx, args...)
+	content, err := capturePaneContent(ctx, args...)
 	if err != nil {
 		return Pane{}, err
 	}
@@ -385,7 +438,7 @@ func CapturePaneAt(ctx context.Context, name string, scroll int) (Pane, int, err
 	// capture-pane numbers the live screen from 0 and its history backwards
 	// from -1. Moving the whole height-row viewport up by scroll therefore
 	// shifts both ends of the capture range by that amount.
-	content, err := run(ctx, "capture-pane", "-p", "-e", "-t", name,
+	content, err := capturePaneContent(ctx, "capture-pane", "-p", "-e", "-t", name,
 		"-S", strconv.Itoa(-scroll), "-E", strconv.Itoa(height-1-scroll))
 	if err != nil {
 		return Pane{}, 0, err
