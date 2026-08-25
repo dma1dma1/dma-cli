@@ -2,12 +2,65 @@ package tmuxx
 
 import (
 	"context"
+	"image/color"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestIsolateSGRRows(t *testing.T) {
+	input := "A\x1b[1;2;3;4:3;38;5;120;48;2;40;50;40m\nB\x1b[22;24;49m\nC"
+	output := isolateSGRRows(input)
+	if got, want := ansi.Strip(output), ansi.Strip(input); got != want {
+		t.Errorf("visible text = %q, want %q", got, want)
+	}
+	if got := isolateSGRRows(output); got != output {
+		t.Error("normalization is not idempotent")
+	}
+
+	whole := uv.NewScreenBuffer(3, 3)
+	uv.NewStyledString(output).Draw(whole, whole.Bounds())
+	rows := strings.Split(output, "\n")
+	if len(rows) != 3 {
+		t.Fatalf("row count = %d, want 3", len(rows))
+	}
+	for y, row := range rows {
+		standalone := uv.NewScreenBuffer(2, 1)
+		uv.NewStyledString(row+"X").Draw(standalone, standalone.Bounds())
+		if got, want := standalone.CellAt(0, 0).Style, whole.CellAt(0, y).Style; !got.Equal(&want) {
+			t.Errorf("row %d standalone style = %#v, whole-stream style = %#v", y, got, want)
+		}
+		if style := standalone.CellAt(1, 0).Style; !style.IsZero() {
+			t.Errorf("row %d appended marker style = %#v, want default", y, style)
+		}
+	}
+
+	wantBackground := color.RGBA{R: 40, G: 50, B: 40, A: 255}
+	if bg := whole.CellAt(0, 1).Style.Bg; !sameColor(bg, wantBackground) {
+		t.Errorf("row 1 B background = %v, want %v", bg, wantBackground)
+	}
+}
+
+func TestIsolateSGRRowsLeavesPlainTextUnchanged(t *testing.T) {
+	const input = "plain\ntext"
+	if got := isolateSGRRows(input); got != input {
+		t.Errorf("isolateSGRRows(%q) = %q", input, got)
+	}
+}
+
+func sameColor(got, want color.Color) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	gotR, gotG, gotB, gotA := got.RGBA()
+	wantR, wantG, wantB, wantA := want.RGBA()
+	return gotR == wantR && gotG == wantG && gotB == wantB && gotA == wantA
+}
 
 // TestWindowSizeModes covers the sizing contract the board depends on: a
 // detached session holds the preview size, and an attached one is released to
