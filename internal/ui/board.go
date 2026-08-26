@@ -284,6 +284,9 @@ func (m Model) cardLines(s *core.Session, selected bool, width int) []string {
 // branch name before that.
 func (m Model) branchOrPR(s *core.Session) string {
 	if s.Starting {
+		if s.StartingDetail != "" {
+			return s.StartingDetail
+		}
 		return "worktree + dependencies"
 	}
 	if !s.HasPR() {

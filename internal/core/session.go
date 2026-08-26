@@ -202,7 +202,8 @@ type Session struct {
 	// Starting marks the temporary card shown while a new worktree is being
 	// fetched and bootstrapped. It never reaches disk: a board restart cannot
 	// resume a Create operation that died with the previous process.
-	Starting bool `json:"-"`
+	Starting       bool   `json:"-"`
+	StartingDetail string `json:"-"`
 	// Pruning makes teardown durable across a board quit. The operation removes
 	// external resources before its completion message can remove the card, so
 	// the next launch retries any teardown whose message was never applied.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1000,5 +1001,38 @@ func TestCreatePassesStagedImagesToTheAgent(t *testing.T) {
 	}
 	if dirty, err := gitx.IsDirty(ctx, res.Session.WorktreePath); err != nil || dirty {
 		t.Errorf("created image session starts dirty: dirty=%v err=%v", dirty, err)
+	}
+}
+
+func TestBootstrapReportsEachConfiguredPathInOrder(t *testing.T) {
+	repoPath := newTestRepo(t, "bootstrap-progress")
+	for _, path := range []string{"cache", "node_modules"} {
+		if err := os.MkdirAll(filepath.Join(repoPath, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, ".env"), []byte("X=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := core.Repo{Path: repoPath, Bootstrap: core.Bootstrap{
+		Symlink: []string{"cache"},
+		Clone:   []string{"node_modules"},
+		Copy:    []string{".env"},
+	}}
+	var got []CreateProgress
+	_, err := bootstrapWithProgress(context.Background(), repo, t.TempDir(), func(p CreateProgress) {
+		got = append(got, p)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CreateProgress{
+		"linking cache (1/3)",
+		"cloning node_modules (2/3)",
+		"copying .env (3/3)",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("progress = %q, want %q", got, want)
 	}
 }

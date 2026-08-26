@@ -72,6 +72,19 @@ type adoptedMsg struct {
 	err   error
 }
 
+type createProgressMsg struct {
+	id       string
+	progress ops.CreateProgress
+	ch       <-chan createEvent
+}
+
+type createEvent struct {
+	progress ops.CreateProgress
+	res      *ops.CreateResult
+	err      error
+	complete bool
+}
+
 type createdMsg struct {
 	id  string
 	res *ops.CreateResult
@@ -611,11 +624,32 @@ func prDetailCmd(remote, sessionID string, number int) tea.Cmd {
 // monorepo, and every start in that repo then failed reporting tmux -- the step
 // after the one that actually ran out of time.
 func createCmd(cfg *core.Config, id string, req ops.CreateRequest) tea.Cmd {
+	ch := make(chan createEvent, 16)
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-		defer cancel()
-		res, err := ops.Create(ctx, cfg, req)
-		return createdMsg{id: id, res: res, err: err}
+		go func() {
+			defer close(ch)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+			defer cancel()
+			req.Progress = func(p ops.CreateProgress) {
+				ch <- createEvent{progress: p}
+			}
+			res, err := ops.Create(ctx, cfg, req)
+			ch <- createEvent{res: res, err: err, complete: true}
+		}()
+		return waitForCreateEvent(id, ch)()
+	}
+}
+
+func waitForCreateEvent(id string, ch <-chan createEvent) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		if ev.complete {
+			return createdMsg{id: id, res: ev.res, err: ev.err}
+		}
+		return createProgressMsg{id: id, progress: ev.progress, ch: ch}
 	}
 }
 
