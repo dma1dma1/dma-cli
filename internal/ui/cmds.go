@@ -524,14 +524,17 @@ type adoptedSessionsMsg struct {
 // carries a prune in the other direction when another board removed a session.
 //
 // Sessions the board already knows are left exactly as they are, because the
-// board's copy holds this poll's liveness, diff and PR state. Absences are safe
-// to apply now that ordinary saves are merge-only and prune is the one explicit
-// operation that removes a persisted ID.
+// board's copy holds this poll's liveness, diff and PR state. An unexplained
+// absence is healed from that copy before removals are computed: prune has a
+// durable tombstone, so absence on its own must never make a live card vanish.
+// UpsertSessions filters tombstoned IDs, which leaves only explicit prunes
+// absent after the healing pass.
 func adoptExternalCmd(known []*core.Session) tea.Cmd {
-	ids := make(map[string]bool, len(known))
+	byID := make(map[string]*core.Session, len(known))
 	for _, s := range known {
 		if !s.Starting {
-			ids[s.ID] = true
+			copy := *s
+			byID[s.ID] = &copy
 		}
 	}
 	return func() tea.Msg {
@@ -542,15 +545,36 @@ func adoptExternalCmd(known []*core.Session) tea.Cmd {
 			return adoptedSessionsMsg{}
 		}
 		storedIDs := make(map[string]bool, len(stored))
-		var fresh []*core.Session
 		for _, s := range stored {
 			storedIDs[s.ID] = true
-			if !ids[s.ID] {
+		}
+		var missing []*core.Session
+		for id, s := range byID {
+			if !storedIDs[id] {
+				missing = append(missing, s)
+			}
+		}
+		if len(missing) > 0 {
+			if err := core.UpsertSessions(missing); err != nil {
+				return adoptedSessionsMsg{}
+			}
+			stored, err = core.LoadSessions()
+			if err != nil {
+				return adoptedSessionsMsg{}
+			}
+			storedIDs = make(map[string]bool, len(stored))
+			for _, s := range stored {
+				storedIDs[s.ID] = true
+			}
+		}
+		var fresh []*core.Session
+		for _, s := range stored {
+			if _, ok := byID[s.ID]; !ok {
 				fresh = append(fresh, s)
 			}
 		}
 		var removed []string
-		for id := range ids {
+		for id := range byID {
 			if !storedIDs[id] {
 				removed = append(removed, id)
 			}
@@ -634,10 +658,31 @@ func createCmd(cfg *core.Config, id string, req ops.CreateRequest) tea.Cmd {
 				ch <- createEvent{progress: p}
 			}
 			res, err := ops.Create(ctx, cfg, req)
+			if err == nil {
+				if persistErr := persistCreateResult(id, res); persistErr != nil {
+					if res == nil {
+						err = persistErr
+					} else {
+						res.Warnings = append(res.Warnings, "save session: "+persistErr.Error())
+					}
+				}
+			}
 			ch <- createEvent{res: res, err: err, complete: true}
 		}()
 		return waitForCreateEvent(id, ch)()
 	}
+}
+
+// persistCreateResult closes the gap between the terminal becoming real and
+// Bubble Tea applying its completion message. The board process can exit or be
+// interrupted while a command result is in flight; once Create succeeded, its
+// detached tmux session outlives that process and its card must do the same.
+func persistCreateResult(id string, res *ops.CreateResult) error {
+	if res == nil || res.Session == nil {
+		return fmt.Errorf("create returned no session")
+	}
+	res.Session.ID = id
+	return core.UpsertSessions([]*core.Session{res.Session})
 }
 
 func waitForCreateEvent(id string, ch <-chan createEvent) tea.Cmd {

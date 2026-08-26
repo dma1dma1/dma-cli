@@ -197,6 +197,26 @@ func TestPendingCardsAreNeverPersisted(t *testing.T) {
 	}
 }
 
+func TestSuccessfulCreateIsPersistedBeforeItsCompletionIsApplied(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	s := sess("generated-by-ops", "", core.LifecycleActive, core.AgentWorking, "r")
+	res := &ops.CreateResult{Session: s}
+
+	if err := persistCreateResult("pending-id", res); err != nil {
+		t.Fatal(err)
+	}
+	if s.ID != "pending-id" {
+		t.Fatalf("created session id = %q, want pending-id", s.ID)
+	}
+	stored, err := core.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].ID != "pending-id" {
+		t.Fatalf("persisted sessions = %v, want pending-id", idsOf(stored))
+	}
+}
+
 func TestPendingCardsAreExcludedFromSessionOperations(t *testing.T) {
 	ready := sess("ready", "", core.LifecycleIdle, core.AgentIdle, "r")
 	pending := sess("pending", "", core.LifecycleActive, core.AgentWorking, "r")
