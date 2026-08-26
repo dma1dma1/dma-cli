@@ -28,10 +28,25 @@ import (
 // complete to every installer that looks at it. That is worth abandoning the
 // session over, so the caller can roll the worktree back.
 func Bootstrap(ctx context.Context, repo core.Repo, worktree string) ([]string, error) {
+	return bootstrapWithProgress(ctx, repo, worktree, nil)
+}
+
+func bootstrapWithProgress(ctx context.Context, repo core.Repo, worktree string, onProgress func(CreateProgress)) ([]string, error) {
 	var warnings []string
 	var created []string
 
+	total := len(repo.Bootstrap.Symlink) + len(repo.Bootstrap.Clone) + len(repo.Bootstrap.Copy)
+	current := 0
+
+	report := func(action, rel string) {
+		current++
+		if onProgress != nil {
+			onProgress(CreateProgress(fmt.Sprintf("%s %s (%d/%d)", action, rel, current, total)))
+		}
+	}
+
 	for _, rel := range repo.Bootstrap.Symlink {
+		report("linking", rel)
 		if err := linkPath(repo.Path, worktree, rel); err != nil {
 			warnings = append(warnings, fmt.Sprintf("symlink %s: %v", rel, err))
 			continue
@@ -39,6 +54,7 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) ([]string, 
 		created = append(created, rel)
 	}
 	for _, rel := range repo.Bootstrap.Clone {
+		report("cloning", rel)
 		if err := clonePath(ctx, repo.Path, worktree, rel); err != nil {
 			if ctx.Err() != nil {
 				return warnings, fmt.Errorf("clone %s: %w", rel, ctx.Err())
@@ -49,6 +65,7 @@ func Bootstrap(ctx context.Context, repo core.Repo, worktree string) ([]string, 
 		created = append(created, rel)
 	}
 	for _, rel := range repo.Bootstrap.Copy {
+		report("copying", rel)
 		if err := copyPath(repo.Path, worktree, rel); err != nil {
 			warnings = append(warnings, fmt.Sprintf("copy %s: %v", rel, err))
 			continue

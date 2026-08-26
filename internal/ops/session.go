@@ -22,6 +22,9 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
+// CreateProgress is the current user-visible step of session creation.
+type CreateProgress string
+
 // CreateRequest describes a session to be created. Everything except Title has
 // a sensible inferred default, so the common path stays "type a title, enter".
 type CreateRequest struct {
@@ -39,6 +42,8 @@ type CreateRequest struct {
 	// board will render it into: a detached tmux session otherwise defaults to
 	// 80x24 and the agent draws its UI into a narrow strip.
 	Cols, Rows int
+	// Progress receives user-visible updates synchronously during creation.
+	Progress func(CreateProgress)
 }
 
 // ImageAttachment is PNG data captured before a session worktree exists.
@@ -133,9 +138,16 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 		return nil, fmt.Errorf("unknown agent profile %q", profile)
 	}
 
+	report := func(p CreateProgress) {
+		if req.Progress != nil {
+			req.Progress(p)
+		}
+	}
+
 	// Every session starts from the remote tip. Fetching is what makes that
 	// true; without it the start point is a local ref nobody has updated since
 	// the last time someone worked in the repo directly.
+	report(CreateProgress("fetching " + base))
 	var warnings []string
 	if err := gitx.Fetch(ctx, repo.Path, base); err != nil {
 		warnings = append(warnings, fmt.Sprintf("fetch origin %s: %v — starting from the last fetched tip", base, err))
@@ -146,6 +158,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// -- its summary does not exist yet and arrives after the session does. So
 	// the directory is named from the opening of that paragraph, cut at a word
 	// rather than wherever forty characters happens to land.
+	report("creating worktree")
 	worktree := uniqueWorktreeDir(repo.WorktreeRoot, core.Slug(summarize.Shorten(title)))
 	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
@@ -159,7 +172,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// a worktree whose dependencies were still arriving, so the wait is spent
 	// here rather than deferred.
 	bootCtx, cancelBoot := context.WithTimeout(ctx, bootstrapTimeout)
-	bootWarnings, err := Bootstrap(bootCtx, repo, worktree)
+	bootWarnings, err := bootstrapWithProgress(bootCtx, repo, worktree, req.Progress)
 	cancelBoot()
 	warnings = append(warnings, bootWarnings...)
 	if err != nil {
@@ -188,6 +201,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	tmuxName := tmuxx.SafeName(repo.ID + "-" + filepath.Base(worktree))
 	tmuxName = uniqueTmux(ctx, tmuxName)
 
+	report("starting terminal")
 	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows); err != nil {
 		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("start tmux session: %w", err))
 	}
@@ -196,6 +210,7 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// on it -- nothing is typed into its UI afterwards. SendLiteral, not SendKeys:
 	// the line now carries user text, and only the literal path keeps tmux from
 	// reading a trailing semicolon as its own command separator.
+	report(CreateProgress("launching " + profile))
 	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.LaunchCommand(req.InitialPrompt, imagePaths...)); err != nil {
 		return nil, abort(ctx, repo, worktree, tmuxName, fmt.Errorf("launch agent: %w", err))
 	}

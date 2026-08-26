@@ -272,3 +272,38 @@ func TestCtrlEnterOnAnEmptyTaskJustCloses(t *testing.T) {
 		t.Errorf("focus = %v, want the board back", got.focus)
 	}
 }
+
+func TestCreateProgressUpdatesPendingCardAndRearms(t *testing.T) {
+	pending := sess("pending", "", core.LifecycleActive, core.AgentWorking, "r")
+	pending.Starting = true
+	pending.Title = "retry the flaky upload test"
+	m := testModel(nil, pending)
+	m.selectSession(pending)
+
+	events := make(chan createEvent, 1)
+	events <- createEvent{err: errors.New("stopped after progress"), complete: true}
+	progress := createProgressMsg{
+		id:       pending.ID,
+		progress: "cloning node_modules (1/2)",
+		ch:       events,
+	}
+	next, wait := m.Update(progress)
+	got := next.(Model)
+	if got.sessions[0].StartingDetail != string(progress.progress) {
+		t.Fatalf("startup detail = %q, want %q", got.sessions[0].StartingDetail, progress.progress)
+	}
+	if view := got.render(); !strings.Contains(view, string(progress.progress)) {
+		t.Errorf("rendered view does not contain progress:\n%s", view)
+	}
+	if wait == nil {
+		t.Fatal("progress did not rearm the create event channel")
+	}
+	if _, ok := wait().(createdMsg); !ok {
+		t.Fatal("rearmed command did not receive the completion event")
+	}
+
+	interactive, _ := got.Update(tea.KeyPressMsg{Code: '?'})
+	if interactive.(Model).mode != modeHelp {
+		t.Error("startup progress blocked normal UI updates")
+	}
+}

@@ -569,6 +569,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// better than a line of prose that costs the shortcut bar ten seconds.
 		return m, nil
 
+	case createProgressMsg:
+		return m.handleCreateProgress(msg)
+
 	case createdMsg:
 		return m.handleCreated(msg)
 
@@ -1261,6 +1264,20 @@ func (m Model) handleAdoptedSessions(msg adoptedSessionsMsg) (tea.Model, tea.Cmd
 
 	cols, rows := m.previewDims()
 	return m, resizeSessionsCmd(added, cols, rows)
+}
+
+func (m Model) handleCreateProgress(msg createProgressMsg) (tea.Model, tea.Cmd) {
+	for _, s := range m.sessions {
+		if s.ID == msg.id && s.Starting {
+			s.StartingDetail = string(msg.progress)
+			break
+		}
+	}
+	var next tea.Cmd
+	if msg.ch != nil {
+		next = waitForCreateEvent(msg.id, msg.ch)
+	}
+	return m, next
 }
 
 func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {

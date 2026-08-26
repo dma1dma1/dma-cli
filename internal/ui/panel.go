@@ -308,6 +308,9 @@ func (m Model) panelTitle() (string, string) {
 		return s.Title, "move to a project"
 	}
 	if s.Starting {
+		if s.StartingDetail != "" {
+			return s.Title, s.StartingDetail
+		}
 		return s.Title, "preparing worktree and dependencies"
 	}
 	sub := s.TmuxSession
@@ -370,7 +373,11 @@ func (m Model) previewBody(rows, width int) []string {
 		return centered(rows, width, st.Faint.Render("no session selected — type a task below to start one"))
 	}
 	if s.Starting {
-		return centered(rows, width, st.Faint.Render("preparing worktree and dependencies…"))
+		text := "preparing worktree and dependencies…"
+		if s.StartingDetail != "" {
+			text = s.StartingDetail + "…"
+		}
+		return centered(rows, width, st.Faint.Render(text))
 	}
 	if strings.TrimSpace(m.preview) == "" {
 		hint := "waiting for output…"
