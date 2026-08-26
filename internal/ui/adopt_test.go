@@ -121,6 +121,34 @@ func TestExternalPollReportsDurablyPrunedSessions(t *testing.T) {
 	}
 }
 
+// Missing from state is not the same thing as pruned. A successful session can
+// outlive the board process that was about to persist it, and a failed write or
+// an older concurrent writer can also leave this shape. The live board's copy
+// repairs the omission; only a prune tombstone is allowed to remove its card.
+func TestExternalPollRestoresSessionMissingWithoutAPrune(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	a := sess("a", "", core.LifecycleIdle, core.AgentIdle, "r")
+	b := sess("b", "", core.LifecycleActive, core.AgentWorking, "r")
+	if err := core.SaveSessions([]*core.Session{a}); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, ok := adoptExternalCmd([]*core.Session{a, b})().(adoptedSessionsMsg)
+	if !ok {
+		t.Fatal("external poll returned the wrong message")
+	}
+	if len(msg.sessions) != 0 || len(msg.removedIDs) != 0 {
+		t.Fatalf("external poll = %+v, want no adoption or prune", msg)
+	}
+	stored, err := core.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := idsOf(stored); len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("stored sessions after repair = %v, want a and b", ids)
+	}
+}
+
 func TestRepeatedExternalPollDoesNotRepeatPruneNotice(t *testing.T) {
 	a := sess("a", "", core.LifecycleIdle, core.AgentIdle, "r")
 	m := testModel(nil, a)
