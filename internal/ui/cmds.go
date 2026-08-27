@@ -416,6 +416,23 @@ func readClipboardCmd() tea.Cmd {
 	}
 }
 
+// startProbe starts at most one capture cycle at a time. A slow tmux capture can
+// outlive the four-second timer (or a person can press refresh while one runs),
+// and Prober deliberately carries mutable samples from one cycle to the next.
+// Waiting for probeMsg before another cycle keeps that history single-owner and
+// avoids spawning duplicate tmux subprocesses for the same sessions.
+func (m *Model) startProbe(sessions []*core.Session) tea.Cmd {
+	if m.probeInFlight {
+		return nil
+	}
+	cmd := probeCmd(m.prober, m.cfg, sessions, m.touchedAt, m.hookSeen)
+	if cmd == nil {
+		return nil
+	}
+	m.probeInFlight = true
+	return cmd
+}
+
 // probeCmd infers state for sessions whose agent has no hook channel, and for
 // the few hook-backed ones whose recorded state nothing has confirmed -- see
 // stranded. A hook-capable agent is otherwise skipped: its own reports are

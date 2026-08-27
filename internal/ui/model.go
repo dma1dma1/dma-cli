@@ -128,6 +128,12 @@ type Model struct {
 	// board was not running to receive; see stranded.
 	hookSeen map[string]bool
 
+	// probeInFlight keeps timer ticks and manual refreshes from starting another
+	// probe cycle while the current one is still capturing panes. The prober
+	// carries samples between cycles, so concurrent cycles would race on that
+	// shared history as well as needlessly duplicate tmux subprocesses.
+	probeInFlight bool
+
 	// review is the full-screen review view: the file tree, the pane beside it,
 	// and the searches that choose what the pane shows. See review.go.
 	review review
@@ -463,7 +469,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(echoTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
 
 	case probeTickMsg:
-		return m, tea.Batch(probeTickCmd(), probeCmd(m.prober, m.cfg, m.establishedSessions(), m.touchedAt, m.hookSeen))
+		// Hoisted out of the batch: startProbe mutates m, and that has to happen
+		// before m is copied into the returned model.
+		probe := m.startProbe(m.establishedSessions())
+		return m, tea.Batch(probeTickCmd(), probe)
 
 	case pollTickMsg:
 		// Hoisted out of the batch: refreshDiff drops the rendered-diff cache, and
@@ -957,6 +966,7 @@ func (m Model) handleHook(ev hooks.Event) (tea.Model, tea.Cmd) {
 
 // handleProbe applies inferred state for agents that cannot report their own.
 func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
+	m.probeInFlight = false
 	dirty := false
 	for _, st := range msg.states {
 		s := core.FindByID(m.sessions, st.SessionID)

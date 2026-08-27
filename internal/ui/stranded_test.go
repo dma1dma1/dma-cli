@@ -96,6 +96,35 @@ func TestHooklessSessionsAreUnaffected(t *testing.T) {
 	}
 }
 
+// A capture can take longer than the four-second timer when tmux stalls (for
+// example across sleep/wake). The next tick or a manual refresh must reuse the
+// in-flight cycle rather than race it through Prober's shared sample history.
+func TestProbeCyclesDoNotOverlap(t *testing.T) {
+	s := sess("a", "", core.LifecycleActive, core.AgentWorking, "r")
+	s.AgentProfile = "codex"
+	s.TmuxSession = "tmux-a"
+	m := testModel(nil, s)
+
+	if cmd := m.startProbe(m.sessions); cmd == nil {
+		t.Fatal("first probe cycle was not started")
+	}
+	if !m.probeInFlight {
+		t.Fatal("started probe cycle was not marked in flight")
+	}
+	if cmd := m.startProbe(m.sessions); cmd != nil {
+		t.Error("a second probe cycle was started before the first completed")
+	}
+
+	next, _ := m.handleProbe(probeMsg{})
+	m = next.(Model)
+	if m.probeInFlight {
+		t.Fatal("completed probe cycle remained marked in flight")
+	}
+	if cmd := m.startProbe(m.sessions); cmd == nil {
+		t.Error("probe cycle did not become available after completion")
+	}
+}
+
 // The mark is dropped with the session, so the map does not grow for the life of
 // the process.
 func TestConfirmationsAreForgottenWithTheirSessions(t *testing.T) {
