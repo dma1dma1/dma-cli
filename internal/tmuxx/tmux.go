@@ -114,11 +114,33 @@ func SafeName(s string) string {
 	return s
 }
 
-// HasSession reports whether the named session exists -- the liveness check.
-func HasSession(ctx context.Context, name string) bool {
+// SessionExists reports whether the named session exists. A command that could
+// not run is different from a confirmed absence: callers refreshing cached
+// liveness must keep their last observation on a timeout instead of declaring
+// a live terminal dead.
+func SessionExists(ctx context.Context, name string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", "="+name)
 	cmd.Stdout, cmd.Stderr = nil, nil
-	return cmd.Run() == nil
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	// has-session uses a non-zero exit for an absent target (including an
+	// absent server). A failure to start tmux at all is an operational error.
+	if _, ok := err.(*exec.ExitError); ok {
+		return false, nil
+	}
+	return false, err
+}
+
+// HasSession is the boolean convenience used by one-shot operations. Polling
+// paths that need to distinguish absence from failure use SessionExists.
+func HasSession(ctx context.Context, name string) bool {
+	alive, _ := SessionExists(ctx, name)
+	return alive
 }
 
 // ListSessions returns the names of all live tmux sessions, so liveness for the

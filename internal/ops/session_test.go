@@ -680,6 +680,19 @@ func TestObserveReportsLiveness(t *testing.T) {
 	}
 }
 
+func TestObservePreservesLivenessWhenTmuxListFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sessions := []*core.Session{
+		{ID: "live", TmuxSession: "live", TmuxAlive: true, WorktreePath: t.TempDir()},
+		{ID: "dead", TmuxSession: "dead", TmuxAlive: false, WorktreePath: t.TempDir()},
+	}
+	obs := Observe(ctx, sessions)
+	if !obs[0].Alive || obs[1].Alive {
+		t.Errorf("liveness after failed tmux list = [%t %t], want prior [true false]", obs[0].Alive, obs[1].Alive)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// Keep git from picking up the developer's own hooks or templates.
 	os.Setenv("GIT_CONFIG_NOSYSTEM", "1")

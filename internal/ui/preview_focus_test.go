@@ -153,6 +153,20 @@ func TestTypeKeyRefusedWhenTerminalGone(t *testing.T) {
 	}
 }
 
+// Liveness is refreshed in the background and can be stale. Attaching is its
+// own tmux operation, so a cached dead badge must trigger a fresh check rather
+// than vetoing access to a terminal that is actually still there.
+func TestAttachRechecksAStaleDeadBadge(t *testing.T) {
+	s := liveSess("a")
+	s.TmuxAlive = false
+	m := testModel(nil, s)
+
+	_, cmd := m.keyBoard("a")
+	if cmd == nil {
+		t.Error("a stale dead badge prevented a fresh attach liveness check")
+	}
+}
+
 // tab must not park on the panel when there is nothing to type into: a focus
 // stop that swallows keys and shows no caret looks like a hung UI.
 func TestTabSkipsPreviewWithoutLiveTerminal(t *testing.T) {

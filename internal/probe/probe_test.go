@@ -568,6 +568,19 @@ func TestForgetDropsUnknownSessions(t *testing.T) {
 	}
 }
 
+func TestProbePreservesLivenessWhenTmuxCheckTimesOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &core.Session{
+		ID: "still-live", TmuxSession: "dma-timeout", TmuxAlive: true,
+		AgentState: core.AgentWorking,
+	}
+	got := New().Probe(ctx, s, time.Time{})
+	if !got.Alive || got.Agent != core.AgentWorking {
+		t.Errorf("probe on tmux error = %+v, want prior live/working state", got)
+	}
+}
+
 // End to end against a real pane: the first probe of a session reports what the
 // board already knows, whatever the pane looks like. Every card the board loads
 // is on its first probe, so a guess here is a flap on every startup.

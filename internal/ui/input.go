@@ -251,10 +251,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
-		if !s.TmuxAlive {
-			return m, errStatus(fmt.Errorf("terminal for %s is not running", s.Title))
-		}
-		return m, m.attach(s)
+		return m, attachCheckCmd(s)
 
 	case "enter", "d":
 		if m.selected() == nil {
@@ -1020,10 +1017,10 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 
 	case "a":
 		s := m.selected()
-		if s == nil || !s.TmuxAlive {
+		if s == nil {
 			return m, nil
 		}
-		return m, m.attach(s)
+		return m, attachCheckCmd(s)
 	}
 
 	if mm, cmd := m.sessionAction(key); cmd != nil {

@@ -695,6 +695,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// back to the preview size now that nothing is attached.
 		m.lastPreviewCols, m.lastPreviewRows = 0, 0
 		return m, tea.Batch(m.syncAgentSize(), previewCmd(m.selected()))
+
+	case attachCheckMsg:
+		s := core.FindByID(m.sessions, msg.id)
+		if s == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m, errStatus(fmt.Errorf("check terminal for %s: %w", s.Title, msg.err))
+		}
+		s.TmuxAlive = msg.alive
+		if !msg.alive {
+			return m, errStatus(fmt.Errorf("terminal for %s is not running", s.Title))
+		}
+		return m, m.attach(s)
 	}
 
 	return m, nil

@@ -607,7 +607,7 @@ func observeConcurrency() int {
 // concurrently. The writing operations on a repo -- worktree add, remove, prune
 // -- do contend, which is why teardown is still sequenced; see teardownAllCmd.
 func Observe(ctx context.Context, sessions []*core.Session) []Observation {
-	live, _ := tmuxx.ListSessions(ctx)
+	live, liveErr := tmuxx.ListSessions(ctx)
 
 	// Indexed rather than appended, so the results stay in the order the
 	// sessions arrived in whatever order they finish.
@@ -621,11 +621,11 @@ func Observe(ctx context.Context, sessions []*core.Session) []Observation {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			o := Observation{
-				ID:     s.ID,
-				Alive:  live[s.TmuxSession],
-				Branch: gitx.CurrentBranch(ctx, s.WorktreePath),
+			alive := s.TmuxAlive
+			if liveErr == nil {
+				alive = live[s.TmuxSession]
 			}
+			o := Observation{ID: s.ID, Alive: alive, Branch: gitx.CurrentBranch(ctx, s.WorktreePath)}
 			if dirty, err := gitx.IsDirty(ctx, s.WorktreePath); err == nil {
 				o.Dirty = dirty
 			}

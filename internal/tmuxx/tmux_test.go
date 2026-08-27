@@ -2,6 +2,7 @@ package tmuxx
 
 import (
 	"context"
+	"errors"
 	"image/color"
 	"os"
 	"os/exec"
@@ -12,6 +13,14 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 )
+
+func TestSessionExistsPreservesContextFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := SessionExists(ctx, "dma-context-cancelled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SessionExists error = %v, want context canceled", err)
+	}
+}
 
 func TestIsolateSGRRows(t *testing.T) {
 	input := "A\x1b[1;2;3;4:3;38;5;120;48;2;40;50;40m\nB\x1b[22;24;49m\nC"

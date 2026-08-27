@@ -189,7 +189,13 @@ func New() *Prober { return &Prober{last: map[string]sample{}} }
 // time. It is what lets the pane's own text be attributed: dma caused that
 // frame, so the agent did not.
 func (p *Prober) Probe(ctx context.Context, s *core.Session, actedAt time.Time) State {
-	if !tmuxx.HasSession(ctx, s.TmuxSession) {
+	alive, err := tmuxx.SessionExists(ctx, s.TmuxSession)
+	if err != nil {
+		// A shared probe budget can expire before this session gets its turn.
+		// That says nothing about whether its terminal still exists.
+		return State{SessionID: s.ID, Agent: s.AgentState, Alive: s.TmuxAlive}
+	}
+	if !alive {
 		delete(p.last, s.ID)
 		return State{SessionID: s.ID, Agent: core.AgentIdle, Detail: "session ended", Alive: false}
 	}

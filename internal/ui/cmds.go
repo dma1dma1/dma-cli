@@ -45,6 +45,14 @@ type previewMsg struct {
 // probeMsg carries inferred state for agents that cannot report their own.
 type probeMsg struct{ states []probe.State }
 
+// attachCheckMsg is a fresh liveness check made when the user asks for a real
+// terminal. The badge is cached background state and must not veto the action.
+type attachCheckMsg struct {
+	id    string
+	alive bool
+	err   error
+}
+
 type hookMsg hooks.Event
 
 type observeMsg struct{ obs []ops.Observation }
@@ -413,6 +421,16 @@ func readClipboardCmd() tea.Cmd {
 	return func() tea.Msg {
 		content, err := clip.Read()
 		return clipboardMsg{content: content, err: err}
+	}
+}
+
+func attachCheckCmd(s *core.Session) tea.Cmd {
+	id, name := s.ID, s.TmuxSession
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		alive, err := tmuxx.SessionExists(ctx, name)
+		return attachCheckMsg{id: id, alive: alive, err: err}
 	}
 }
 
