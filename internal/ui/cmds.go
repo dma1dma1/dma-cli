@@ -28,6 +28,7 @@ import (
 
 type tickMsg time.Time
 type pollTickMsg time.Time
+type diffTickMsg time.Time
 type previewTickMsg time.Time
 type probeTickMsg time.Time
 
@@ -171,6 +172,8 @@ type restartMsg struct {
 type diffMsg struct {
 	id      string
 	content string
+	gen     uint64
+	refresh bool
 	// key identifies which file, mode and layout this render is of, so a diff
 	// that arrives after the cursor has moved on is filed and not drawn.
 	key string
@@ -181,6 +184,7 @@ type diffMsg struct {
 type changedFilesMsg struct {
 	id    string
 	mode  gitx.DiffMode
+	gen   uint64
 	files []gitx.ChangedFile
 	err   error
 }
@@ -233,6 +237,15 @@ func tickCmd() tea.Cmd {
 
 func pollTickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return pollTickMsg(t) })
+}
+
+// Diff refreshes are deliberately independent of the slower remote-state poll.
+// Two seconds keeps an actively changing worktree readable without continuously
+// spawning git and delta; a slow render is serialized by the model.
+const diffRefreshInterval = 2 * time.Second
+
+func diffTickCmd() tea.Cmd {
+	return tea.Tick(diffRefreshInterval, func(t time.Time) tea.Msg { return diffTickMsg(t) })
 }
 
 // previewInterval keeps the panel feeling live without spawning a capture more
@@ -951,16 +964,16 @@ func restartOne(cfg *core.Config, s *core.Session, hookURL string, cols, rows in
 	}
 }
 
-// changedFilesCmd lists the paths a session's diff touches. It is cheap enough
-// to run on every open and mode switch: two plumbing commands and a read of the
+// changedFilesCmd lists the paths a session's diff touches. It is the cheap
+// first stage of every refresh: two plumbing commands and a read of the
 // untracked files, with no patch text rendered at all.
-func changedFilesCmd(s *core.Session, mode gitx.DiffMode) tea.Cmd {
+func changedFilesCmd(s *core.Session, mode gitx.DiffMode, gen uint64) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		files, err := gitx.ChangedFiles(ctx, sess.WorktreePath, sess.BaseBranch, mode)
-		return changedFilesMsg{id: sess.ID, mode: mode, files: files, err: err}
+		return changedFilesMsg{id: sess.ID, mode: mode, gen: gen, files: files, err: err}
 	}
 }
 
@@ -970,13 +983,13 @@ func changedFilesCmd(s *core.Session, mode gitx.DiffMode) tea.Cmd {
 // Rendering one file at a time is what the file tree buys: the whole diff of a
 // session an agent has been working in for an hour is a lot of text to colorize
 // for a pane showing forty lines of it.
-func diffCmd(s *core.Session, mode gitx.DiffMode, target gitx.DiffTarget, opts gitx.DiffOpts, key string) tea.Cmd {
+func diffCmd(s *core.Session, mode gitx.DiffMode, target gitx.DiffTarget, opts gitx.DiffOpts, key string, gen uint64, refresh bool) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		out, err := gitx.Diff(ctx, sess.WorktreePath, sess.BaseBranch, mode, target, opts)
-		return diffMsg{id: sess.ID, content: out, key: key, err: err}
+		return diffMsg{id: sess.ID, content: out, key: key, gen: gen, refresh: refresh, err: err}
 	}
 }
 
@@ -1040,12 +1053,15 @@ type fileMsg struct {
 	key     string
 	path    string
 	content string
+	gen     uint64
+	refresh bool
 	err     error
 }
 
 // worktreeFilesMsg carries the path list the fuzzy finder ranks.
 type worktreeFilesMsg struct {
 	id    string
+	gen   uint64
 	paths []string
 	err   error
 }
@@ -1073,26 +1089,26 @@ func grepDebounceCmd(gen int) tea.Cmd {
 }
 
 // fileCmd renders one file of the worktree for the pane.
-func fileCmd(s *core.Session, path string, width int, key string) tea.Cmd {
+func fileCmd(s *core.Session, path string, width int, key string, gen uint64, refresh bool) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		src, err := gitx.ReadFile(sess.WorktreePath, path)
 		if err != nil {
-			return fileMsg{id: sess.ID, key: key, path: path, err: err}
+			return fileMsg{id: sess.ID, key: key, path: path, gen: gen, refresh: refresh, err: err}
 		}
 		return fileMsg{id: sess.ID, key: key, path: path,
-			content: render.File(path, src, 0).Text()}
+			content: render.File(path, src, 0).Text(), gen: gen, refresh: refresh}
 	}
 }
 
 // worktreeFilesCmd lists every path the finder can offer.
-func worktreeFilesCmd(s *core.Session) tea.Cmd {
+func worktreeFilesCmd(s *core.Session, gen uint64) tea.Cmd {
 	sess := *s
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		paths, err := gitx.ListFiles(ctx, sess.WorktreePath)
-		return worktreeFilesMsg{id: sess.ID, paths: paths, err: err}
+		return worktreeFilesMsg{id: sess.ID, gen: gen, paths: paths, err: err}
 	}
 }
 
