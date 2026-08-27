@@ -46,9 +46,19 @@ type review struct {
 	filePath string
 
 	// cache holds rendered content by key. Stepping back to something already
-	// read should not spend a process on it again; the cache is dropped whole
-	// on a refresh, so it can never outlive the work it describes.
+	// read should not spend a process on it again. An explicit context change
+	// drops it whole; a live refresh invalidates the visible entry only.
 	cache map[string]string
+
+	// refreshGen identifies the latest worktree snapshot requested. Git and
+	// delta run asynchronously, so an older result with the same cache key must
+	// not overwrite a newer one. refreshInFlight keeps the live timer from
+	// stacking another pipeline behind a slow render.
+	refreshGen      uint64
+	refreshInFlight bool
+	// pathGen is separate because listing the whole worktree can finish after
+	// the visible diff. Live refreshes must not make that valid result stale.
+	pathGen uint64
 
 	// treeFocus routes j/k to the tree rather than the pane.
 	treeFocus bool
@@ -104,8 +114,11 @@ const (
 // "this is a binary file" is the answer to the question the pane was asked, and
 // an answer belongs where the question was.
 func (m Model) handleFile(msg fileMsg) (tea.Model, tea.Cmd) {
-	if msg.id != m.selectedID {
+	if msg.id != m.selectedID || msg.gen != m.review.refreshGen {
 		return m, nil
+	}
+	if msg.refresh {
+		m.review.refreshInFlight = false
 	}
 	content := msg.content
 	if msg.err != nil {

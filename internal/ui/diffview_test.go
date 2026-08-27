@@ -342,6 +342,114 @@ func TestChangedFilesForOtherModeIgnored(t *testing.T) {
 	}
 }
 
+// Worktree diffs have a much tighter freshness requirement than remote PR
+// state. The dedicated tick starts a refresh immediately while leaving the
+// last complete render readable until its replacement arrives.
+func TestLiveDiffTickRefreshesWithoutBlanking(t *testing.T) {
+	m := diffModel(t, someFiles()...)
+	m.setDiffContent("last complete diff")
+	m.review.cache = map[string]string{m.diffKey(): "last complete diff"}
+
+	next, cmd := m.update(diffTickMsg{})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("diff tick did not re-arm or start a refresh")
+	}
+	if !m.review.refreshInFlight || m.review.refreshGen != 1 {
+		t.Fatalf("refresh state = in flight %v, generation %d", m.review.refreshInFlight, m.review.refreshGen)
+	}
+	if got := m.review.view.View(); !strings.Contains(got, "last complete diff") {
+		t.Errorf("live refresh blanked the pane before new content arrived: %q", got)
+	}
+	if _, ok := m.review.cache[m.diffKey()]; ok {
+		t.Error("visible cached diff was not invalidated")
+	}
+
+	gen := m.review.refreshGen
+	if cmd := m.refreshVisibleDiff(); cmd != nil {
+		t.Error("a second live refresh overlapped the first")
+	}
+	if m.review.refreshGen != gen {
+		t.Error("an overlapping tick advanced the refresh generation")
+	}
+}
+
+// Refreshing is deliberately staged: only once the current changed-file list
+// lands do we choose and render its target. This prevents an old-tree render
+// and a new-tree render racing each other onto the pane.
+func TestLiveDiffRefreshStagesFreshTreeBeforeRender(t *testing.T) {
+	m := diffModel(t, someFiles()...)
+	m.review.files.setCursorByPath("README.md")
+	m.setDiffContent("old readme diff")
+	if cmd := m.refreshVisibleDiff(); cmd == nil {
+		t.Fatal("live refresh did not request changed files")
+	}
+	gen := m.review.refreshGen
+
+	next, renderCmd := m.update(changedFilesMsg{
+		id: "s1", mode: gitx.DiffUncommitted, gen: gen,
+		files: []gitx.ChangedFile{{Path: "README.md", Status: gitx.ChangeModified, Added: 7}},
+	})
+	m = next.(Model)
+	if renderCmd == nil {
+		t.Fatal("fresh changed-file list did not start the selected render")
+	}
+	if got := m.review.view.View(); !strings.Contains(got, "old readme diff") {
+		t.Errorf("file-list stage blanked the pane: %q", got)
+	}
+
+	key := m.diffKey()
+	next, _ = m.update(diffMsg{
+		id: "s1", key: key, gen: gen, refresh: true, content: "fresh readme diff",
+	})
+	m = next.(Model)
+	if m.review.refreshInFlight {
+		t.Error("completed render left the refresh marked in flight")
+	}
+	if got := m.review.view.View(); !strings.Contains(got, "fresh readme diff") {
+		t.Errorf("fresh render was not shown: %q", got)
+	}
+}
+
+func TestStaleDiffGenerationCannotOverwriteLivePane(t *testing.T) {
+	m := diffModel(t, someFiles()...)
+	m.review.files.setCursorByPath("README.md")
+	m.setDiffContent("current diff")
+	m.review.refreshGen = 2
+	m.review.refreshInFlight = true
+
+	next, _ := m.update(diffMsg{
+		id: "s1", key: m.diffKey(), gen: 1, refresh: true, content: "stale no changes",
+	})
+	m = next.(Model)
+	if got := m.review.view.View(); !strings.Contains(got, "current diff") {
+		t.Errorf("stale generation overwrote the pane: %q", got)
+	}
+	if !m.review.refreshInFlight {
+		t.Error("stale completion cleared the current refresh's in-flight mark")
+	}
+}
+
+func TestLiveRefreshDoesNotInvalidateSlowWorktreePathList(t *testing.T) {
+	m := diffModel(t, someFiles()...)
+	if cmd := m.refreshDiff(); cmd == nil {
+		t.Fatal("explicit refresh did not start")
+	}
+	pathGen := m.review.pathGen
+	// Let the visible render finish, then start a live generation while the
+	// whole-worktree listing from the explicit refresh is still running.
+	m.review.refreshInFlight = false
+	if cmd := m.refreshVisibleDiff(); cmd == nil {
+		t.Fatal("live refresh did not start")
+	}
+
+	next, _ := m.update(worktreeFilesMsg{id: "s1", gen: pathGen, paths: []string{"new.go"}})
+	m = next.(Model)
+	if len(m.review.paths) != 1 || m.review.paths[0] != "new.go" {
+		t.Errorf("valid slow path list was discarded: %v", m.review.paths)
+	}
+}
+
 func TestDiffSubtitleNamesRangeAndRow(t *testing.T) {
 	m := diffModel(t, someFiles()...)
 	s := m.selected()

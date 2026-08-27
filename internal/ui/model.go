@@ -391,6 +391,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
 		pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
+		diffTickCmd(),
 		previewTickCmd(),
 		probeTickCmd(),
 		waitForHook(m.hookEvents),
@@ -475,23 +476,24 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(probeTickCmd(), probe)
 
 	case pollTickMsg:
-		// Hoisted out of the batch: refreshDiff drops the rendered-diff cache, and
-		// that has to happen to the model being returned rather than to a copy
-		// made while the arguments were being evaluated.
-		diff := m.refreshDiff()
 		sessions := m.establishedSessions()
 		return m, tea.Batch(
 			pollTickCmd(time.Duration(m.cfg.PollIntervalSecs)*time.Second),
 			pollPRsCmd(m.cfg, sessions),
 			observeCmd(sessions),
 			adoptExternalCmd(m.sessions),
-			diff,
 			// A resize normally arrives as a signal, but this program hands the
 			// terminal to tmux and takes it back, so asking outright is the cheap
 			// way to be sure a resize missed in between does not leave the board
 			// laid out for a window that no longer exists.
 			tea.RequestWindowSize,
 		)
+
+	case diffTickMsg:
+		// Re-arm unconditionally; refreshVisibleDiff is a no-op off the review
+		// screen and while the previous Git/delta pipeline is still running.
+		diff := m.refreshVisibleDiff()
+		return m, tea.Batch(diffTickCmd(), diff)
 
 	case hookMsg:
 		return m.handleHook(hooks.Event(msg))
@@ -611,18 +613,35 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case changedFilesMsg:
-		if msg.id != m.selectedID || msg.mode != m.review.mode {
+		if msg.id != m.selectedID || msg.mode != m.review.mode || msg.gen != m.review.refreshGen {
 			return m, nil
 		}
 		if msg.err != nil {
+			m.review.refreshInFlight = false
 			return m, errStatus(msg.err)
 		}
 		m.review.files.setFiles(msg.files)
-		return m, m.showTreeSelection()
+		// The cursor may have moved when a path disappeared, so invalidate the
+		// target chosen from the fresh tree as well as the one that started the
+		// refresh.
+		delete(m.review.cache, m.diffKey())
+		var cmd tea.Cmd
+		if m.review.source == sourceFile && m.review.filePath != "" {
+			cmd = m.showSelectedFileForRefresh()
+		} else {
+			cmd = m.showTreeSelectionForRefresh()
+		}
+		if cmd == nil {
+			m.review.refreshInFlight = false
+		}
+		return m, cmd
 
 	case diffMsg:
-		if msg.id != m.selectedID {
+		if msg.id != m.selectedID || msg.gen != m.review.refreshGen {
 			return m, nil
+		}
+		if msg.refresh {
+			m.review.refreshInFlight = false
 		}
 		content := msg.content
 		if msg.err != nil {
@@ -646,7 +665,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleFile(msg)
 
 	case worktreeFilesMsg:
-		if msg.id != m.selectedID || msg.err != nil {
+		if msg.id != m.selectedID || msg.gen != m.review.pathGen || msg.err != nil {
 			return m, nil
 		}
 		m.review.paths = msg.paths
@@ -765,6 +784,19 @@ func (m *Model) openDiff() tea.Cmd {
 // everything already rendered. It is what opening the view, switching session,
 // and switching mode all go through.
 func (m *Model) refreshDiff() tea.Cmd {
+	return m.startDiffRefresh(true)
+}
+
+// refreshVisibleDiff updates an open review without blanking the last complete
+// render. It runs independently of remote polling and serializes slow renders.
+func (m *Model) refreshVisibleDiff() tea.Cmd {
+	if m.review.refreshInFlight {
+		return nil
+	}
+	return m.startDiffRefresh(false)
+}
+
+func (m *Model) startDiffRefresh(clear bool) tea.Cmd {
 	if m.mode != modeDiff {
 		return nil
 	}
@@ -772,17 +804,29 @@ func (m *Model) refreshDiff() tea.Cmd {
 	if s == nil || s.Starting {
 		return nil
 	}
-	// The cache describes the worktree as it was; a refresh exists because that
-	// may have changed underneath it. The path list goes with it: a file the
-	// agent has just written is one you want the finder to offer.
-	m.review.cache = map[string]string{}
-	m.review.paths = nil
-	m.setDiffContent("")
-	return tea.Batch(
-		changedFilesCmd(s, m.review.mode),
-		worktreeFilesCmd(s),
-		m.showTreeSelection(),
-	)
+	// A context change invalidates every render and path. A live refresh only
+	// invalidates what is visible, preserving useful per-file renders and the
+	// file finder's list while the background work runs.
+	if clear {
+		m.review.cache = map[string]string{}
+		m.review.paths = nil
+		m.review.pathGen++
+	} else {
+		delete(m.review.cache, m.diffKey())
+	}
+	m.review.refreshGen++
+	m.review.refreshInFlight = true
+	if clear {
+		m.setDiffContent("")
+	}
+	gen := m.review.refreshGen
+	if clear {
+		return tea.Batch(
+			changedFilesCmd(s, m.review.mode, gen),
+			worktreeFilesCmd(s, m.review.pathGen),
+		)
+	}
+	return changedFilesCmd(s, m.review.mode, gen)
 }
 
 // diffOpts is how the diff pane wants its content rendered.
@@ -819,18 +863,34 @@ func (m Model) filePath() string { return m.review.filePath }
 // no contents, so landing on one falls back to its diff rather than leaving the
 // pane asking a question the row cannot answer.
 func (m *Model) showTreeSelection() tea.Cmd {
+	return m.showTreeSelectionWithRefresh(false)
+}
+
+func (m *Model) showTreeSelectionForRefresh() tea.Cmd {
+	return m.showTreeSelectionWithRefresh(true)
+}
+
+func (m *Model) showTreeSelectionWithRefresh(refresh bool) tea.Cmd {
 	if row, ok := m.review.files.selected(); ok && !row.dir {
 		m.review.filePath = row.path
 	} else {
 		m.review.filePath = ""
 		m.review.source = sourceDiff
 	}
-	return m.showSelectedFile()
+	return m.showSelectedFileWithRefresh(refresh)
 }
 
 // showSelectedFile puts what the review view is pointed at into the pane,
 // rendering it only if it has not been rendered already.
 func (m *Model) showSelectedFile() tea.Cmd {
+	return m.showSelectedFileWithRefresh(false)
+}
+
+func (m *Model) showSelectedFileForRefresh() tea.Cmd {
+	return m.showSelectedFileWithRefresh(true)
+}
+
+func (m *Model) showSelectedFileWithRefresh(refresh bool) tea.Cmd {
 	s := m.selected()
 	if s == nil {
 		return nil
@@ -846,9 +906,10 @@ func (m *Model) showSelectedFile() tea.Cmd {
 		return nil
 	}
 	if m.review.source == sourceFile {
-		return fileCmd(s, m.filePath(), m.diffPaneWidth(), key)
+		return fileCmd(s, m.filePath(), m.diffPaneWidth(), key, m.review.refreshGen, refresh)
 	}
-	return diffCmd(s, m.review.mode, m.review.files.target(), m.diffOpts(), key)
+	return diffCmd(s, m.review.mode, m.review.files.target(), m.diffOpts(), key,
+		m.review.refreshGen, refresh)
 }
 
 // showFileAt opens one path in the pane and scrolls to a line in it, which is
