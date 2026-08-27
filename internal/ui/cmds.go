@@ -41,6 +41,7 @@ type previewMsg struct {
 	mouseSGR        bool
 	requestedScroll int
 	actualScroll    int
+	echo            bool
 }
 
 // probeMsg carries inferred state for agents that cannot report their own.
@@ -256,9 +257,13 @@ func previewTickCmd() tea.Cmd {
 	return tea.Tick(previewInterval, func(t time.Time) tea.Msg { return previewTickMsg(t) })
 }
 
-// probeInterval is slower: it exists to notice an agent going quiet, and
-// probe.IdleAfter is measured in tens of seconds.
-const probeInterval = 4 * time.Second
+// Probe work is split across four one-second shards. Each session keeps the
+// same roughly four-second sampling cadence, but a large board no longer sends
+// every pane query to tmux in one visible burst.
+const (
+	probeInterval = time.Second
+	probeShards   = 4
+)
 
 func probeTickCmd() tea.Cmd {
 	return tea.Tick(probeInterval, func(t time.Time) tea.Msg { return probeTickMsg(t) })
@@ -279,9 +284,7 @@ func resizeSessionsCmd(sessions []*core.Session, cols, rows int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		for _, n := range names {
-			_ = tmuxx.ResizeWindow(ctx, n, cols, rows)
-		}
+		_ = tmuxx.ResizeWindows(ctx, names, cols, rows)
 		return nil
 	}
 }
@@ -296,6 +299,14 @@ func previewCmd(s *core.Session) tea.Cmd {
 // into copy mode. requestedScroll travels with the result so a slow capture
 // from an older wheel position cannot overwrite a newer one.
 func previewCmdAt(s *core.Session, requestedScroll int) tea.Cmd {
+	return previewCmdAtSource(s, requestedScroll, false)
+}
+
+func echoPreviewCmdAt(s *core.Session, requestedScroll int) tea.Cmd {
+	return previewCmdAtSource(s, requestedScroll, true)
+}
+
+func previewCmdAtSource(s *core.Session, requestedScroll int, echo bool) tea.Cmd {
 	if s == nil || s.Starting || s.TmuxSession == "" {
 		return nil
 	}
@@ -306,7 +317,7 @@ func previewCmdAt(s *core.Session, requestedScroll int) tea.Cmd {
 		pane, actual, _ := tmuxx.CapturePaneAt(ctx, sess.TmuxSession, requestedScroll)
 		return previewMsg{
 			id: sess.ID, content: pane.Content, cursor: pane.Cursor, mouseSGR: pane.MouseSGR,
-			requestedScroll: requestedScroll, actualScroll: actual,
+			requestedScroll: requestedScroll, actualScroll: actual, echo: echo,
 		}
 	}
 }
@@ -447,8 +458,8 @@ func attachCheckCmd(s *core.Session) tea.Cmd {
 	}
 }
 
-// startProbe starts at most one capture cycle at a time. A slow tmux capture can
-// outlive the four-second timer (or a person can press refresh while one runs),
+// startProbe starts at most one capture shard at a time. A slow tmux capture can
+// outlive the one-second scheduler tick (or a person can press refresh while one runs),
 // and Prober deliberately carries mutable samples from one cycle to the next.
 // Waiting for probeMsg before another cycle keeps that history single-owner and
 // avoids spawning duplicate tmux subprocesses for the same sessions.
@@ -456,12 +467,24 @@ func (m *Model) startProbe(sessions []*core.Session) tea.Cmd {
 	if m.probeInFlight {
 		return nil
 	}
-	cmd := probeCmd(m.prober, m.cfg, sessions, m.touchedAt, m.hookSeen)
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := probeCmdShard(ctx, m.prober, m.cfg, sessions, m.touchedAt, m.hookSeen,
+		m.probeShard, probeShards)
+	m.probeShard = (m.probeShard + 1) % probeShards
 	if cmd == nil {
+		cancel()
 		return nil
 	}
 	m.probeInFlight = true
+	m.probeCancel = cancel
 	return cmd
+}
+
+func (m *Model) cancelProbe() {
+	if m.probeCancel != nil {
+		m.probeCancel()
+		m.probeCancel = nil
+	}
 }
 
 // probeCmd infers state for sessions whose agent has no hook channel, and for
@@ -473,12 +496,26 @@ func (m *Model) startProbe(sessions []*core.Session) tea.Cmd {
 // command, because the maps belong to the model and the command runs on another
 // goroutine.
 func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touchedAt map[string]time.Time, hookSeen map[string]bool) tea.Cmd {
+	return probeCmdShard(context.Background(), p, cfg, sessions, touchedAt, hookSeen, 0, 1)
+}
+
+func probeCmdShard(parent context.Context, p *probe.Prober, cfg *core.Config, sessions []*core.Session, touchedAt map[string]time.Time, hookSeen map[string]bool, shard, shards int) tea.Cmd {
+	if shards < 1 {
+		shards = 1
+	}
+	shard = ((shard % shards) + shards) % shards
 	var targets []*core.Session
 	keep := map[string]bool{}
 	touched := map[string]time.Time{}
+	eligible := 0
 	for _, s := range sessions {
 		keep[s.ID] = true
 		if prof, ok := cfg.Profile(s.AgentProfile); ok && prof.Hooks && !stranded(s, hookSeen[s.ID]) {
+			continue
+		}
+		selected := eligible%shards == shard
+		eligible++
+		if !selected {
 			continue
 		}
 		copied := *s
@@ -500,11 +537,16 @@ func probeCmd(p *probe.Prober, cfg *core.Config, sessions []*core.Session, touch
 		return nil
 	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
+		live, liveErr := tmuxx.ListSessions(ctx)
 		states := make([]probe.State, 0, len(targets))
 		for _, s := range targets {
-			states = append(states, p.Probe(ctx, s, touched[s.ID]))
+			if liveErr == nil {
+				states = append(states, p.ProbeKnownAlive(ctx, s, touched[s.ID], live[s.TmuxSession]))
+			} else {
+				states = append(states, p.Probe(ctx, s, touched[s.ID]))
+			}
 		}
 		return probeMsg{states: states}
 	}

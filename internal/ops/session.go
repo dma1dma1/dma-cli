@@ -9,7 +9,6 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -581,12 +580,11 @@ type Observation struct {
 
 // observeConcurrency bounds how many worktrees are inspected at once. Each one
 // is a handful of git processes, so this is a limit on processes in flight
-// rather than on goroutines: a board of fifty sessions should not answer a poll
-// tick by forking two hundred and fifty gits at the same moment.
+// rather than on goroutines. Tying it to every CPU made a large machine fork a
+// dozen git commands at once and turned the 45-second refresh into a recurring
+// system-wide latency spike. Four still overlaps the slow work without trying
+// to consume the machine the agents are using.
 func observeConcurrency() int {
-	if n := runtime.NumCPU(); n > 4 {
-		return n
-	}
 	return 4
 }
 

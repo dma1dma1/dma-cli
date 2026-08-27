@@ -106,9 +106,11 @@ type Model struct {
 	// echoUntil is how long the panel keeps re-reading the pane at echoInterval
 	// after a forwarded keystroke; echoing says whether that ticker is running,
 	// so a burst of typing extends the window instead of starting a ticker per
-	// key.
-	echoUntil time.Time
-	echoing   bool
+	// key. echoCaptureInFlight prevents a slow tmux server from stacking a new
+	// capture behind every 40ms tick.
+	echoUntil           time.Time
+	echoing             bool
+	echoCaptureInFlight bool
 
 	// paneInputs is the keyboard's FIFO. The head stays in the queue while its
 	// command runs, and paneInputSending keeps later updates from starting it
@@ -128,11 +130,12 @@ type Model struct {
 	// board was not running to receive; see stranded.
 	hookSeen map[string]bool
 
-	// probeInFlight keeps timer ticks and manual refreshes from starting another
-	// probe cycle while the current one is still capturing panes. The prober
-	// carries samples between cycles, so concurrent cycles would race on that
-	// shared history as well as needlessly duplicate tmux subprocesses.
+	// Probe work is sharded so a board with many hookless agents does not hit
+	// tmux with every capture at once. The cancel function lets a real attach
+	// preempt background observation instead of waiting behind it.
 	probeInFlight bool
+	probeShard    int
+	probeCancel   context.CancelFunc
 
 	// review is the full-screen review view: the file tree, the pane beside it,
 	// and the searches that choose what the pane shows. See review.go.
@@ -467,7 +470,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.echoing = false
 			return m, nil
 		}
-		return m, tea.Batch(echoTickCmd(), previewCmdAt(m.selected(), m.previewScroll))
+		if m.echoCaptureInFlight {
+			return m, echoTickCmd()
+		}
+		capture := echoPreviewCmdAt(m.selected(), m.previewScroll)
+		if capture == nil {
+			return m, echoTickCmd()
+		}
+		m.echoCaptureInFlight = true
+		return m, tea.Batch(echoTickCmd(), capture)
 
 	case probeTickMsg:
 		// Hoisted out of the batch: startProbe mutates m, and that has to happen
@@ -502,6 +513,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleProbe(msg)
 
 	case previewMsg:
+		if msg.echo {
+			m.echoCaptureInFlight = false
+		}
 		// Captures are asynchronous. A result requested before a later wheel
 		// event must not pull the preview back to an older position.
 		if msg.id == m.selectedID && msg.requestedScroll == m.previewScroll {
@@ -1042,6 +1056,7 @@ func (m Model) handleHook(ev hooks.Event) (tea.Model, tea.Cmd) {
 // handleProbe applies inferred state for agents that cannot report their own.
 func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
 	m.probeInFlight = false
+	m.cancelProbe()
 	dirty := false
 	for _, st := range msg.states {
 		s := core.FindByID(m.sessions, st.SessionID)

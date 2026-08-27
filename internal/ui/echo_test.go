@@ -77,7 +77,7 @@ func TestProbeForgetsTouchesForDeadSessions(t *testing.T) {
 	}
 }
 
-// The window has to close, or the panel captures every 40ms forever.
+// The window has to close, or the panel keeps scheduling captures forever.
 func TestEchoStopsAfterWindow(t *testing.T) {
 	m := testModel(nil, liveSess("a"))
 	m.echoing = true
@@ -115,6 +115,29 @@ func TestPreviewTickSkipsCaptureWhileEchoing(t *testing.T) {
 	}
 	if !next.(Model).echoing {
 		t.Error("preview tick cancelled the echo window")
+	}
+}
+
+// A tmux capture can take longer than the 40ms echo interval under load. The
+// next tick must wait for it instead of adding another process to the queue.
+func TestEchoCaptureDoesNotOverlap(t *testing.T) {
+	m := testModel(nil, liveSess("a"))
+	m.echoing = true
+	m.echoUntil = time.Now().Add(echoWindow)
+	m.echoCaptureInFlight = true
+
+	next, cmd := m.Update(echoTickMsg(time.Now()))
+	got := next.(Model)
+	if !got.echoCaptureInFlight {
+		t.Fatal("an in-flight echo capture was forgotten")
+	}
+	if batches(cmd) {
+		t.Error("echo tick started a second capture while the first was in flight")
+	}
+
+	next, _ = got.Update(previewMsg{echo: true})
+	if next.(Model).echoCaptureInFlight {
+		t.Error("completed echo capture did not release the next tick")
 	}
 }
 

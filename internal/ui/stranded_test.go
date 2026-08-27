@@ -96,14 +96,18 @@ func TestHooklessSessionsAreUnaffected(t *testing.T) {
 	}
 }
 
-// A capture can take longer than the four-second timer when tmux stalls (for
+// A capture can take longer than the scheduler tick when tmux stalls (for
 // example across sleep/wake). The next tick or a manual refresh must reuse the
 // in-flight cycle rather than race it through Prober's shared sample history.
 func TestProbeCyclesDoNotOverlap(t *testing.T) {
-	s := sess("a", "", core.LifecycleActive, core.AgentWorking, "r")
-	s.AgentProfile = "codex"
-	s.TmuxSession = "tmux-a"
-	m := testModel(nil, s)
+	var sessions []*core.Session
+	for _, id := range []string{"a", "b", "c", "d"} {
+		s := sess(id, "", core.LifecycleActive, core.AgentWorking, "r")
+		s.AgentProfile = "codex"
+		s.TmuxSession = "tmux-" + id
+		sessions = append(sessions, s)
+	}
+	m := testModel(nil, sessions...)
 
 	if cmd := m.startProbe(m.sessions); cmd == nil {
 		t.Fatal("first probe cycle was not started")
@@ -122,6 +126,29 @@ func TestProbeCyclesDoNotOverlap(t *testing.T) {
 	}
 	if cmd := m.startProbe(m.sessions); cmd == nil {
 		t.Error("probe cycle did not become available after completion")
+	}
+}
+
+// Four shards preserve the old per-session cadence while spreading a large
+// board's tmux work across one-second ticks.
+func TestProbeSessionsAreSharded(t *testing.T) {
+	s := sess("a", "", core.LifecycleActive, core.AgentWorking, "r")
+	s.AgentProfile = "codex"
+	s.TmuxSession = "tmux-a"
+	m := testModel(nil, s)
+
+	if cmd := m.startProbe(m.sessions); cmd == nil {
+		t.Fatal("the session was not included in its first shard")
+	}
+	m.probeInFlight = false
+	m.cancelProbe()
+	for i := 0; i < probeShards-1; i++ {
+		if cmd := m.startProbe(m.sessions); cmd != nil {
+			t.Fatalf("session was redundantly probed in shard %d", i+1)
+		}
+	}
+	if cmd := m.startProbe(m.sessions); cmd == nil {
+		t.Error("session did not return after one complete shard cycle")
 	}
 }
 

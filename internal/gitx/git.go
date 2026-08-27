@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -671,11 +670,10 @@ func diffUntracked(ctx context.Context, wt, prefix string, opts DiffOpts) string
 	return out + trailer
 }
 
-// diffConcurrency bounds how many new files are read at once.
+// diffConcurrency bounds how many git/delta pipelines an untracked-file diff
+// can start at once. Scaling this to every CPU made opening a directory with
+// many new files compete with the terminal for a dozen subprocesses at once.
 func diffConcurrency() int {
-	if n := runtime.NumCPU(); n > 4 {
-		return n
-	}
 	return 4
 }
 

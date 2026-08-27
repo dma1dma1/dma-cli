@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,18 @@ func TestSessionExistsPreservesContextFailure(t *testing.T) {
 	cancel()
 	if _, err := SessionExists(ctx, "dma-context-cancelled"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SessionExists error = %v, want context canceled", err)
+	}
+}
+
+func TestBatchArgsUsesOneTmuxCommandStream(t *testing.T) {
+	got := batchArgs(
+		[]string{"display-message", "-p", "state"},
+		nil,
+		[]string{"capture-pane", "-p"},
+	)
+	want := []string{"display-message", "-p", "state", ";", "capture-pane", "-p"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("batchArgs = %q, want %q", got, want)
 	}
 }
 
@@ -73,20 +86,26 @@ func TestCapturePanePreservesStyledTrailingCells(t *testing.T) {
 	defer cancel()
 
 	name := "dma-styled-row-" + strings.ReplaceAll(t.Name(), "/", "-")
-	if err := NewSession(ctx, name, os.TempDir(), 20, 5); err != nil {
-		t.Fatalf("NewSession: %v", err)
+	// Give tmux a deterministic pane command instead of typing into a login
+	// shell whose rc files may still be running under load. This test is about
+	// captured terminal cells, not interactive-shell startup latency.
+	const command = `printf '\033[48;2;40;50;40m%-20s\033[0m\n' row; sleep 30`
+	if _, err := run(ctx, "new-session", "-d", "-s", name, "-x", "20", "-y", "5", command); err != nil {
+		t.Fatalf("new-session: %v", err)
 	}
 	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
 
-	const command = `printf '\033[48;2;40;50;40m%-20s\033[0m\n' row`
-	if err := SendLiteral(ctx, name, command); err != nil {
-		t.Fatalf("paint row: %v", err)
-	}
-	time.Sleep(500 * time.Millisecond)
-
-	pane, err := CapturePane(ctx, name, 0)
-	if err != nil {
-		t.Fatalf("CapturePane: %v", err)
+	var pane Pane
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(ansi.Strip(pane.Content), "row") && time.Now().Before(deadline) {
+		var err error
+		pane, err = CapturePane(ctx, name, 0)
+		if err != nil {
+			t.Fatalf("CapturePane: %v", err)
+		}
+		if !strings.Contains(ansi.Strip(pane.Content), "row") {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	var row string
 	for _, line := range strings.Split(pane.Content, "\n") {
@@ -118,6 +137,18 @@ func sameColor(got, want color.Color) bool {
 	gotR, gotG, gotB, gotA := got.RGBA()
 	wantR, wantG, wantB, wantA := want.RGBA()
 	return gotR == wantR && gotG == wantG && gotB == wantB && gotA == wantA
+}
+
+// newTestShellSession creates an interactive pane without loading the user's
+// shell rc files. Most integration tests below exercise tmux byte transport,
+// not shell startup; using /bin/sh keeps those concerns independent.
+func newTestShellSession(ctx context.Context, name string, cols, rows int) error {
+	_, err := run(ctx, "new-session", "-d", "-s", name, "-c", os.TempDir(),
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows), "/bin/sh")
+	if err == nil {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return err
 }
 
 // TestWindowSizeModes covers the sizing contract the board depends on: a
@@ -169,6 +200,25 @@ func TestWindowSizeModes(t *testing.T) {
 	}
 	if got := windowSize(t, name); got != "120x40" {
 		t.Fatalf("after ResizeWindow the window is %s, want 120x40", got)
+	}
+}
+
+func TestResizeWindowsContinuesPastADeadSession(t *testing.T) {
+	if !Available() {
+		t.Skip("tmux not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	name := "dma-resize-batch-" + strings.ReplaceAll(t.Name(), "/", "-")
+	if err := NewSession(ctx, name, os.TempDir(), 80, 20); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+
+	_ = ResizeWindows(ctx, []string{"dma-definitely-not-live", name}, 91, 27)
+	if got := windowSize(t, name); got != "91x27" {
+		t.Fatalf("live session after dead target is %s, want 91x27", got)
 	}
 }
 
@@ -226,7 +276,7 @@ func TestSendTextIsLiteral(t *testing.T) {
 			name := "dma-sendtext-" + strings.ReplaceAll(t.Name(), "/", "-")
 			// cat echoes what it is sent without a shell interpreting any of it,
 			// which is what makes this a test of tmux rather than of zsh.
-			if err := NewSession(ctx, name, os.TempDir(), 200, 10); err != nil {
+			if err := newTestShellSession(ctx, name, 200, 10); err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
 			t.Cleanup(func() { _ = KillSession(context.Background(), name) })
@@ -320,7 +370,7 @@ func TestSendKeyDeliversDistinctBytes(t *testing.T) {
 	name := "dma-sendkey-bytes"
 	// cat -v renders control bytes visibly and involves no shell to reinterpret
 	// them, which is what makes the pane contents a faithful record of the keys.
-	if err := NewSession(ctx, name, os.TempDir(), 200, 30); err != nil {
+	if err := newTestShellSession(ctx, name, 200, 30); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
@@ -371,7 +421,7 @@ func TestSendMouseWheelDeliversSGREvent(t *testing.T) {
 	defer cancel()
 
 	name := "dma-send-wheel"
-	if err := NewSession(ctx, name, os.TempDir(), 80, 20); err != nil {
+	if err := newTestShellSession(ctx, name, 80, 20); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
@@ -421,7 +471,7 @@ func TestSendPastePreservesMultilineBracketedText(t *testing.T) {
 	defer cancel()
 
 	name := "dma-send-paste"
-	if err := NewSession(ctx, name, os.TempDir(), 200, 30); err != nil {
+	if err := newTestShellSession(ctx, name, 200, 30); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
@@ -460,7 +510,7 @@ func TestCapturePaneReportsCursor(t *testing.T) {
 	defer cancel()
 
 	name := "dma-cursor-" + strings.ReplaceAll(t.Name(), "/", "-")
-	if err := NewSession(ctx, name, os.TempDir(), 80, 24); err != nil {
+	if err := newTestShellSession(ctx, name, 80, 24); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
@@ -517,7 +567,7 @@ func TestCapturePaneAtScrollsHistory(t *testing.T) {
 	defer cancel()
 
 	name := "dma-scroll-" + strings.ReplaceAll(t.Name(), "/", "-")
-	if err := NewSession(ctx, name, os.TempDir(), 80, 8); err != nil {
+	if err := newTestShellSession(ctx, name, 80, 8); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = KillSession(context.Background(), name) })

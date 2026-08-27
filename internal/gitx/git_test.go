@@ -448,3 +448,9 @@ func TestRenderedMarginIsReadable(t *testing.T) {
 		})
 	}
 }
+
+func TestDiffConcurrencyStaysInteractive(t *testing.T) {
+	if got := diffConcurrency(); got != 4 {
+		t.Fatalf("diffConcurrency = %d, want 4", got)
+	}
+}

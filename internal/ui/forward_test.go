@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -231,10 +232,12 @@ func TestInsertModeCmdSendsOnlyWhenNormal(t *testing.T) {
 		defer cancel()
 
 		session := "dma-ui-test-insert-" + name
-		if err := tmuxx.NewSession(ctx, session, os.TempDir(), 100, 20); err != nil {
-			t.Fatalf("%s: NewSession: %v", name, err)
+		if err := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", session,
+			"-c", os.TempDir(), "-x", "100", "-y", "20", "/bin/sh").Run(); err != nil {
+			t.Fatalf("%s: new-session: %v", name, err)
 		}
 		t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), session) })
+		time.Sleep(100 * time.Millisecond)
 
 		// A status line and nothing after it: sleep rather than a prompt, which
 		// would sit below the line the mode has to be the last of.

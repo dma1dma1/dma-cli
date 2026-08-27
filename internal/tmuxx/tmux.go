@@ -33,6 +33,23 @@ func run(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimRight(stdout.String(), "\n"), nil
 }
 
+// batchArgs joins several tmux commands into one client invocation. tmux's
+// server executes the commands in order, but the caller pays for one process
+// and one socket handshake instead of one of each per command.
+func batchArgs(commands ...[]string) []string {
+	var args []string
+	for _, command := range commands {
+		if len(command) == 0 {
+			continue
+		}
+		if len(args) > 0 {
+			args = append(args, ";")
+		}
+		args = append(args, command...)
+	}
+	return args
+}
+
 func capturePaneContent(ctx context.Context, args ...string) (string, error) {
 	content, err := run(ctx, args...)
 	if err != nil {
@@ -245,11 +262,38 @@ func windowTarget(name string) string { return "=" + name + ":" }
 // ResizeWindow pins a detached session's window to an explicit size. tmux sets
 // window-size to manual as a side effect.
 func ResizeWindow(ctx context.Context, name string, cols, rows int) error {
+	return ResizeWindows(ctx, []string{name}, cols, rows)
+}
+
+// ResizeWindows pins several detached sessions in one tmux transaction. A
+// board resize used to fork once per card, turning one terminal event into a
+// burst proportional to the size of the board.
+func ResizeWindows(ctx context.Context, names []string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
-	_, err := run(ctx, "resize-window", "-t", windowTarget(name),
-		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	// tmux aborts the rest of a command list when one target is missing. Board
+	// state is necessarily a little stale, so filter a multi-session batch
+	// through one current snapshot before building it. A single resize keeps its
+	// one-process fast path.
+	var live map[string]bool
+	if len(names) > 1 {
+		if snapshot, err := ListSessions(ctx); err == nil {
+			live = snapshot
+		}
+	}
+	commands := make([][]string, 0, len(names))
+	for _, name := range names {
+		if name == "" || (live != nil && !live[name]) {
+			continue
+		}
+		commands = append(commands, []string{"resize-window", "-t", windowTarget(name),
+			"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)})
+	}
+	if len(commands) == 0 {
+		return nil
+	}
+	_, err := run(ctx, batchArgs(commands...)...)
 	return err
 }
 
@@ -388,18 +432,44 @@ type Pane struct {
 // holds whatever was on the normal screen beforehand and splicing the two
 // together renders stale fragments over the live view.
 func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
-	args := capturePaneArgs(name)
+	capture := capturePaneArgs(name)
 	if history > 0 {
-		args = append(args, "-S", fmt.Sprintf("-%d", history))
+		capture = append(capture, "-S", fmt.Sprintf("-%d", history))
 	}
-	content, err := capturePaneContent(ctx, args...)
+	// capture-pane does not include cursor or mouse state. Append a marked state
+	// line in the same tmux transaction so this hottest path pays for one client
+	// process and one socket handshake, not two. The marker comes last, which
+	// lets pane content contain arbitrary lines without needing to predict its
+	// height.
+	const statePrefix = "__DMA_PANE_STATE__ "
+	state := []string{"list-panes", "-t", windowTarget(name), "-F",
+		statePrefix + "#{cursor_x} #{cursor_y} #{cursor_flag} #{mouse_sgr_flag}"}
+	out, err := run(ctx, batchArgs(capture, state)...)
 	if err != nil {
 		return Pane{}, err
 	}
-	// Best effort: a pane whose cursor cannot be read still renders, just
-	// without a caret, which beats failing the whole capture over decoration.
-	cur, mouseSGR, _ := paneState(ctx, name)
-	return Pane{Content: content, Cursor: cur, MouseSGR: mouseSGR}, nil
+	marker := "\n" + statePrefix
+	i := strings.LastIndex(out, marker)
+	if i < 0 {
+		if strings.HasPrefix(out, statePrefix) {
+			i = 0
+		} else {
+			// Defensive fallback: content is still useful if an older tmux omits
+			// the format output for a pane-state field it does not know.
+			return Pane{Content: isolateSGRRows(out)}, nil
+		}
+	}
+	content := strings.TrimRight(out[:i], "\n")
+	stateLine := out[i:]
+	stateLine = strings.TrimPrefix(stateLine, "\n")
+	stateLine = strings.TrimPrefix(stateLine, statePrefix)
+	var x, y, cursorFlag, mouseFlag int
+	pane := Pane{Content: isolateSGRRows(content)}
+	if _, scanErr := fmt.Sscanf(stateLine, "%d %d %d %d", &x, &y, &cursorFlag, &mouseFlag); scanErr == nil {
+		pane.Cursor = Cursor{X: x, Y: y, Visible: cursorFlag == 1}
+		pane.MouseSGR = mouseFlag == 1
+	}
+	return pane, nil
 }
 
 // SendMouseWheel forwards one SGR mouse-wheel event when the application in

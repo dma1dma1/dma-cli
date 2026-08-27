@@ -3,6 +3,8 @@ package probe
 import (
 	"context"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -738,9 +740,13 @@ func livePane(t *testing.T, cols, rows int) (context.Context, string) {
 	t.Cleanup(cancel)
 
 	name := "dma-probe-test-" + strings.ToLower(t.Name())
-	if err := tmuxx.NewSession(ctx, name, os.TempDir(), cols, rows); err != nil {
-		t.Fatalf("NewSession: %v", err)
+	// Probe tests need an interactive pane, but do not need the user's login
+	// shell. Starting /bin/sh directly avoids racing arbitrary rc-file work.
+	if err := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", name,
+		"-c", os.TempDir(), "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows), "/bin/sh").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
 	}
 	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), name) })
+	time.Sleep(100 * time.Millisecond)
 	return ctx, name
 }

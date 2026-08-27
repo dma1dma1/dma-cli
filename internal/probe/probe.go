@@ -195,6 +195,13 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session, actedAt time.Time) 
 		// That says nothing about whether its terminal still exists.
 		return State{SessionID: s.ID, Agent: s.AgentState, Alive: s.TmuxAlive}
 	}
+	return p.ProbeKnownAlive(ctx, s, actedAt, alive)
+}
+
+// ProbeKnownAlive classifies a session whose liveness was read as part of a
+// board-wide tmux snapshot. Probe cycles use this to avoid a has-session process
+// for every card; one list-sessions call answers all of them.
+func (p *Prober) ProbeKnownAlive(ctx context.Context, s *core.Session, actedAt time.Time, alive bool) State {
 	if !alive {
 		delete(p.last, s.ID)
 		return State{SessionID: s.ID, Agent: core.AgentIdle, Detail: "session ended", Alive: false}
@@ -204,6 +211,10 @@ func (p *Prober) Probe(ctx context.Context, s *core.Session, actedAt time.Time) 
 	if err != nil {
 		return State{SessionID: s.ID, Agent: s.AgentState, Alive: true}
 	}
+	return p.probePane(s, actedAt, pane)
+}
+
+func (p *Prober) probePane(s *core.Session, actedAt time.Time, pane tmuxx.Pane) State {
 	content := pane.Content
 
 	now := time.Now()

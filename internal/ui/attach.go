@@ -21,19 +21,24 @@ func prepareAttach(session string) {
 
 	// ctrl-q is bound in the root key table (-n), so it needs no prefix and
 	// never reaches the child process.
+	var bind []string
 	if tmuxx.InsideTmux() {
 		// Inside tmux, detaching would drop the outer client entirely; switching
 		// back to the previous session is the equivalent move.
-		runTmux(ctx, "bind-key", "-n", detachTmuxKey, "switch-client", "-l")
+		bind = []string{"bind-key", "-n", detachTmuxKey, "switch-client", "-l"}
 	} else {
-		runTmux(ctx, "bind-key", "-n", detachTmuxKey, "detach-client")
+		bind = []string{"bind-key", "-n", detachTmuxKey, "detach-client"}
 	}
 
-	// While attached the window must follow the real terminal, not the small
-	// size the preview pins it to.
-	_ = tmuxx.SetWindowSize(ctx, session, tmuxx.SizeLatest)
-
-	applyAttachOptions(ctx, session)
+	// This handoff is on the keystroke path. Sending the binding, resize and
+	// visual options as one tmux transaction avoids ten client processes racing
+	// the board's background pane probes before the real attach can even start.
+	commands := [][]string{
+		bind,
+		{"set-option", "-t", "=" + session + ":", "window-size", tmuxx.SizeLatest},
+	}
+	commands = append(commands, attachOptionCommands(session, false)...)
+	runTmux(ctx, tmuxBatch(commands...)...)
 }
 
 // attachOptions are the session options attaching overrides, and restoring puts
@@ -63,30 +68,62 @@ var attachOptions = []struct{ name, value string }{
 func restoreAfterAttach(session string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// Back to a fixed size; the board re-applies the preview dimensions.
-	_ = tmuxx.SetWindowSize(ctx, session, tmuxx.SizeManual)
-	clearAttachOptions(ctx, session)
+	// Back to a fixed size; the board re-applies the preview dimensions. Restore
+	// every option in the same server transaction so detaching does not create a
+	// second subprocess burst.
+	commands := [][]string{
+		{"set-option", "-t", "=" + session + ":", "window-size", tmuxx.SizeManual},
+	}
+	commands = append(commands, attachOptionCommands(session, true)...)
+	runTmux(ctx, tmuxBatch(commands...)...)
 }
 
 // applyAttachOptions sets the attached look on one session.
 func applyAttachOptions(ctx context.Context, session string) {
-	for _, opt := range attachOptions {
-		runTmux(ctx, "set-option", "-t", session, opt.name, opt.value)
-	}
+	runTmux(ctx, tmuxBatch(attachOptionCommands(session, false)...)...)
 }
 
 // clearAttachOptions drops the session-local overrides, so each option inherits
 // the user's own setting again rather than being forced back to a default.
 func clearAttachOptions(ctx context.Context, session string) {
+	runTmux(ctx, tmuxBatch(attachOptionCommands(session, true)...)...)
+}
+
+func attachOptionCommands(session string, clear bool) [][]string {
+	commands := make([][]string, 0, len(attachOptions))
 	for _, opt := range attachOptions {
-		runTmux(ctx, "set-option", "-t", session, "-u", opt.name)
+		command := []string{"set-option", "-t", session}
+		if clear {
+			command = append(command, "-u", opt.name)
+		} else {
+			command = append(command, opt.name, opt.value)
+		}
+		commands = append(commands, command)
 	}
+	return commands
 }
 
 // detachTmuxKey is the tmux spelling of detachKey.
 const detachTmuxKey = "C-q"
 
 func runTmux(ctx context.Context, args ...string) {
+	if len(args) == 0 {
+		return
+	}
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	_ = cmd.Run()
+}
+
+func tmuxBatch(commands ...[]string) []string {
+	var args []string
+	for _, command := range commands {
+		if len(command) == 0 {
+			continue
+		}
+		if len(args) > 0 {
+			args = append(args, ";")
+		}
+		args = append(args, command...)
+	}
+	return args
 }

@@ -251,6 +251,7 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
+		m.cancelProbe()
 		return m, attachCheckCmd(s)
 
 	case "enter", "d":
@@ -1020,6 +1021,7 @@ func (m Model) keyDiff(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
+		m.cancelProbe()
 		return m, attachCheckCmd(s)
 	}
 

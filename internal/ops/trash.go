@@ -97,6 +97,12 @@ func SweepTrash(ctx context.Context, worktreeRoot string) error {
 		return nil
 	}
 	dir := TrashDir(worktreeRoot)
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
 
 	sweepMu.Lock()
 	if sweepRunning[dir] {
@@ -110,6 +116,18 @@ func SweepTrash(ctx context.Context, worktreeRoot string) error {
 		delete(sweepRunning, dir)
 		sweepMu.Unlock()
 	}()
+
+	unlock, acquired, err := tryTrashLock(worktreeRoot)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		// Another process already owns this cleanup pass. A late arrival remains
+		// safely in .trash for the next sweep instead of starting a second metadata
+		// storm against the same root.
+		return nil
+	}
+	defer unlock()
 
 	// failed is what keeps the drain loop finite. An entry that cannot be removed
 	// -- a permission the sweep does not have, a file held open -- would otherwise
@@ -129,14 +147,14 @@ func SweepTrash(ctx context.Context, worktreeRoot string) error {
 			if failed[e.Name()] {
 				continue
 			}
-			// RemoveAll walks a few hundred thousand entries without checking
-			// anything, so cancellation is observed between trees rather than
-			// inside one.
+			// removeTree is a throttled child on macOS, where dependency clones
+			// make this expensive enough to affect the interactive board. Other
+			// platforms at least observe cancellation between trees.
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			progress = true
-			if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			if err := removeTree(ctx, filepath.Join(dir, e.Name())); err != nil {
 				failed[e.Name()] = true
 				if firstErr == nil {
 					firstErr = err
