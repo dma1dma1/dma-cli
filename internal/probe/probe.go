@@ -118,6 +118,9 @@ var navHints = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:↑↓|↑/↓|▲▼|up/down)\s*(?:to\s+)?(?:navigate|select|move|choose)\b`),
 }
 
+// closeHint separates a navigational overlay from a blocking picker.
+var closeHint = regexp.MustCompile(`(?i)\b(?:esc(?:ape)?|q)\b.{0,16}\bclose\b`)
+
 // busyPatterns match the affordance an agent shows while a turn is in flight.
 // A terminal agent that can be interrupted has to say which key does it, so the
 // hint is present for exactly as long as there is something to interrupt --
@@ -452,7 +455,7 @@ func choicePrompt(lines []string) (string, bool) {
 
 // markerPrompt reports whether the tail holds a dialog whose rows are not
 // numbered: exactly one row carrying a selection marker, alongside a line saying
-// which keys move it.
+// which keys move it. A close hint instead identifies a navigational overlay.
 //
 // It is asked after choicePrompt because a numbered menu is the more specific
 // shape of the same thing, and answering with the numbers when they are there
@@ -464,7 +467,7 @@ func choicePrompt(lines []string) (string, bool) {
 // row has scrolled past the window the tail looks at -- the question is then off
 // screen too, and a dialog nobody can see the top of is not one this can name.
 func markerPrompt(lines []string) (string, bool) {
-	if matchAny(lines, navHints) == "" {
+	if matchAny(lines, navHints) == "" || slices.ContainsFunc(lines, closeHint.MatchString) {
 		return "", false
 	}
 	marked, at := "", -1
