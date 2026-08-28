@@ -623,7 +623,7 @@ func Observe(ctx context.Context, sessions []*core.Session) []Observation {
 			if liveErr == nil {
 				alive = live[s.TmuxSession]
 			}
-			o := Observation{ID: s.ID, Alive: alive, Branch: gitx.CurrentBranch(ctx, s.WorktreePath)}
+			o := Observation{ID: s.ID, Alive: alive, Branch: gitx.InferBranch(ctx, s.WorktreePath, s.BaseBranch)}
 			if dirty, err := gitx.IsDirty(ctx, s.WorktreePath); err == nil {
 				o.Dirty = dirty
 			}
