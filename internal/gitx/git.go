@@ -211,6 +211,42 @@ func CurrentBranch(ctx context.Context, wt string) string {
 	return strings.TrimSpace(out)
 }
 
+// InferBranch returns the worktree's attached branch if present. For a detached
+// worktree with commits beyond its base, it returns the only pushed origin branch
+// pointing at HEAD. Zero or multiple candidates leave the branch unknown.
+func InferBranch(ctx context.Context, wt, base string) string {
+	if b := CurrentBranch(ctx, wt); b != "" {
+		return b
+	}
+	if !HasCommits(ctx, wt, base) {
+		return ""
+	}
+	out, err := Run(ctx, wt, "for-each-ref", "--format=%(refname:short)", "--points-at", "HEAD", "refs/remotes/origin")
+	if err != nil {
+		return ""
+	}
+	baseBranch := strings.TrimPrefix(base, "origin/")
+	if baseBranch == "" {
+		baseBranch = DefaultBranch(ctx, wt)
+	}
+	var candidates []string
+	for _, line := range strings.Split(out, "\n") {
+		ref := strings.TrimSpace(line)
+		if ref == "" || ref == "origin" || ref == "origin/HEAD" {
+			continue
+		}
+		branch := strings.TrimPrefix(ref, "origin/")
+		if branch == "" || branch == "HEAD" || branch == baseBranch {
+			continue
+		}
+		candidates = append(candidates, branch)
+	}
+	if len(candidates) != 1 {
+		return ""
+	}
+	return candidates[0]
+}
+
 // RemoveWorktree detaches a worktree from the repo. force is only ever passed
 // after explicit user confirmation.
 func RemoveWorktree(ctx context.Context, repoPath, wtPath string, force bool) error {

@@ -454,3 +454,67 @@ func TestDiffConcurrencyStaysInteractive(t *testing.T) {
 		t.Fatalf("diffConcurrency = %d, want 4", got)
 	}
 }
+
+func TestInferBranchFindsPushedDetachedHead(t *testing.T) {
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	if _, err := Run(ctx, filepath.Dir(bare), "init", "--bare", "-q", "-b", "main", bare); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+		{"remote", "add", "origin", bare},
+	} {
+		if _, err := Run(ctx, repoDir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+
+	write(t, repoDir, "file.txt", "hello\n")
+	if _, err := Run(ctx, repoDir, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, repoDir, "commit", "-q", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, repoDir, "push", "-q", "-u", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, repoDir, "push", "-q", "origin", "main:refs/heads/feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	if err := AddDetachedWorktree(ctx, repoDir, wtDir, "origin/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := InferBranch(ctx, wtDir, "main"); got != "" {
+		t.Errorf("fresh detached worktree InferBranch = %q, want empty", got)
+	}
+
+	write(t, wtDir, "work.txt", "work\n")
+	if _, err := Run(ctx, wtDir, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, wtDir, "commit", "-q", "-m", "detached work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, wtDir, "push", "-q", "origin", "HEAD:refs/heads/feature"); err != nil {
+		t.Fatal(err)
+	}
+	if got := InferBranch(ctx, wtDir, "main"); got != "feature" {
+		t.Errorf("pushed detached HEAD InferBranch = %q, want feature", got)
+	}
+
+	if _, err := Run(ctx, wtDir, "push", "-q", "origin", "HEAD:refs/heads/feature2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := InferBranch(ctx, wtDir, "main"); got != "" {
+		t.Errorf("ambiguous detached HEAD InferBranch = %q, want empty", got)
+	}
+}
