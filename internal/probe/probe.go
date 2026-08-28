@@ -31,6 +31,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
@@ -136,6 +137,8 @@ var busyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(interrupt|cancel|stop)\b.{0,16}\bwith (esc|escape|ctrl[-+ ]?c)\b`),
 }
 
+// Older dstack releases have no status file, and a stale writer cannot say what
+// the agent is doing now. These remain the compatibility path for both cases.
 var piBusyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^[\x{2800}-\x{28ff}]\s+Working\.\.\.$`),
 	regexp.MustCompile(`\bdmode\s+·\s+bg\s+[1-9]\d*\s+running\b`),
@@ -149,10 +152,11 @@ const tailLines = 12
 
 // State is one probe result.
 type State struct {
-	SessionID string
-	Agent     core.AgentState
-	Detail    string
-	Alive     bool
+	SessionID      string
+	AgentSessionID string
+	Agent          core.AgentState
+	Detail         string
+	Alive          bool
 	// Content is the captured pane, reused as the preview so a probe and a
 	// preview do not each pay for a capture.
 	Content string
@@ -164,7 +168,13 @@ type State struct {
 // Prober remembers the last pane fingerprint per session, which is what makes
 // "still changing" answerable at all.
 type Prober struct {
-	last map[string]sample
+	last          map[string]sample
+	statusDir     string
+	procTable     *ProcessTable
+	procTableTime time.Time
+	procTableMu   sync.Mutex
+	loadProcs     func(context.Context) (*ProcessTable, error)
+	now           func() time.Time
 }
 
 type sample struct {
@@ -186,7 +196,14 @@ type sample struct {
 	sawBusy bool
 }
 
-func New() *Prober { return &Prober{last: map[string]sample{}} }
+func New() *Prober {
+	return &Prober{
+		last:      map[string]sample{},
+		statusDir: DefaultStatusDir(),
+		loadProcs: LoadProcessTable,
+		now:       time.Now,
+	}
+}
 
 // Probe captures the pane and classifies the session.
 //
@@ -217,13 +234,68 @@ func (p *Prober) ProbeKnownAlive(ctx context.Context, s *core.Session, actedAt t
 	if err != nil {
 		return State{SessionID: s.ID, Agent: s.AgentState, Alive: true}
 	}
-	return p.probePane(s, actedAt, pane)
+	return p.probePane(ctx, s, actedAt, pane)
 }
 
-func (p *Prober) probePane(s *core.Session, actedAt time.Time, pane tmuxx.Pane) State {
+func (p *Prober) getProcessTable(ctx context.Context) (*ProcessTable, error) {
+	p.procTableMu.Lock()
+	defer p.procTableMu.Unlock()
+
+	now := p.now()
+	if p.procTable != nil && (p.loadProcs == nil || now.Sub(p.procTableTime) < 2*time.Second) {
+		return p.procTable, nil
+	}
+
+	if p.loadProcs == nil {
+		return p.procTable, nil
+	}
+
+	pt, err := p.loadProcs(ctx)
+	if err != nil {
+		if p.procTable != nil {
+			return p.procTable, nil
+		}
+		return nil, err
+	}
+	p.procTable = pt
+	p.procTableTime = now
+	return pt, nil
+}
+
+func (p *Prober) resolveDstackStatus(ctx context.Context, s *core.Session, panePID int) (*StatusSnapshot, bool) {
+	statusDir := p.statusDir
+	if s.AgentProfile != "pi" || statusDir == "" {
+		return nil, false
+	}
+
+	var direct *StatusSnapshot
+	if s.AgentSessionID != "" {
+		direct, _ = ReadStatusFile(DstackStatusPath(statusDir, s.AgentSessionID))
+	}
+	if panePID <= 0 {
+		return direct, direct != nil
+	}
+
+	pt, err := p.getProcessTable(ctx)
+	if err != nil || pt == nil {
+		return direct, direct != nil
+	}
+	if direct != nil {
+		if _, descendant := pt.Distance(panePID, direct.Process.PID); descendant &&
+			pt.IsProcessLive(direct.Process.PID, direct.Process.StartedAt) {
+			return direct, true
+		}
+	}
+	if snapshot, err := FindNearestStatusWriter(statusDir, panePID, pt); err == nil {
+		return snapshot, true
+	}
+	return direct, direct != nil
+}
+
+func (p *Prober) probePane(ctx context.Context, s *core.Session, actedAt time.Time, pane tmuxx.Pane) State {
 	content := pane.Content
 
-	now := time.Now()
+	now := p.now()
 	h := sha256.Sum256([]byte(content))
 	prev, seen := p.last[s.ID]
 	if !seen {
@@ -254,6 +326,24 @@ func (p *Prober) probePane(s *core.Session, actedAt time.Time, pane tmuxx.Pane) 
 	moved = moved || prev.moved
 
 	st := State{SessionID: s.ID, Alive: true, Content: content, Cursor: pane.Cursor}
+
+	if snapshot, found := p.resolveDstackStatus(ctx, s, pane.PanePID); found {
+		pt, _ := p.getProcessTable(ctx)
+		health := ClassifyHealth(snapshot, pt, now)
+		agentState, detail := MapStatusToAgentState(snapshot, health)
+		st.AgentSessionID = snapshot.SessionID
+		if health != HealthStale {
+			st.Agent = agentState
+			st.Detail = detail
+			sawBusy := agentState == core.AgentWorking || prev.sawBusy
+			p.last[s.ID] = sample{
+				hash: h, changed: changedAt, previous: st.Agent,
+				probed: now, moved: moved, sawBusy: sawBusy,
+			}
+			return st
+		}
+	}
+
 	var sawBusy bool
 	st.Agent, st.Detail, sawBusy = classify(s.AgentProfile, content, now.Sub(changedAt), moved, prev, seen)
 

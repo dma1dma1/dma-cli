@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strconv"
@@ -734,6 +735,89 @@ func TestProbeStillSeesOutputAfterAGesture(t *testing.T) {
 	time.Sleep(700 * time.Millisecond)
 	if got := p.Probe(ctx, s, acted); got.Agent != core.AgentWorking {
 		t.Errorf("probe after real output = %q, want working", got.Agent)
+	}
+}
+
+// A cwd does not identify the root Pi process because dstack workers may share
+// it. Process ancestry does, and terminal snapshots must override stale pane text.
+func TestDstackStatusIntegration(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	started := now.Add(-10 * time.Minute)
+	processes := &ProcessTable{Procs: map[int]ProcInfo{
+		100: {PID: 100, PPID: 1, StartTime: started.Add(-time.Minute)},
+		200: {PID: 200, PPID: 100, StartTime: started},
+		300: {PID: 300, PPID: 200, StartTime: started.Add(time.Second)},
+	}}
+	root := statusFixture("root-agent-01a0465d", 200, started, now.Add(-time.Second), "working")
+	worker := statusFixture("worker-agent-01a0465e", 300, started.Add(time.Second), now.Add(-time.Second), "waiting_on_input")
+	writeStatusFixture(t, dir, root)
+	writeStatusFixture(t, dir, worker)
+
+	p := &Prober{
+		last: map[string]sample{}, statusDir: dir, procTable: processes,
+		now: func() time.Time { return now },
+	}
+	s := &core.Session{ID: "dma-session", AgentProfile: "pi", AgentState: core.AgentIdle}
+	pane := tmuxx.Pane{PanePID: 100, Content: "dmode · bg 1 running\n"}
+	st := p.probePane(context.Background(), s, time.Time{}, pane)
+	if st.AgentSessionID != root.SessionID || st.Agent != core.AgentWorking {
+		t.Fatalf("nearest writer probe = %+v, want root session working", st)
+	}
+
+	root.Heartbeat.UpdatedAt = now.Add(-30 * time.Second).Format(time.RFC3339Nano)
+	root.Rollup = "idle"
+	writeStatusFixture(t, dir, root)
+	s.AgentSessionID = root.SessionID
+	if st = p.probePane(context.Background(), s, time.Time{}, pane); st.Agent != core.AgentWorking {
+		t.Fatalf("stale live writer state = %q, want working", st.Agent)
+	}
+
+	p.procTable = &ProcessTable{Procs: map[int]ProcInfo{
+		100: processes.Procs[100],
+		200: {PID: 200, PPID: 100, StartTime: now},
+	}}
+	if st = p.probePane(context.Background(), s, time.Time{}, pane); st.Agent != core.AgentNeedsYou || st.Detail != "agent crashed" {
+		t.Fatalf("crashed writer probe = %+v, want needs you", st)
+	}
+
+	p.procTable.Procs[300] = ProcInfo{PID: 300, PPID: 100, StartTime: started.Add(time.Second)}
+	if st = p.probePane(context.Background(), s, time.Time{}, pane); st.AgentSessionID != worker.SessionID {
+		t.Fatalf("replacement writer session = %q, want %q", st.AgentSessionID, worker.SessionID)
+	}
+
+	root.Shutdown = &struct {
+		Clean bool   `json:"clean"`
+		At    string `json:"at,omitempty"`
+	}{Clean: true, At: now.Format(time.RFC3339Nano)}
+	root.Rollup = "working"
+	writeStatusFixture(t, dir, root)
+	s.AgentSessionID = root.SessionID
+	p.procTable = processes
+	if st = p.probePane(context.Background(), s, time.Time{}, pane); st.Agent != core.AgentIdle {
+		t.Fatalf("shutdown writer state = %q, want idle", st.Agent)
+	}
+}
+
+func statusFixture(id string, pid int, started, heartbeat time.Time, rollup string) *StatusSnapshot {
+	s := &StatusSnapshot{SchemaVersion: DstackSchemaVersion, SessionID: id, Rollup: rollup}
+	s.Process.PID = pid
+	s.Process.StartedAt = started.Format(time.RFC3339Nano)
+	s.Process.Cwd = "/repo/worktree"
+	s.Heartbeat.UpdatedAt = heartbeat.Format(time.RFC3339Nano)
+	s.Heartbeat.IntervalMs = 5000
+	s.Root.State = "working"
+	return s
+}
+
+func writeStatusFixture(t *testing.T, dir string, snapshot *StatusSnapshot) {
+	t.Helper()
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DstackStatusPath(dir, snapshot.SessionID), data, 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 
