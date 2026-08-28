@@ -271,38 +271,45 @@ func TestSendTextIsLiteral(t *testing.T) {
 		{"quotes and backslash", `he said "no" 'x' back\`},
 		{"multibyte", "é 字 🙂"},
 	}
+
+	name := "dma-sendtext-" + strings.ReplaceAll(t.Name(), "/", "-")
+	// cat records each payload without interpreting its shell syntax.
+	if err := newTestShellSession(ctx, name, 200, 40); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(context.Background(), name) })
+	if err := SendLiteral(ctx, name, "exec cat"); err != nil {
+		t.Fatalf("start cat: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			name := "dma-sendtext-" + strings.ReplaceAll(t.Name(), "/", "-")
-			// cat echoes what it is sent without a shell interpreting any of it,
-			// which is what makes this a test of tmux rather than of zsh.
-			if err := newTestShellSession(ctx, name, 200, 10); err != nil {
-				t.Fatalf("NewSession: %v", err)
-			}
-			t.Cleanup(func() { _ = KillSession(context.Background(), name) })
-			if err := SendLiteral(ctx, name, "exec cat"); err != nil {
-				t.Fatalf("start cat: %v", err)
-			}
-			time.Sleep(500 * time.Millisecond)
+		if err := SendText(ctx, name, tc.text); err != nil {
+			t.Fatalf("SendText(%q): %v", tc.text, err)
+		}
+		if err := SendKey(ctx, name, "Enter"); err != nil {
+			t.Fatalf("SendKey(Enter): %v", err)
+		}
+	}
+	time.Sleep(700 * time.Millisecond)
 
-			if err := SendText(ctx, name, tc.text); err != nil {
-				t.Fatalf("SendText(%q): %v", tc.text, err)
+	pane, err := CapturePane(ctx, name, 0)
+	if err != nil {
+		t.Fatalf("CapturePane: %v", err)
+	}
+	out := pane.Content
+	// cat echoes the line twice: the terminal's own echo, then cat's copy.
+	lines := strings.Split(out, "\n")
+	for _, tc := range tests {
+		count := 0
+		for _, line := range lines {
+			if strings.TrimRight(line, " ") == tc.text {
+				count++
 			}
-			if err := SendKey(ctx, name, "Enter"); err != nil {
-				t.Fatalf("SendKey(Enter): %v", err)
-			}
-			time.Sleep(500 * time.Millisecond)
-
-			pane, err := CapturePane(ctx, name, 0)
-			if err != nil {
-				t.Fatalf("CapturePane: %v", err)
-			}
-			out := pane.Content
-			// cat echoes the line twice: the terminal's own echo, then cat's copy.
-			if strings.Count(out, tc.text) < 2 {
-				t.Errorf("SendText(%q) did not arrive verbatim; pane holds:\n%s", tc.text, out)
-			}
-		})
+		}
+		if count < 2 {
+			t.Errorf("SendText(%q) did not arrive verbatim; pane holds:\n%s", tc.text, out)
+		}
 	}
 }
 

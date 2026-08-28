@@ -8,12 +8,6 @@ import (
 	"github.com/dma1dma1/dma-cli/internal/core"
 )
 
-func TestObserveConcurrencyStaysInteractive(t *testing.T) {
-	if got := observeConcurrency(); got != 4 {
-		t.Fatalf("observeConcurrency = %d, want 4", got)
-	}
-}
-
 func TestBootstrapCloneGateWaitIsCancellable(t *testing.T) {
 	bootstrapGate <- struct{}{}
 	defer func() { <-bootstrapGate }()

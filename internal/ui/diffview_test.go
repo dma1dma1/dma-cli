@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -467,16 +466,4 @@ func TestDiffSubtitleNamesRangeAndRow(t *testing.T) {
 			t.Errorf("subtitle = %q, missing %q", got, want)
 		}
 	}
-}
-
-// DMA_DIFF_DUMP=1 go test ./internal/ui -run DumpDiffView prints the view, which
-// is the quickest way to look at the layout without a real repo behind it.
-func TestDumpDiffView(t *testing.T) {
-	if os.Getenv("DMA_DIFF_DUMP") == "" {
-		t.Skip("set DMA_DIFF_DUMP=1 to print the view")
-	}
-	m := diffModel(t, someFiles()...)
-	m.review.files.setCursorByPath("internal/ui/panel.go")
-	m.review.view.SetContent(plainRender)
-	t.Log("\n" + zoneMarker.ReplaceAllString(m.viewDiff(), ""))
 }

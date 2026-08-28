@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,7 +129,7 @@ func TestAttachRefusesAConversationAlreadyForkedOntoTheBoard(t *testing.T) {
 		}},
 	})
 	var already *AlreadyAttachedError
-	if !errorAs(err, &already) {
+	if !errors.As(err, &already) {
 		t.Fatalf("err = %v, want AlreadyAttachedError", err)
 	}
 }
@@ -292,7 +293,7 @@ func TestAttachRefusesAConversationAlreadyOnTheBoard(t *testing.T) {
 		Existing:  []*core.Session{{Title: "Twice over", AgentSessionID: "conv-5", WorktreePath: "/somewhere"}},
 	})
 	var already *AlreadyAttachedError
-	if !errorAs(err, &already) {
+	if !errors.As(err, &already) {
 		t.Fatalf("err = %v, want AlreadyAttachedError", err)
 	}
 }
@@ -504,20 +505,4 @@ func TestRestartOfAnAttachedSessionResumesByID(t *testing.T) {
 	if !strings.HasPrefix(lines[1], "by-id conv-13 ") {
 		t.Errorf("restart launched %q, want the conversation resumed by id", lines[1])
 	}
-}
-
-// errorAs is errors.As, kept local so the assertions above read as one line.
-func errorAs[T error](err error, target *T) bool {
-	for err != nil {
-		if t, ok := err.(T); ok {
-			*target = t
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }

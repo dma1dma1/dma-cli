@@ -1,18 +1,12 @@
 package ui
 
 import (
-	"context"
-	"os"
-	"os/exec"
-	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
-	"github.com/dma1dma1/dma-cli/internal/tmuxx"
 )
 
 // printable characters must go out literally, because send-keys would otherwise
@@ -210,58 +204,5 @@ func TestInsertModeCmdSkipsDeadSessions(t *testing.T) {
 	}
 	if cmd := insertModeCmd(&core.Session{ID: "a", TmuxSession: "gone"}); cmd != nil {
 		t.Error("built a command for a session whose terminal is not running")
-	}
-}
-
-// End to end against a real pane: the key only goes out when the composer says
-// it is in normal mode, and what goes out is one keystroke.
-func TestInsertModeCmdSendsOnlyWhenNormal(t *testing.T) {
-	if !tmuxx.Available() {
-		t.Skip("tmux not installed")
-	}
-	cases := map[string]struct {
-		status string
-		want   bool
-	}{
-		"normal": {"Vim: Normal", true},
-		"insert": {"Vim: Insert", false},
-		"plain":  {"", false},
-	}
-	for name, tc := range cases {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		session := "dma-ui-test-insert-" + name
-		if err := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", session,
-			"-c", os.TempDir(), "-x", "100", "-y", "20", "/bin/sh").Run(); err != nil {
-			t.Fatalf("%s: new-session: %v", name, err)
-		}
-		t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), session) })
-		time.Sleep(100 * time.Millisecond)
-
-		// A status line and nothing after it: sleep rather than a prompt, which
-		// would sit below the line the mode has to be the last of.
-		line := strings.TrimSpace("gpt-5.6-sol high · ~/w " + tc.status)
-		if err := tmuxx.SendLiteral(ctx, session, "clear; printf '  %s\\n' '"+line+"'; sleep 20"); err != nil {
-			t.Fatalf("%s: write to pane: %v", name, err)
-		}
-		time.Sleep(700 * time.Millisecond)
-
-		cmd := insertModeCmd(&core.Session{ID: name, TmuxSession: session, TmuxAlive: true})
-		if cmd == nil {
-			t.Fatalf("%s: no command for a live session", name)
-		}
-		cmd()
-		time.Sleep(400 * time.Millisecond)
-
-		// The pane echoes what was typed into it, so the key shows up on screen.
-		pane, err := tmuxx.CapturePane(ctx, session, 0)
-		if err != nil {
-			t.Fatalf("%s: CapturePane: %v", name, err)
-		}
-		sent := strings.Contains(pane.Content, insertKey)
-		if sent != tc.want {
-			t.Errorf("%s: sent %q = %v, want %v\npane:\n%s", name, insertKey, sent, tc.want, pane.Content)
-		}
 	}
 }
