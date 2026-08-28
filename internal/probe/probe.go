@@ -136,7 +136,10 @@ var busyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(interrupt|cancel|stop)\b.{0,16}\bwith (esc|escape|ctrl[-+ ]?c)\b`),
 }
 
-var piBusyStatus = regexp.MustCompile(`^[\x{2800}-\x{28ff}]\s+Working\.\.\.$`)
+var piBusyPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^[\x{2800}-\x{28ff}]\s+Working\.\.\.$`),
+	regexp.MustCompile(`\bdmode\s+·\s+bg\s+[1-9]\d*\s+running\b`),
+}
 
 // tailLines is how many lines of content up the pane a live hint or dialog can
 // be. Both sit just above the composer, but a dialog is several lines tall and
@@ -367,7 +370,7 @@ func held(prev sample) core.AgentState {
 // active column.
 func isBusy(agentProfile, content string) bool {
 	for _, line := range tail(content) {
-		if agentProfile == "pi" && piBusyStatus.MatchString(line) {
+		if agentProfile == "pi" && matches(line, piBusyPatterns) {
 			return true
 		}
 		if matches(line, busyPatterns) && !matches(line, promptPatterns) {
