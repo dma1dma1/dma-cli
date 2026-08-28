@@ -421,6 +421,7 @@ type Pane struct {
 	Content  string
 	Cursor   Cursor
 	MouseSGR bool
+	PanePID  int
 }
 
 // CapturePane returns pane content, which is how the board shows agent output
@@ -443,7 +444,7 @@ func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
 	// height.
 	const statePrefix = "__DMA_PANE_STATE__ "
 	state := []string{"list-panes", "-t", windowTarget(name), "-F",
-		statePrefix + "#{cursor_x} #{cursor_y} #{cursor_flag} #{mouse_sgr_flag}"}
+		statePrefix + "#{cursor_x} #{cursor_y} #{cursor_flag} #{mouse_sgr_flag} #{pane_pid}"}
 	out, err := run(ctx, batchArgs(capture, state)...)
 	if err != nil {
 		return Pane{}, err
@@ -463,11 +464,14 @@ func CapturePane(ctx context.Context, name string, history int) (Pane, error) {
 	stateLine := out[i:]
 	stateLine = strings.TrimPrefix(stateLine, "\n")
 	stateLine = strings.TrimPrefix(stateLine, statePrefix)
-	var x, y, cursorFlag, mouseFlag int
+	var x, y, cursorFlag, mouseFlag, panePID int
 	pane := Pane{Content: isolateSGRRows(content)}
-	if _, scanErr := fmt.Sscanf(stateLine, "%d %d %d %d", &x, &y, &cursorFlag, &mouseFlag); scanErr == nil {
+	if n, _ := fmt.Sscanf(stateLine, "%d %d %d %d %d", &x, &y, &cursorFlag, &mouseFlag, &panePID); n >= 4 {
 		pane.Cursor = Cursor{X: x, Y: y, Visible: cursorFlag == 1}
 		pane.MouseSGR = mouseFlag == 1
+		if n >= 5 {
+			pane.PanePID = panePID
+		}
 	}
 	return pane, nil
 }

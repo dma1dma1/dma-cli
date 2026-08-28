@@ -1064,6 +1064,10 @@ func (m Model) handleProbe(msg probeMsg) (tea.Model, tea.Cmd) {
 			continue
 		}
 		s.TmuxAlive = st.Alive
+		if st.AgentSessionID != "" && s.AgentSessionID != st.AgentSessionID {
+			s.AgentSessionID = st.AgentSessionID
+			dirty = true
+		}
 		was := s.AgentState
 		if s.SetAgentState(st.Agent, st.Detail) {
 			m.notifyIfBlocked(s, was)
