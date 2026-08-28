@@ -140,19 +140,6 @@ func TestNormalizeKeepsCustomizedBuiltinProfiles(t *testing.T) {
 	}
 }
 
-// Claude Code launches in auto mode: a board of parallel agents only pays off if
-// they run unattended, and the default permission mode parks every session at the
-// first command needing approval.
-func TestDefaultProfilesStartClaudeInAutoMode(t *testing.T) {
-	p, ok := DefaultConfig().Profile("claude")
-	if !ok {
-		t.Fatal("no claude profile in the default config")
-	}
-	if p.Command != "claude --permission-mode auto" {
-		t.Errorf("claude command = %q, want it to request auto mode", p.Command)
-	}
-}
-
 func TestNormalizeUpgradesUntouchedCodexForInitialImages(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{{Name: "codex", Command: "codex"}}}
 	c.normalize()

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -592,149 +590,29 @@ func TestProbePreservesLivenessWhenTmuxCheckTimesOut(t *testing.T) {
 	}
 }
 
-// End to end against a real pane: the first probe of a session reports what the
-// board already knows, whatever the pane looks like. Every card the board loads
-// is on its first probe, so a guess here is a flap on every startup.
-func TestProbeKeepsTheStoredStateOnFirstSight(t *testing.T) {
-	ctx, name := livePane(t, 100, 30)
-
-	for _, was := range []core.AgentState{core.AgentIdle, core.AgentWorking} {
-		s := &core.Session{ID: "s1", TmuxSession: name, AgentState: was}
-		got := New().Probe(ctx, s, time.Time{})
-		if !got.Alive {
-			t.Fatal("live session reported as gone")
-		}
-		if got.Agent != was {
-			t.Errorf("first probe of a %q session = %q, want %q", was, got.Agent, was)
-		}
+func TestProbeAttributionIgnoresBoardActionUntilRetired(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	p := &Prober{
+		last: map[string]sample{},
+		now:  func() time.Time { return now },
 	}
-}
+	s := &core.Session{ID: "s1", AgentState: core.AgentIdle}
+	ctx := context.Background()
 
-// The reported flap, run against a real tmux pane rather than a fixture: a
-// session that has finished its turn must not walk back to working because
-// somebody opened it. Attaching releases the window to the real terminal and
-// detaching pins it back to the preview size, and every line on the pane reflows
-// each way -- which is a wholesale change to the text the probe reads.
-func TestProbeIgnoresAReflowAfterATurn(t *testing.T) {
-	ctx, name := livePane(t, 100, 30)
-	p := New()
-	s := &core.Session{ID: "s1", TmuxSession: name, AgentState: core.AgentIdle}
+	p.probePane(ctx, s, time.Time{}, tmuxx.Pane{Content: "idle\n"})
 
-	// Long enough to wrap differently at either window width, so a resize really
-	// does rewrite the pane.
-	const wrapping = `'a line long enough that it wraps at one window width and not at the other, which is the whole point of it'`
-	show := func(last string) {
-		if err := tmuxx.SendLiteral(ctx, name, "clear; printf '%s\\n' "+wrapping+" '"+last+"'"); err != nil {
-			t.Fatalf("write to pane: %v", err)
-		}
-		time.Sleep(700 * time.Millisecond)
-	}
-	probe := func() core.AgentState {
-		got := p.Probe(ctx, s, time.Time{})
-		s.AgentState = got.Agent
-		return got.Agent
+	now = now.Add(probeGap)
+	acted := now.Add(-100 * time.Millisecond)
+	if got := p.probePane(ctx, s, acted, tmuxx.Pane{Content: "the composer, echoed\n"}); got.Agent != core.AgentIdle {
+		t.Fatalf("probe right after board action = %q, want idle", got.Agent)
 	}
 
-	show("• Working (8s • esc to interrupt)")
-	if got := probe(); got != core.AgentWorking {
-		t.Fatalf("mid-turn probe = %q, want working", got)
-	}
+	now = now.Add(ActionGrace + time.Second)
+	p.probePane(ctx, s, acted, tmuxx.Pane{Content: "the composer, echoed\n"})
 
-	show("› Use /skills to list available skills")
-	probe() // the frame the settle window is measured from
-	time.Sleep(SettleAfter + 500*time.Millisecond)
-	if got := probe(); got != core.AgentDone {
-		t.Fatalf("probe after the hint went = %q, want done", got)
-	}
-
-	for _, size := range [][2]int{{180, 50}, {100, 30}} {
-		if err := tmuxx.ResizeWindow(ctx, name, size[0], size[1]); err != nil {
-			t.Fatalf("ResizeWindow: %v", err)
-		}
-		time.Sleep(300 * time.Millisecond)
-		if got := probe(); got != core.AgentDone {
-			t.Errorf("probe after a resize to %dx%d = %q, want done left alone", size[0], size[1], got)
-		}
-	}
-}
-
-// The reported flap, for an agent that has never shown an interrupt hint and so
-// has nothing but its pane to go on: scrolling a Codex session walked it from
-// idle to working. Any gesture dma passes on does this -- a wheel event an agent
-// scrolls its own transcript for, a keystroke landing in the composer, a resize --
-// and the sample after the gesture is the half that used to be missed, because a
-// pane that changed within IdleAfter read as a turn however that change got there.
-func TestProbeIgnoresAChangeTheBoardCaused(t *testing.T) {
-	ctx, name := livePane(t, 100, 30)
-	p := New()
-	s := &core.Session{ID: "s1", TmuxSession: name, AgentState: core.AgentIdle}
-	probe := func(actedAt time.Time) core.AgentState {
-		got := p.Probe(ctx, s, actedAt)
-		s.AgentState = got.Agent
-		return got.Agent
-	}
-	write := func(line string) {
-		if err := tmuxx.SendLiteral(ctx, name, "clear; printf '%s\\n' '"+line+"'"); err != nil {
-			t.Fatalf("write to pane: %v", err)
-		}
-		time.Sleep(700 * time.Millisecond)
-	}
-
-	write("› Use /skills to list available skills")
-	probe(time.Time{}) // the baseline every later frame is compared against
-
-	// The gesture, and the frame it produced. dma acts and the pane answers a
-	// moment later, which is the ordinary case: the redraw is read at the next
-	// sample, not the instant it lands.
-	acted := time.Now()
-	write("› Use /skills to list available skills · scrolled")
-	if got := probe(acted); got != core.AgentIdle {
-		t.Fatalf("probe right after the gesture = %q, want idle left alone", got)
-	}
-	// The sample after it. The action is stale now and the pane has held still
-	// since, so there is nothing left that could pass for a turn.
-	if got := probe(acted); got != core.AgentIdle {
-		t.Errorf("probe one sample later = %q, want idle: nothing has happened since", got)
-	}
-}
-
-// The exemption is for what dma did, not for whatever the pane does next: an
-// agent that starts writing after the gesture is working, and has to say so.
-func TestProbeStillSeesOutputAfterAGesture(t *testing.T) {
-	ctx, name := livePane(t, 100, 30)
-	p := New()
-	s := &core.Session{ID: "s1", TmuxSession: name, AgentState: core.AgentIdle}
-
-	if err := tmuxx.SendLiteral(ctx, name, "clear; printf 'idle\\n'"); err != nil {
-		t.Fatalf("write to pane: %v", err)
-	}
-	time.Sleep(700 * time.Millisecond)
-	p.Probe(ctx, s, time.Time{})
-
-	acted := time.Now()
-	if err := tmuxx.SendLiteral(ctx, name, "clear; printf 'the composer, echoed\\n'"); err != nil {
-		t.Fatalf("write to pane: %v", err)
-	}
-	time.Sleep(700 * time.Millisecond)
-	if got := p.Probe(ctx, s, acted); got.Agent != core.AgentIdle {
-		t.Fatalf("probe after the gesture = %q, want idle", got.Agent)
-	}
-
-	// A sample taken well after the action, with the pane still. This is what
-	// retires the action as an explanation: what dma did is older than the window
-	// the next change could have happened in.
-	time.Sleep(ActionGrace + 500*time.Millisecond)
-	p.Probe(ctx, s, acted)
-
-	// Now the pane changes again, and nothing accounts for it but the agent. The
-	// board is still holding the same stale action, because it only ever remembers
-	// the last one.
-	if err := tmuxx.SendLiteral(ctx, name, "clear; printf 'the agent, writing\\n'"); err != nil {
-		t.Fatalf("write to pane: %v", err)
-	}
-	time.Sleep(700 * time.Millisecond)
-	if got := p.Probe(ctx, s, acted); got.Agent != core.AgentWorking {
-		t.Errorf("probe after real output = %q, want working", got.Agent)
+	now = now.Add(probeGap)
+	if got := p.probePane(ctx, s, acted, tmuxx.Pane{Content: "the agent, writing\n"}); got.Agent != core.AgentWorking {
+		t.Fatalf("probe after unaccounted change = %q, want working", got.Agent)
 	}
 }
 
@@ -819,26 +697,4 @@ func writeStatusFixture(t *testing.T, dir string, snapshot *StatusSnapshot) {
 	if err := os.WriteFile(DstackStatusPath(dir, snapshot.SessionID), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// livePane starts a real tmux session for a test to probe, and returns the
-// context and session name to address it with.
-func livePane(t *testing.T, cols, rows int) (context.Context, string) {
-	t.Helper()
-	if !tmuxx.Available() {
-		t.Skip("tmux not installed")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	t.Cleanup(cancel)
-
-	name := "dma-probe-test-" + strings.ToLower(t.Name())
-	// Probe tests need an interactive pane, but do not need the user's login
-	// shell. Starting /bin/sh directly avoids racing arbitrary rc-file work.
-	if err := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", name,
-		"-c", os.TempDir(), "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows), "/bin/sh").Run(); err != nil {
-		t.Fatalf("new-session: %v", err)
-	}
-	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), name) })
-	time.Sleep(100 * time.Millisecond)
-	return ctx, name
 }

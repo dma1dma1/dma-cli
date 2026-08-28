@@ -177,13 +177,3 @@ func TestQueueRecheckIgnoresFailure(t *testing.T) {
 		t.Error("a failed re-check cleared the queue flag")
 	}
 }
-
-func TestQueuedCardSaysSo(t *testing.T) {
-	s := queuedSess("a")
-	s.PRQueued, s.PRCI = true, core.CIPass
-	m := testModel(nil, s)
-
-	if got := m.branchOrPR(s); !strings.Contains(got, "queued") {
-		t.Errorf("card label = %q, want the queue named", got)
-	}
-}

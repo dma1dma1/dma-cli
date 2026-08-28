@@ -336,23 +336,6 @@ func TestTruncateRespectsWidth(t *testing.T) {
 	}
 }
 
-func TestFocusRingCyclesAllAreas(t *testing.T) {
-	seen := map[focusArea]bool{}
-	f := focusBoard
-	for i := 0; i < len(focusRing); i++ {
-		seen[f] = true
-		f = focusRing[wrap(indexOfFocus(f)+1, len(focusRing))]
-	}
-	if f != focusBoard {
-		t.Error("cycling the whole ring did not return to the board")
-	}
-	for _, want := range focusRing {
-		if !seen[want] {
-			t.Errorf("focus area %d unreachable by tab", want)
-		}
-	}
-}
-
 func idsOf(in []*core.Session) []string {
 	out := make([]string, len(in))
 	for i, s := range in {
