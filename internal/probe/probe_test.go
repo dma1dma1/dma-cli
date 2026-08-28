@@ -116,6 +116,13 @@ Current session: untrusted
 ↑↓ navigate  enter save  escape cancel
 ────────────────────────────────────────`
 
+// Captured from /dagents when dma incorrectly reported that pi needed input.
+const piAgentsOverlay = `── dstack tasks ───────────────────────────────────────────────
+›   [-] dstack · investigation · 1/1 done · 7m13s
+    [+] worker-1 · done · 2m10s
+
+↑/↓ select · Enter/→ inspect · h hide history · Esc/q close`
+
 const piWorking = `⏺ Read src/limiter.go (84 lines)
 
 Working... (escape to interrupt)`
@@ -452,6 +459,7 @@ func TestAwaitingInputNeedsMoreThanAMarker(t *testing.T) {
 		{"one arrow, no hint", "  → picked the shorter branch\n"},
 		{"hint, no marker", "Here is how the picker works:\n↑↓ navigate between the rows\n"},
 		{"quoted block", "> quoted line one\n> quoted line two\n↑↓ navigate  enter select\n"},
+		{"navigational overlay", piAgentsOverlay},
 		{"pi at rest", piIdleHeader},
 	}
 	for _, tc := range cases {
