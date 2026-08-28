@@ -346,6 +346,9 @@ func (p *Prober) probePane(ctx context.Context, s *core.Session, actedAt time.Ti
 
 	var sawBusy bool
 	st.Agent, st.Detail, sawBusy = classify(s.AgentProfile, content, now.Sub(changedAt), moved, prev, seen)
+	if st.Agent == core.AgentDone && prev.previous == core.AgentWorking && !moved && !sawBusy && !s.CreatedAt.IsZero() && now.Sub(s.CreatedAt) < IdleAfter {
+		st.Agent = core.AgentWorking
+	}
 
 	p.last[s.ID] = sample{
 		hash: h, changed: changedAt, previous: st.Agent,
