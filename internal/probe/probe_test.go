@@ -616,6 +616,48 @@ func TestProbeAttributionIgnoresBoardActionUntilRetired(t *testing.T) {
 	}
 }
 
+func TestProbePreservesWorkingDuringStartup(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	p := &Prober{
+		last: map[string]sample{},
+		now:  func() time.Time { return now },
+	}
+	s := &core.Session{
+		ID:         "fresh-session",
+		CreatedAt:  now,
+		AgentState: core.AgentWorking,
+	}
+	ctx := context.Background()
+	pane := tmuxx.Pane{Content: "shell prompt\n"}
+
+	if got := p.probePane(ctx, s, time.Time{}, pane); got.Agent != core.AgentWorking {
+		t.Fatalf("first probe = %q, want working", got.Agent)
+	}
+
+	now = now.Add(5 * time.Second)
+	if got := p.probePane(ctx, s, time.Time{}, pane); got.Agent != core.AgentWorking {
+		t.Fatalf("startup probe before IdleAfter = %q, want working", got.Agent)
+	}
+
+	now = now.Add(IdleAfter)
+	if got := p.probePane(ctx, s, time.Time{}, pane); got.Agent != core.AgentDone {
+		t.Fatalf("probe after startup grace = %q, want done", got.Agent)
+	}
+
+	stranded := &core.Session{
+		ID:         "stranded-session",
+		CreatedAt:  now.Add(-time.Hour),
+		AgentState: core.AgentWorking,
+	}
+	if got := p.probePane(ctx, stranded, time.Time{}, pane); got.Agent != core.AgentWorking {
+		t.Fatalf("stranded first probe = %q, want working", got.Agent)
+	}
+	now = now.Add(5 * time.Second)
+	if got := p.probePane(ctx, stranded, time.Time{}, pane); got.Agent != core.AgentDone {
+		t.Fatalf("stranded second probe = %q, want done", got.Agent)
+	}
+}
+
 // A cwd does not identify the root Pi process because dstack workers may share
 // it. Process ancestry does, and terminal snapshots must override stale pane text.
 func TestDstackStatusIntegration(t *testing.T) {
