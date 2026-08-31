@@ -839,10 +839,9 @@ func mergeCmd(cfg *core.Config, s *core.Session) tea.Cmd {
 	}
 }
 
-// prQueueCmd re-checks a PR the board is showing as queued. A merge queue can
-// drop a PR back out -- its checks fail against the queue's merge candidate --
-// and the open-PR poll says nothing about that, since the PR was open all
-// along.
+// prQueueCmd checks merge-queue standing for an open PR. A merge queue can
+// drop a PR back out or accept it externally, and the open-PR poll says
+// nothing about that since the PR was open all along.
 func prQueueCmd(remote, sessionID string, number int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

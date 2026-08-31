@@ -119,8 +119,8 @@ func TestMergeKeyOffersAutoMergeWhileCIIsPending(t *testing.T) {
 	}
 }
 
-// A queued PR is still an open PR, so the poll alone cannot tell that the queue
-// let go of it. The card claiming to be queued is what earns the extra query.
+// A queued PR is still an open PR, so the poll alone cannot tell whether the
+// queue accepted or dropped it. Every open PR query schedules a queue check.
 func TestPRSyncRechecksQueuedCards(t *testing.T) {
 	queued := queuedSess("a")
 	queued.PRQueued = true
@@ -140,7 +140,10 @@ func TestPRSyncRechecksQueuedCards(t *testing.T) {
 	}
 }
 
-func TestPRSyncSkipsTheQueueQueryWhenNothingIsQueued(t *testing.T) {
+// An open PR might have entered a merge queue externally, via auto-enqueue, or
+// before dma started. Every open PR discovered on a poll must schedule a queue
+// check so its queued standing is discovered without requiring a local action.
+func TestPRSyncDiscoversQueueForOpenCard(t *testing.T) {
 	s := queuedSess("a")
 	m := testModel(nil, s)
 
@@ -148,8 +151,8 @@ func TestPRSyncSkipsTheQueueQueryWhenNothingIsQueued(t *testing.T) {
 		Open:     map[string]ghx.PR{"feat-a": {Number: 7, Branch: "feat-a", State: core.PROpen}},
 		Answered: map[string]bool{"feat-a": true},
 	}})
-	if cmd != nil {
-		t.Error("a card that is not queued triggered a queue query")
+	if cmd == nil {
+		t.Fatal("an open PR did not trigger queue discovery")
 	}
 }
 
