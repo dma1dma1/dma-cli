@@ -1156,12 +1156,11 @@ func (m Model) handlePRSync(msg prSyncMsg) (tea.Model, tea.Cmd) {
 		s.PRCI, s.PRReview, s.PRMergeable = pr.CI, pr.Review, pr.Mergeable
 		s.PRAutoMerge = pr.AutoMerge
 
-		// A queued PR is an open PR, so the poll cannot tell that the queue let
-		// go of it. Ask, but only for the cards actually claiming to be queued --
-		// on a board with no merge queue in sight that is never.
-		if s.PRQueued {
-			follow = append(follow, prQueueCmd(repo.Remote, s.ID, s.PRNumber))
-		}
+		// A queued PR is an open PR, so the open-PR poll alone cannot tell
+		// whether a PR entered or was dropped from a merge queue. Query queue
+		// standing for every open PR so external, auto-enqueued, or
+		// restart-discovered queue states resolve.
+		follow = append(follow, prQueueCmd(repo.Remote, s.ID, s.PRNumber))
 
 		// Pull request state owns the last two columns. Reconcile on every poll,
 		// not only on the first transition, so a stale persisted column or manual
@@ -1233,8 +1232,8 @@ func (m Model) handleMerged(msg mergedMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handlePRQueue applies a queue re-check. A failed check leaves the card as it
-// was: the queue standing it is showing is the last one GitHub confirmed.
+// handlePRQueue applies merge-queue standing. A failed check leaves the card
+// as it was: the queue standing it is showing is the last one GitHub confirmed.
 func (m Model) handlePRQueue(msg prQueueMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		return m, nil
