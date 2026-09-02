@@ -7,16 +7,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/dma1dma1/dma-cli/internal/core"
 	"github.com/dma1dma1/dma-cli/internal/gitx"
 )
 
-// bootstrapGate keeps two session starts from recursively cloning large
-// dependency trees at the same time. APFS metadata work does not get faster
-// when duplicated; it only makes the terminal and every active agent compete
-// with both starts. The waiting create remains cancellable.
-var bootstrapGate = make(chan struct{}, 1)
+// setupGate keeps two session starts from materializing worktrees at the same
+// time. It covers the checkout as well as the dependency clones: a 28k-file
+// worktree add landing on top of another start's clone is what produced an
+// input-level freeze on a monorepo, and APFS metadata work does not get faster
+// when duplicated -- it only makes the terminal, every active agent and every
+// endpoint-security scanner compete with both starts. The waiting create
+// remains cancellable.
+var setupGate = make(chan struct{}, 1)
+
+// acquireSetupGate takes the gate, reporting the wait if another start holds
+// it, and returns a release that is safe to call more than once.
+func acquireSetupGate(ctx context.Context, onProgress func(CreateProgress)) (func(), error) {
+	select {
+	case setupGate <- struct{}{}:
+	default:
+		if onProgress != nil {
+			onProgress(CreateProgress("waiting for another session to finish setting up"))
+		}
+		select {
+		case setupGate <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	var once sync.Once
+	return func() { once.Do(func() { <-setupGate }) }, nil
+}
 
 // Bootstrap prepares a fresh worktree so it is immediately usable: shared
 // dependency trees and caches are symlinked, per-worktree config is copied.
@@ -34,18 +57,19 @@ var bootstrapGate = make(chan struct{}, 1)
 // complete to every installer that looks at it. That is worth abandoning the
 // session over, so the caller can roll the worktree back.
 func Bootstrap(ctx context.Context, repo core.Repo, worktree string) ([]string, error) {
+	release, err := acquireSetupGate(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	return bootstrapWithProgress(ctx, repo, worktree, nil)
 }
 
+// bootstrapWithProgress expects the caller to hold setupGate; Create takes it
+// before the worktree add so the checkout is covered too.
 func bootstrapWithProgress(ctx context.Context, repo core.Repo, worktree string, onProgress func(CreateProgress)) ([]string, error) {
 	var warnings []string
 	var created []string
-	cloneGateHeld := false
-	defer func() {
-		if cloneGateHeld {
-			<-bootstrapGate
-		}
-	}()
 
 	total := len(repo.Bootstrap.Symlink) + len(repo.Bootstrap.Clone) + len(repo.Bootstrap.Copy)
 	current := 0
@@ -65,22 +89,6 @@ func bootstrapWithProgress(ctx context.Context, repo core.Repo, worktree string,
 		}
 		created = append(created, rel)
 	}
-	if len(repo.Bootstrap.Clone) > 0 {
-		select {
-		case bootstrapGate <- struct{}{}:
-			cloneGateHeld = true
-		default:
-			if onProgress != nil {
-				onProgress(CreateProgress("waiting for dependency clone"))
-			}
-			select {
-			case bootstrapGate <- struct{}{}:
-				cloneGateHeld = true
-			case <-ctx.Done():
-				return warnings, ctx.Err()
-			}
-		}
-	}
 	for _, rel := range repo.Bootstrap.Clone {
 		report("cloning", rel)
 		if err := clonePath(ctx, repo.Path, worktree, rel); err != nil {
@@ -91,10 +99,6 @@ func bootstrapWithProgress(ctx context.Context, repo core.Repo, worktree string,
 			continue
 		}
 		created = append(created, rel)
-	}
-	if cloneGateHeld {
-		<-bootstrapGate
-		cloneGateHeld = false
 	}
 	for _, rel := range repo.Bootstrap.Copy {
 		report("copying", rel)

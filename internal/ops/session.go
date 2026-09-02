@@ -52,7 +52,7 @@ type ImageAttachment struct {
 
 const (
 	// bootstrapTimeout bounds dependency materialization. A large monorepo --
-	// 336k entries across 42 trees -- measures around 26 seconds via directory
+	// 350k entries across 42 trees -- measures around a minute via chunked
 	// clonefile, so this is not sized for the normal path. It is sized for
 	// cloneTree's fallback: a volume without clone support drops to a throttled
 	// recursive copy, which measured 6.4 minutes on that same repo. This has to
@@ -153,6 +153,16 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	}
 	start := gitx.StartPoint(ctx, repo.Path, base)
 
+	// From here to the end of bootstrap is the filesystem-heavy part of a start:
+	// the checkout writes every tracked file and the clones every dependency
+	// entry. One start at a time; the fetch above stays outside because it is
+	// network-bound and overlapping fetches cost nothing.
+	release, err := acquireSetupGate(ctx, report)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	// The title here is the task as it was typed, which is usually a paragraph
 	// -- its summary does not exist yet and arrives after the session does. So
 	// the directory is named from the opening of that paragraph, cut at a word
@@ -177,6 +187,9 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	if err != nil {
 		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("bootstrap worktree: %w", err))
 	}
+	// Everything after this is light -- direnv, hooks, tmux -- so the next start
+	// can begin its checkout now rather than after the agent launches.
+	release()
 
 	if err := authorizeMatchingDirenv(ctx, repo.Path, worktree); err != nil {
 		warnings = append(warnings, fmt.Sprintf("authorize direnv: %v", err))

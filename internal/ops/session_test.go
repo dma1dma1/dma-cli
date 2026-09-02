@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1047,5 +1048,81 @@ func TestBootstrapReportsEachConfiguredPathInOrder(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("progress = %q, want %q", got, want)
+	}
+}
+
+func TestCreateWaitsForAnotherStartBeforeCheckingOut(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "gated")
+	wtRoot := filepath.Join(t.TempDir(), "worktrees")
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "testrepo", Path: repoPath, BaseBranch: "main", WorktreeRoot: wtRoot,
+		}},
+		DefaultRepo:    "testrepo",
+		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
+		DefaultProfile: "noop",
+	}
+
+	// Another start holds the gate.
+	setupGate <- struct{}{}
+	released := false
+	defer func() {
+		if !released {
+			<-setupGate
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	var progress []CreateProgress
+	waiting := make(chan struct{})
+	done := make(chan struct{})
+	var res *CreateResult
+	var createErr error
+	go func() {
+		defer close(done)
+		res, createErr = Create(ctx, cfg, CreateRequest{Title: "gated start", Profile: "noop", Progress: func(p CreateProgress) {
+			mu.Lock()
+			progress = append(progress, p)
+			mu.Unlock()
+			if p == "waiting for another session to finish setting up" {
+				close(waiting)
+			}
+		}})
+	}()
+
+	select {
+	case <-waiting:
+	case <-done:
+		t.Fatalf("Create finished without waiting: err=%v", createErr)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Create never reported waiting for the gate")
+	}
+	// The checkout must not have started while the gate is held.
+	if entries, _ := os.ReadDir(wtRoot); len(entries) != 0 {
+		t.Fatalf("worktree created while another start held the gate: %v", entries)
+	}
+
+	<-setupGate
+	released = true
+	<-done
+	if createErr != nil {
+		t.Fatalf("Create after release: %v", createErr)
+	}
+	t.Cleanup(func() { _ = tmuxx.KillSession(context.Background(), res.Session.TmuxSession) })
+	if _, err := os.Stat(res.Session.WorktreePath); err != nil {
+		t.Fatalf("worktree missing after release: %v", err)
+	}
+	// The gate is free again once the agent launched.
+	select {
+	case setupGate <- struct{}{}:
+		<-setupGate
+	default:
+		t.Fatal("Create returned without releasing the setup gate")
 	}
 }
