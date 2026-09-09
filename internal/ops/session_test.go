@@ -580,14 +580,22 @@ func TestCreateStartsFromTheFetchedRemoteTip(t *testing.T) {
 // the worktree directory is the only thing that can.
 func TestUniqueWorktreeDirSuffixesOnCollision(t *testing.T) {
 	root := t.TempDir()
-	first := uniqueWorktreeDir(root, "fix-login")
+	repo := core.Repo{Path: newTestRepo(t, "repo"), WorktreeRoot: root}
+	ctx := context.Background()
+	first, err := uniqueWorktreeDir(ctx, repo, "fix-login")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := filepath.Base(first); got != "fix-login" {
 		t.Fatalf("first worktree = %q, want fix-login", got)
 	}
 	if err := os.MkdirAll(first, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	second := uniqueWorktreeDir(root, "fix-login")
+	second, err := uniqueWorktreeDir(ctx, repo, "fix-login")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := filepath.Base(second); got != "fix-login-2" {
 		t.Errorf("second worktree = %q, want fix-login-2", got)
 	}
@@ -1124,5 +1132,40 @@ func TestCreateWaitsForAnotherStartBeforeCheckingOut(t *testing.T) {
 		<-setupGate
 	default:
 		t.Fatal("Create returned without releasing the setup gate")
+	}
+}
+
+// A removed directory can remain registered and locked by another tool. Never
+// reuse it or remove that lock, including when it occupies a collision suffix.
+func TestUniqueWorktreeDirSkipsMissingLockedRegistration(t *testing.T) {
+	ctx := context.Background()
+	repo := core.Repo{Path: newTestRepo(t, "repo"), WorktreeRoot: t.TempDir()}
+	slug := "slack-link"
+	if err := os.Mkdir(filepath.Join(repo.WorktreeRoot, slug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reserved := filepath.Join(repo.WorktreeRoot, slug+"-2")
+	if err := gitx.AddDetachedWorktree(ctx, repo.Path, reserved, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, repo.Path, "worktree", "lock", "--reason", "supacode", reserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(reserved); err != nil {
+		t.Fatal(err)
+	}
+	got, err := uniqueWorktreeDir(ctx, repo, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != slug+"-3" {
+		t.Fatalf("selected reserved path: %s", got)
+	}
+	if err := gitx.AddDetachedWorktree(ctx, repo.Path, got, "main"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := gitx.Run(ctx, repo.Path, "worktree", "list", "--porcelain")
+	if err != nil || !strings.Contains(out, "locked supacode") {
+		t.Fatalf("lock changed: %s (%v)", out, err)
 	}
 }

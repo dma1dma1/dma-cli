@@ -114,6 +114,11 @@ func UpsertSessions(sessions []*Session) error {
 				continue
 			}
 			if i, ok := byID[s.ID]; ok {
+				// A second board may still hold a failed card after its retry
+				// succeeded elsewhere. Never replace the real session with it.
+				if s.StartFailure != nil && out[i].StartFailure == nil && out[i].WorktreePath != "" {
+					continue
+				}
 				// Pruning is a claim held by another board process. An ordinary
 				// stale save must not cancel its crash-recovery marker; only the
 				// explicit SetSessionPruning(false) failure path may do that.
@@ -237,9 +242,7 @@ func writeAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
+	// Keep CreateTemp's 0600 permissions: state can contain full prompts and images.
 	return os.Rename(tmpName, path)
 }
 

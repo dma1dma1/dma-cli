@@ -33,17 +33,10 @@ func (e *Error) Error() string {
 	if msg == "" {
 		return fmt.Sprintf("git %s: %v", strings.Join(e.Args, " "), e.Err)
 	}
-	return fmt.Sprintf("git %s: %s", strings.Join(e.Args, " "), firstLine(msg))
+	return fmt.Sprintf("git %s: %s", strings.Join(e.Args, " "), msg)
 }
 
 func (e *Error) Unwrap() error { return e.Err }
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
 
 // gitCommand builds a git invocation with the environment every call in this
 // package needs. Callers pass the whole argument list, "-C <dir>" included, so

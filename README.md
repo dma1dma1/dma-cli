@@ -213,6 +213,17 @@ nothing else on screen moves. Select the card when you want to watch it.
 An empty panel is the exception: with no session to be pulled away from, the
 pending card fills it immediately and explains what it is waiting for.
 
+### Retrying a failed start
+
+If setup fails, the card stays on the board with the full error and original
+task. Select it to read the failure; use `pgup`/`pgdn` or the mouse wheel to
+scroll. Press `c` to retry the same task, repository, agent, project, and image
+attachments, or `x` to dismiss the failed card. Failed starts survive quitting
+and reopening dma; retrying leaves any new task in the composer alone.
+
+Worktree names skip both existing directories and Git's registered worktrees,
+including missing directories still reserved by another tool's lock.
+
 ### Attaching a session you already started
 
 `dma attach` takes a conversation you are already having with an agent — one you

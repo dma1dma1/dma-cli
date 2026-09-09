@@ -158,18 +158,28 @@ type Key struct {
 
 func (k Key) String() string { return k.RepoID + "\x00" + k.Branch }
 
+// StartFailure retains the original request and full error for a retry, even
+// after the board exits. Images are PNG bytes, encoded as base64 in state.json.
+type StartFailure struct {
+	Title  string   `json:"title"`
+	Prompt string   `json:"prompt"`
+	Images [][]byte `json:"images,omitempty"`
+	Error  string   `json:"error"`
+}
+
 // Session is one agent working in one worktree of one repo.
 type Session struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	RepoID       string    `json:"repo_id"`
-	Group        string    `json:"group"`
-	WorktreePath string    `json:"worktree_path"`
-	Branch       string    `json:"branch"`
-	BaseBranch   string    `json:"base_branch"`
-	TmuxSession  string    `json:"tmux_session"`
-	AgentProfile string    `json:"agent_profile"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string        `json:"id"`
+	Title        string        `json:"title"`
+	RepoID       string        `json:"repo_id"`
+	Group        string        `json:"group"`
+	WorktreePath string        `json:"worktree_path"`
+	Branch       string        `json:"branch"`
+	BaseBranch   string        `json:"base_branch"`
+	TmuxSession  string        `json:"tmux_session"`
+	AgentProfile string        `json:"agent_profile"`
+	CreatedAt    time.Time     `json:"created_at"`
+	StartFailure *StartFailure `json:"start_failure,omitempty"`
 
 	Lifecycle        Lifecycle  `json:"lifecycle"`
 	AgentState       AgentState `json:"agent_state"`

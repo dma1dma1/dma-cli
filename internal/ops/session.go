@@ -168,7 +168,10 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// the directory is named from the opening of that paragraph, cut at a word
 	// rather than wherever forty characters happens to land.
 	report("creating worktree")
-	worktree := uniqueWorktreeDir(repo.WorktreeRoot, core.Slug(summarize.Shorten(title)))
+	worktree, err := uniqueWorktreeDir(ctx, repo, core.Slug(summarize.Shorten(title)))
+	if err != nil {
+		return nil, fmt.Errorf("choose worktree: %w", err)
+	}
 	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
@@ -298,20 +301,43 @@ func stageImages(ctx context.Context, worktree string, images []ImageAttachment)
 // alone -- and titles repeat, since "fix flaky login test" is a thing worth
 // doing twice. A collision suffixes rather than fails: refusing to start the
 // second session would be a strange answer to a name clash.
-func uniqueWorktreeDir(root, slug string) string {
-	free := func(path string) bool {
-		_, err := os.Stat(path)
-		return os.IsNotExist(err)
+func uniqueWorktreeDir(ctx context.Context, repo core.Repo, slug string) (string, error) {
+	out, err := gitx.RunRaw(ctx, repo.Path, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", err
 	}
-	if path := filepath.Join(root, slug); free(path) {
-		return path
+	// Resolve the parent too: on macOS /var and /private/var name the same
+	// directory. Missing (including locked) registrations still reserve names.
+	canonical := func(path string) string {
+		if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+			path = filepath.Join(parent, filepath.Base(path))
+		}
+		return filepath.Clean(path)
 	}
-	for i := 2; i < 100; i++ {
-		if path := filepath.Join(root, fmt.Sprintf("%s-%d", slug, i)); free(path) {
-			return path
+	registered := map[string]bool{}
+	for _, field := range strings.Split(out, "\x00") {
+		if path, ok := strings.CutPrefix(field, "worktree "); ok {
+			registered[canonical(path)] = true
 		}
 	}
-	return filepath.Join(root, slug+"-"+core.NewID()[:4])
+	for i := 1; ; i++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		name := slug
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d", slug, i)
+		}
+		path := filepath.Join(repo.WorktreeRoot, name)
+		_, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			if !registered[canonical(path)] {
+				return path, nil
+			}
+		} else if err != nil {
+			return "", err
+		}
+	}
 }
 
 func uniqueTmux(ctx context.Context, want string) string {

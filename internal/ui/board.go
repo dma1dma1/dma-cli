@@ -289,6 +289,9 @@ func (m Model) branchOrPR(s *core.Session) string {
 		}
 		return "worktree + dependencies"
 	}
+	if s.StartFailure != nil {
+		return "start failed — c retry · x dismiss"
+	}
 	if !s.HasPR() {
 		// Sessions start with no branch at all; the agent names one when it has
 		// something to commit.

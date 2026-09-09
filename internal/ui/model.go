@@ -255,7 +255,7 @@ func (m Model) persistedSessions() []*core.Session {
 func (m Model) establishedSessions() []*core.Session {
 	out := make([]*core.Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		if !s.Starting && !s.Pruning {
+		if !s.Starting && s.StartFailure == nil && !s.Pruning {
 			out = append(out, s)
 		}
 	}
@@ -815,7 +815,7 @@ func (m *Model) startDiffRefresh(clear bool) tea.Cmd {
 		return nil
 	}
 	s := m.selected()
-	if s == nil || s.Starting {
+	if s == nil || s.Starting || s.StartFailure != nil {
 		return nil
 	}
 	// A context change invalidates every render and path. A live refresh only
@@ -1324,10 +1324,14 @@ func (m Model) handleAdoptedSessions(msg adoptedSessionsMsg) (tea.Model, tea.Cmd
 	configChanged := false
 	var added []*core.Session
 	for _, s := range msg.sessions {
-		if core.FindByID(m.sessions, s.ID) != nil {
-			continue
+		if existing := core.FindByID(m.sessions, s.ID); existing != nil {
+			if existing.Starting || existing.StartFailure == nil || s.StartFailure != nil || s.WorktreePath == "" {
+				continue
+			}
+			*existing = *s
+		} else {
+			m.sessions = append(m.sessions, s)
 		}
-		m.sessions = append(m.sessions, s)
 		added = append(added, s)
 		if s.Group != "" && m.cfg.AddProject(s.Group, s.RepoID) {
 			configChanged = true
@@ -1385,14 +1389,19 @@ func (m Model) handleCreateProgress(msg createProgressMsg) (tea.Model, tea.Cmd) 
 
 func (m Model) handleCreated(msg createdMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		// A failed Create owns no durable session. Remove only its pending card;
-		// other starts may be running concurrently and must stay put.
-		for i, s := range m.sessions {
+		// Keep the request and error on a durable card until retry or dismissal.
+		for _, s := range m.sessions {
 			if s.ID == msg.id && s.Starting {
-				m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
+				s.Starting = false
+				if s.StartFailure == nil {
+					s.StartFailure = &core.StartFailure{Title: s.Title}
+				}
+				s.StartFailure.Error = msg.err.Error()
+				s.Lifecycle, s.AgentState = core.LifecycleIdle, core.AgentIdle
 				break
 			}
 		}
+		m.save()
 		m.rebuild()
 		return m, errStatus(msg.err)
 	}

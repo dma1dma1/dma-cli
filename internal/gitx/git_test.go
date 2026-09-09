@@ -518,3 +518,10 @@ func TestInferBranchFindsPushedDetachedHead(t *testing.T) {
 		t.Errorf("ambiguous detached HEAD InferBranch = %q, want empty", got)
 	}
 }
+
+func TestGitErrorPreservesDiagnosticAfterProgress(t *testing.T) {
+	err := &Error{Args: []string{"worktree", "add"}, Stderr: "Preparing worktree (detached HEAD abc)\nfatal: missing but locked worktree\n"}
+	if !strings.Contains(err.Error(), "fatal: missing but locked worktree") {
+		t.Fatal(err.Error())
+	}
+}
