@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -125,6 +126,7 @@ func TestCompletedStartReplacesItsPendingCard(t *testing.T) {
 	pending := sess("pending", "", core.LifecycleActive, core.AgentWorking, "r")
 	pending.Starting = true
 	pending.Title = "summarized while cloning"
+	pending.StartFailure = &core.StartFailure{Prompt: "original prompt", Error: "previous attempt failed"}
 	m := testModel(nil, pending)
 
 	real := sess("generated-by-ops", "", core.LifecycleActive, core.AgentWorking, "r")
@@ -142,7 +144,7 @@ func TestCompletedStartReplacesItsPendingCard(t *testing.T) {
 		t.Fatalf("completion left %d cards, want one replacement", len(got.sessions))
 	}
 	ready := got.sessions[0]
-	if ready.Starting || ready.ID != pending.ID {
+	if ready.Starting || ready.StartFailure != nil || ready.ID != pending.ID {
 		t.Errorf("completed card = %#v", ready)
 	}
 	if ready.Title != "summarized while cloning" {
@@ -153,7 +155,8 @@ func TestCompletedStartReplacesItsPendingCard(t *testing.T) {
 	}
 }
 
-func TestFailedStartRemovesOnlyItsPendingCard(t *testing.T) {
+func TestFailedStartKeepsItsPendingCard(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
 	existing := liveSess("existing")
 	pending := sess("pending", "", core.LifecycleActive, core.AgentWorking, "r")
 	pending.Starting = true
@@ -165,11 +168,11 @@ func TestFailedStartRemovesOnlyItsPendingCard(t *testing.T) {
 	next, cmd := m.handleCreated(createdMsg{id: pending.ID, err: errors.New("clone failed")})
 	got := next.(Model)
 
-	if ids := idsOf(got.sessions); len(ids) != 2 || ids[0] != existing.ID || ids[1] != otherPending.ID {
-		t.Fatalf("sessions after failure = %v, want existing and the other pending start", ids)
+	if ids := idsOf(got.sessions); len(ids) != 3 || ids[0] != existing.ID || ids[1] != pending.ID || ids[2] != otherPending.ID {
+		t.Fatalf("sessions after failure = %v, want all three cards", ids)
 	}
-	if got.selectedID != existing.ID {
-		t.Errorf("selection = %q, want surviving session", got.selectedID)
+	if got.selectedID != pending.ID {
+		t.Errorf("selection = %q, want failed session", got.selectedID)
 	}
 	if cmd == nil {
 		t.Fatal("failed start did not report an error")
@@ -325,5 +328,99 @@ func TestCreateProgressUpdatesPendingCardAndRearms(t *testing.T) {
 	interactive, _ := got.Update(tea.KeyPressMsg{Code: '?'})
 	if interactive.(Model).mode != modeHelp {
 		t.Error("startup progress blocked normal UI updates")
+	}
+}
+
+func TestFailedStartSurvivesReloadAndRetriesOriginalRequest(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	req := ops.CreateRequest{Title: "original title", InitialPrompt: "https://slack.example/task\nfull instructions",
+		RepoID: "missing-repo", Group: "original project", Profile: "original agent", BaseBranch: "release",
+		InitialImages: []ops.ImageAttachment{{PNG: []byte("original image")}}}
+	// An unknown repo fails before any external resources are touched.
+	msg := createCmd(oneRepoCfg(), "failed", req)().(createdMsg)
+	if msg.err == nil {
+		t.Fatal("expected start failure")
+	}
+	loaded, err := core.LoadSessions()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("failure not saved: %v %v", loaded, err)
+	}
+	info, err := os.Stat(core.StatePath())
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("saved prompt/images are not private: %v %v", info, err)
+	}
+	failed := loaded[0]
+	if failed.StartFailure == nil || failed.StartFailure.Prompt != req.InitialPrompt || failed.StartFailure.Error != msg.err.Error() {
+		t.Fatalf("lost request or error: %#v", failed.StartFailure)
+	}
+	m := testModel(oneRepoCfg(), failed)
+	m.input.SetValue("another task being composed")
+	if len(m.establishedSessions()) != 0 || restartable(failed) {
+		t.Fatal("failed start treated as a running or restartable terminal")
+	}
+	if view := m.render(); !strings.Contains(view, "Start failed") || !strings.Contains(view, "missing-repo") {
+		t.Fatalf("failure not visible: %s", view)
+	}
+	failed.StartFailure.Error = strings.Repeat("checkout progress\n", 80) + "fatal: reserved worktree"
+	scrolled, _ := m.keyBoard("pgdown")
+	m = scrolled.(Model)
+	if m.previewScroll == 0 {
+		t.Fatal("long failure cannot be scrolled")
+	}
+	m.scrollFailedStart(1000)
+	if view := m.render(); !strings.Contains(view, "fatal: reserved worktree") {
+		t.Fatalf("diagnostic hidden: %s", view)
+	}
+	next, retry := m.keyBoard("c")
+	m = next.(Model)
+	if !m.sessions[0].Starting || m.input.Value() != "another task being composed" {
+		t.Fatal("retry lost card or changed composer")
+	}
+	msg = retry().(createdMsg)
+	if msg.err == nil {
+		t.Fatal("retry used current repo instead of original repo")
+	}
+	loaded, err = core.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded[0]
+	if got.StartFailure.Title != req.Title || got.StartFailure.Prompt != req.InitialPrompt ||
+		string(got.StartFailure.Images[0]) != "original image" || got.Group != req.Group ||
+		got.AgentProfile != req.Profile || got.BaseBranch != req.BaseBranch {
+		t.Fatalf("retry changed request: %#v", got)
+	}
+	next, _ = m.handleCreated(msg)
+	m = next.(Model)
+	next, _ = m.keyBoard("x")
+	if len(next.(Model).sessions) != 0 {
+		t.Fatal("dismiss left failed card")
+	}
+	loaded, err = core.LoadSessions()
+	if err != nil || len(loaded) != 0 {
+		t.Fatalf("dismiss not persisted: %v %v", loaded, err)
+	}
+}
+
+func TestSuccessfulRetryReplacesFailedCardOnAnotherBoard(t *testing.T) {
+	t.Setenv("DMA_HOME", t.TempDir())
+	failed := startingSession("retry", ops.CreateRequest{Title: "task", InitialPrompt: "full task"})
+	failed.Starting = false
+	failed.StartFailure.Error = "create worktree failed"
+	m := testModel(nil, failed)
+	ready := liveSess("retry")
+	ready.WorktreePath = "/worktrees/ready"
+	if err := core.UpsertSessions([]*core.Session{ready}); err != nil {
+		t.Fatal(err)
+	}
+	m.save() // the other board still holds the failed version
+	loaded, err := core.LoadSessions()
+	if err != nil || len(loaded) != 1 || loaded[0].StartFailure != nil {
+		t.Fatalf("stale failure replaced success: %v %v", loaded, err)
+	}
+	next, _ := m.handleAdoptedSessions(adoptExternalCmd(m.sessions)().(adoptedSessionsMsg))
+	m = next.(Model)
+	if len(m.sessions) != 1 || m.sessions[0].StartFailure != nil || m.sessions[0].WorktreePath != ready.WorktreePath {
+		t.Fatal("other board did not adopt successful retry")
 	}
 }

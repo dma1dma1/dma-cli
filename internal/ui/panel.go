@@ -313,6 +313,9 @@ func (m Model) panelTitle() (string, string) {
 		}
 		return s.Title, "preparing worktree and dependencies"
 	}
+	if s.StartFailure != nil {
+		return s.Title, "start failed — c retry · x dismiss · pgup/pgdn scroll"
+	}
 	sub := s.TmuxSession
 	if !s.TmuxAlive {
 		sub += " (not running)"
@@ -379,6 +382,13 @@ func (m Model) previewBody(rows, width int) []string {
 		}
 		return centered(rows, width, st.Faint.Render(text))
 	}
+	if s.StartFailure != nil {
+		lines := m.failedStartLines(width)
+		offset := clamp(m.previewScroll, 0, max(len(lines)-rows, 0))
+		out := make([]string, rows)
+		copy(out, lines[offset:])
+		return strings.Split(zone.Mark(zonePreview, strings.Join(out, "\n")), "\n")
+	}
 	if strings.TrimSpace(m.preview) == "" {
 		hint := "waiting for output…"
 		if !s.TmuxAlive {
@@ -398,6 +408,20 @@ func (m Model) previewBody(rows, width int) []string {
 		out = append(out, "")
 	}
 	return out
+}
+
+func (m Model) failedStartLines(width int) []string {
+	failure := m.selected().StartFailure
+	text := "Start failed\n\n" + failure.Error + "\n\nTask:\n" + failure.Prompt
+	if len(failure.Images) > 0 {
+		text += fmt.Sprintf("\n\n%d image(s) saved for retry", len(failure.Images))
+	}
+	return strings.Split(lipgloss.NewStyle().Width(width).Render(text), "\n")
+}
+
+func (m *Model) scrollFailedStart(delta int) {
+	width, rows := m.previewDims()
+	m.previewScroll = clamp(m.previewScroll+delta, 0, max(len(m.failedStartLines(width))-rows, 0))
 }
 
 // previewLines returns exactly the terminal rows currently visible inside the

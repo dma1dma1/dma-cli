@@ -85,6 +85,9 @@ func (m Model) hints() []hint {
 		}
 	}
 
+	if s := m.selected(); s != nil && !s.Starting && s.StartFailure != nil {
+		return []hint{{"hjkl", "move"}, {"c", "retry task"}, {"x", "dismiss failure"}, {"pgup/pgdn", "scroll"}, {"i", "new task"}, {"q", "quit"}}
+	}
 	h := []hint{
 		{"hjkl", "move"},
 		{"i", "new task"},

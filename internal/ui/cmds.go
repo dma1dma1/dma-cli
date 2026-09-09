@@ -276,7 +276,9 @@ func probeTickCmd() tea.Cmd {
 func resizeSessionsCmd(sessions []*core.Session, cols, rows int) tea.Cmd {
 	names := make([]string, 0, len(sessions))
 	for _, s := range sessions {
-		names = append(names, s.TmuxSession)
+		if !s.Starting && s.StartFailure == nil {
+			names = append(names, s.TmuxSession)
+		}
 	}
 	if len(names) == 0 {
 		return nil
@@ -659,7 +661,8 @@ func adoptExternalCmd(known []*core.Session) tea.Cmd {
 		}
 		var fresh []*core.Session
 		for _, s := range stored {
-			if _, ok := byID[s.ID]; !ok {
+			old, ok := byID[s.ID]
+			if !ok || (old.StartFailure != nil && s.StartFailure == nil && s.WorktreePath != "") {
 				fresh = append(fresh, s)
 			}
 		}
@@ -748,7 +751,15 @@ func createCmd(cfg *core.Config, id string, req ops.CreateRequest) tea.Cmd {
 				ch <- createEvent{progress: p}
 			}
 			res, err := ops.Create(ctx, cfg, req)
-			if err == nil {
+			if err != nil {
+				failed := startingSession(id, req)
+				failed.Starting = false
+				failed.StartFailure.Error = err.Error()
+				failed.Lifecycle, failed.AgentState = core.LifecycleIdle, core.AgentIdle
+				if saveErr := core.UpsertSessions([]*core.Session{failed}); saveErr != nil {
+					err = fmt.Errorf("%w (save failed start: %v)", err, saveErr)
+				}
+			} else {
 				if persistErr := persistCreateResult(id, res); persistErr != nil {
 					if res == nil {
 						err = persistErr

@@ -190,6 +190,22 @@ func (m *Model) onFocusChange() tea.Cmd {
 // --- board focus ---
 
 func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
+	if s := m.selected(); s != nil && !s.Starting && s.StartFailure != nil {
+		switch key {
+		case "c", "x":
+			return m.sessionAction(key)
+		case "pgdown", "pgup":
+			_, rows := m.previewDims()
+			if key == "pgup" {
+				rows = -rows
+			}
+			m.scrollFailedStart(rows)
+			return m, nil
+		}
+		if !startingKeyAllowed(key) {
+			return m, errStatus(fmt.Errorf("start failed — press c to retry, x to dismiss"))
+		}
+	}
 	// Navigation and board-wide controls remain available while a selected card
 	// is preparing. Session actions do not: there is no worktree, terminal, diff,
 	// or PR for them to operate on yet.
@@ -395,7 +411,7 @@ func (m Model) stoppedSessions() []*core.Session {
 // the check and the start, so the answer has to come from the operation rather
 // than from a look beforehand.
 func restartable(s *core.Session) bool {
-	return !s.Starting && !s.TmuxAlive && s.Lifecycle != core.LifecycleMerged
+	return !s.Starting && s.StartFailure == nil && !s.TmuxAlive && s.Lifecycle != core.LifecycleMerged
 }
 
 // restartSelected rebuilds one session's terminal and puts its agent back in it.
@@ -420,6 +436,19 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 	s := m.selected()
 	if s == nil {
 		return m, nil
+	}
+	if s.StartFailure != nil {
+		if s.Starting {
+			return m, errStatus(fmt.Errorf("session is still preparing"))
+		}
+		switch key {
+		case "c":
+			return m.retryStart(s)
+		case "x":
+			return m.handleTeardown(teardownMsg{id: s.ID})
+		default:
+			return m, nil
+		}
 	}
 	switch key {
 	case "s", "S":
@@ -626,24 +655,7 @@ func (m Model) startTask() (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m, errStatus(err)
 	}
-	startedAt := now()
-	pending := &core.Session{
-		ID:              core.NewID(),
-		Title:           req.Title,
-		RepoID:          req.RepoID,
-		Group:           req.Group,
-		BaseBranch:      req.BaseBranch,
-		AgentProfile:    req.Profile,
-		CreatedAt:       startedAt,
-		Lifecycle:       core.LifecycleActive,
-		AgentState:      core.AgentWorking,
-		AgentStateSince: startedAt,
-		PRState:         core.PRNone,
-		PRCI:            core.CINone,
-		PRReview:        core.ReviewNone,
-		PRMergeable:     core.MergeUnknown,
-		Starting:        true,
-	}
+	pending := startingSession(core.NewID(), req)
 	m.sessions = append(m.sessions, pending)
 	m.rebuild()
 	m.input.SetValue("")
@@ -658,6 +670,48 @@ func (m Model) startTask() (tea.Model, tea.Cmd) {
 		// line that says little about the task.
 		titleCmd(pending, summaryInput(task, pending)),
 	)
+}
+
+func startingSession(id string, req ops.CreateRequest) *core.Session {
+	startedAt := now()
+	pending := &core.Session{
+		ID:              id,
+		Title:           req.Title,
+		RepoID:          req.RepoID,
+		Group:           req.Group,
+		BaseBranch:      req.BaseBranch,
+		AgentProfile:    req.Profile,
+		CreatedAt:       startedAt,
+		Lifecycle:       core.LifecycleActive,
+		AgentState:      core.AgentWorking,
+		AgentStateSince: startedAt,
+		PRState:         core.PRNone,
+		PRCI:            core.CINone,
+		PRReview:        core.ReviewNone,
+		PRMergeable:     core.MergeUnknown,
+		Starting:        true,
+		StartFailure:    &core.StartFailure{Title: req.Title, Prompt: req.InitialPrompt},
+	}
+	for _, image := range req.InitialImages {
+		pending.StartFailure.Images = append(pending.StartFailure.Images, append([]byte(nil), image.PNG...))
+	}
+	return pending
+}
+
+// retryStart uses the saved request, regardless of the current composer chips.
+func (m Model) retryStart(s *core.Session) (tea.Model, tea.Cmd) {
+	failure := s.StartFailure
+	cols, rows := m.previewDims()
+	req := ops.CreateRequest{Title: failure.Title, InitialPrompt: failure.Prompt,
+		RepoID: s.RepoID, Group: s.Group, Profile: s.AgentProfile, BaseBranch: s.BaseBranch,
+		HookURL: m.hookURL, Cols: cols, Rows: rows}
+	for _, png := range failure.Images {
+		req.InitialImages = append(req.InitialImages, ops.ImageAttachment{PNG: append([]byte(nil), png...)})
+	}
+	s.Starting, s.StartingDetail = true, ""
+	s.Lifecycle, s.AgentState = core.LifecycleActive, core.AgentWorking
+	m.rebuild()
+	return m, createCmd(m.cfg, s.ID, req)
 }
 
 // newSessionRequest describes the session the chips currently add up to.
@@ -1149,6 +1203,10 @@ func (m Model) previewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
+	if s := m.selected(); s != nil && !s.Starting && s.StartFailure != nil {
+		m.scrollFailedStart(-delta)
+		return m, nil
+	}
 	// Either way this is a gesture at a session, so the prober is told before the
 	// branch: whether the wheel ends up reaching the application is a detail of
 	// how the agent draws, and an agent that scrolls its own viewport repaints the
@@ -1331,8 +1389,8 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// because misclicks on a dense board are frequent.
 		if m.selectedID == s.ID && m.lastClickID == s.ID &&
 			timeSince(m.lastClickAt) < doubleClickWindow {
-			if s.Starting {
-				return m, errStatus(fmt.Errorf("%s is still preparing its worktree and dependencies", s.Title))
+			if s.Starting || s.StartFailure != nil {
+				return m, nil
 			}
 			cmd := m.openDiff()
 			return m, cmd

@@ -130,7 +130,10 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 		title = req.Profile + " session " + shortID(conversation.ID)
 	}
 
-	worktree := uniqueWorktreeDir(repo.WorktreeRoot, core.Slug(summarize.Shorten(title)))
+	worktree, err := uniqueWorktreeDir(ctx, repo, core.Slug(summarize.Shorten(title)))
+	if err != nil {
+		return nil, fmt.Errorf("choose worktree: %w", err)
+	}
 	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
