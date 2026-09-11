@@ -747,8 +747,15 @@ func createCmd(cfg *core.Config, id string, req ops.CreateRequest) tea.Cmd {
 			defer close(ch)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
+			// Non-blocking: the board stops draining this channel while the
+			// terminal is handed to tmux (tea.ExecProcess blocks the event loop),
+			// and a blocking send here would freeze the bootstrap goroutine
+			// mid-clone until detach. Progress is cosmetic; drop it when full.
 			req.Progress = func(p ops.CreateProgress) {
-				ch <- createEvent{progress: p}
+				select {
+				case ch <- createEvent{progress: p}:
+				default:
+				}
 			}
 			res, err := ops.Create(ctx, cfg, req)
 			if err != nil {
