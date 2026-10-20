@@ -205,12 +205,13 @@ func ListSessions(ctx context.Context) (map[string]bool, error) {
 // that first prompt, which is the whole point of authorizeMatchingDirenv.
 var direnvState = []string{"DIRENV_DIFF", "DIRENV_DIR", "DIRENV_FILE", "DIRENV_WATCHES"}
 
-// NewSession starts a detached session rooted at dir, sized to cols x rows.
+// NewSession starts a detached session rooted at dir, sized to cols x rows, with
+// env ("KEY=value") set for everything started in it.
 //
 // The size matters: a detached tmux session defaults to 80x24 regardless of the
 // terminal, so an agent launched without one renders its whole UI into 80
 // columns and the preview shows a narrow strip inside a wide panel.
-func NewSession(ctx context.Context, name, dir string, cols, rows int) error {
+func NewSession(ctx context.Context, name, dir string, cols, rows int, env ...string) error {
 	base := []string{"new-session", "-d", "-s", name, "-c", dir}
 	if cols > 0 && rows > 0 {
 		base = append(base, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
@@ -219,6 +220,9 @@ func NewSession(ctx context.Context, name, dir string, cols, rows int) error {
 	args := base
 	for _, key := range direnvState {
 		args = append(args, "-e", key+"=")
+	}
+	for _, kv := range env {
+		args = append(args, "-e", kv)
 	}
 	if _, err := run(ctx, args...); err != nil {
 		// -e is not in every tmux dma might be run against, and a session that

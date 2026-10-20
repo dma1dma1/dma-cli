@@ -741,6 +741,8 @@ func prDetailCmd(remote, sessionID string, number int) tea.Cmd {
 // monorepo, and every start in that repo then failed reporting tmux -- the step
 // after the one that actually ran out of time.
 func createCmd(cfg *core.Config, id string, req ops.CreateRequest) tea.Cmd {
+	// The agent is told its card's id at launch, for the hooks to report under.
+	req.ID = id
 	ch := make(chan createEvent, 16)
 	return func() tea.Msg {
 		go func() {

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
@@ -290,6 +291,13 @@ func (m Model) newSessionTarget() string {
 	if repo == "" {
 		return "no repo — press r to add one"
 	}
+	if join := core.FindByID(m.sessions, m.joinID); join != nil {
+		where := join.Branch
+		if where == "" {
+			where = filepath.Base(join.WorktreePath)
+		}
+		return m.agentChoice + " in " + where + " ⧉ shared with " + join.Title
+	}
 	target := m.agentChoice + " in " + repo
 	if m.projectFilter != "" {
 		target += " ◆ " + m.projectFilter
@@ -319,6 +327,13 @@ func (m Model) panelTitle() (string, string) {
 	sub := s.TmuxSession
 	if !s.TmuxAlive {
 		sub += " (not running)"
+	}
+	if others := core.SharedWith(m.sessions, s); len(others) > 0 {
+		titles := make([]string, len(others))
+		for i, o := range others {
+			titles[i] = o.Title
+		}
+		sub += " · ⧉ also here: " + strings.Join(titles, ", ")
 	}
 	// While the agent has the keyboard the way out is the one thing the frame must
 	// say: every other key is going to the agent, so a user who wants the board

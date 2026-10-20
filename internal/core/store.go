@@ -258,6 +258,25 @@ func FindByKey(sessions []*Session, k Key) *Session {
 	return nil
 }
 
+// SharedWith returns the other sessions whose agents run in s's worktree. A
+// session being pruned is already on its way out and does not count, so the
+// last of a group pruned together still takes the worktree with it.
+func SharedWith(sessions []*Session, s *Session) []*Session {
+	if s.WorktreePath == "" {
+		return nil
+	}
+	wt := filepath.Clean(s.WorktreePath)
+	var out []*Session
+	for _, o := range sessions {
+		// A start that failed, or is still in flight, has no agent there yet.
+		if o.ID != s.ID && !o.Pruning && o.StartFailure == nil &&
+			o.WorktreePath != "" && filepath.Clean(o.WorktreePath) == wt {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 func FindByID(sessions []*Session, id string) *Session {
 	for _, s := range sessions {
 		if s.ID == id {

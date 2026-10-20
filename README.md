@@ -501,6 +501,7 @@ opening prompt.
 |---|---|
 | `h` `j` `k` `l` | Move between cards and columns; a full column scrolls to keep the cursor in view |
 | `i` or `n` | Start composing a new task |
+| `N` | Start another agent in the selected session's worktree; both cards show `⧉ 2` |
 | `t` | Type into the selected agent from the session panel |
 | `ctrl-v` | Paste an image or text into a task or live agent |
 | `ctrl-u` | Clear the task input while composing |
@@ -511,7 +512,7 @@ opening prompt.
 | `S` | Ship, then shepherd CI and review feedback until the pull request is ready |
 | `o` / `y` | Open or copy the pull-request link |
 | `m` | Merge the pull request, enable auto-merge while CI is pending, or add it to the merge queue |
-| `x` | Prune one session's worktree and branch, closing its pull request if it is still open |
+| `x` | Prune one session's worktree and branch, closing its pull request if it is still open; with another agent in the same worktree, only this agent's terminal is removed |
 | `X` | Prune the merged sessions currently shown |
 | `c` | Restart the selected session's agent where it left off |
 | `C` | Restart every shown session whose terminal is gone |

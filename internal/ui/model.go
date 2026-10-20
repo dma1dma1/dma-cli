@@ -72,6 +72,9 @@ type Model struct {
 	// seeded from the launch directory and the configured default.
 	activeRepo  string
 	agentChoice string
+	// joinID is the session whose worktree the composer's task will start in,
+	// set by N. Empty starts in a worktree of its own.
+	joinID string
 
 	input textarea.Model
 	// pendingImages belong to the new-session composer. Their bytes stay in

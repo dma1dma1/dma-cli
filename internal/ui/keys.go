@@ -90,7 +90,7 @@ func (m Model) hints() []hint {
 	}
 	h := []hint{
 		{"hjkl", "move"},
-		{"i", "new task"},
+		{"i/N", "new task/here"},
 		{"t", "type to agent"},
 		{"a", "attach"},
 		{"d", "diff"},
@@ -117,6 +117,7 @@ var helpText = [][3]string{
 	{"Board", "", ""},
 	{"", "h j k l", "move between cards and columns"},
 	{"", "i / n", "focus the task input at the bottom"},
+	{"", "N", "start another agent in the selected session's worktree"},
 	{"", "t", "type to the selected agent in the panel"},
 	{"", "ctrl-v", "paste to the selected live agent without attaching"},
 	{"", "tab", "cycle board → agent panel → input → agent → repo → project"},
@@ -130,6 +131,7 @@ var helpText = [][3]string{
 	{"", "y", "copy the PR link to the clipboard"},
 	{"", "m", "merge the PR; with pending CI, enable auto-merge; queue it where the base branch requires a merge queue"},
 	{"", "x", "prune the worktree and branch, closing the PR if it is open"},
+	{"", "", "with another agent in the same worktree, only this agent's terminal goes"},
 	{"", "X", "prune every merged session on the board"},
 	{"", "c", "restart the agent where it left off, in the worktree it already has"},
 	{"", "", "a session attached from a shell resumes by conversation id, not by directory"},

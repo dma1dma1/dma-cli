@@ -83,11 +83,16 @@ func Interpret(ev Event) Outcome {
 
 // Correlate finds the session a hook payload belongs to.
 //
-// The working directory is the primary key: each session owns a distinct
-// worktree, and the agent runs with that worktree as its cwd. The Claude
-// session id is used as a fallback for events whose cwd has drifted (the agent
-// may cd during a run).
+// The board session id the agent was started with is exact, and comes first.
+// Agents started before it existed fall back to the Claude session id, and then
+// to the working directory: the agent runs with its worktree as its cwd, though
+// it may cd during a run.
 func Correlate(sessions []*core.Session, ev Event) *core.Session {
+	if ev.SessionID != "" {
+		if s := core.FindByID(sessions, ev.SessionID); s != nil {
+			return s
+		}
+	}
 	if ev.ClaudeSessionID != "" {
 		for _, s := range sessions {
 			if s.ClaudeSessionID != "" && s.ClaudeSessionID == ev.ClaudeSessionID {
@@ -100,12 +105,18 @@ func Correlate(sessions []*core.Session, ev Event) *core.Session {
 	}
 	cwd := filepath.Clean(ev.Cwd)
 	// Prefer the longest matching worktree prefix, so nested worktree roots
-	// cannot steal each other's events.
+	// cannot steal each other's events. Between agents sharing one worktree, an
+	// id nobody has claimed yet belongs to one that has not reported yet.
 	var best *core.Session
 	for _, s := range sessions {
 		wt := filepath.Clean(s.WorktreePath)
 		if cwd == wt || strings.HasPrefix(cwd, wt+string(filepath.Separator)) {
-			if best == nil || len(wt) > len(filepath.Clean(best.WorktreePath)) {
+			bestWT := ""
+			if best != nil {
+				bestWT = filepath.Clean(best.WorktreePath)
+			}
+			if best == nil || len(wt) > len(bestWT) ||
+				(wt == bestWT && best.ClaudeSessionID != "" && s.ClaudeSessionID == "") {
 				best = s
 			}
 		}

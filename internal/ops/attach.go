@@ -173,8 +173,9 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 		}
 	}
 
+	id := core.NewID()
 	tmuxName := uniqueTmux(ctx, tmuxx.SafeName(repo.ID+"-"+filepath.Base(worktree)))
-	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows); err != nil {
+	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows, hooks.SessionEnv+"="+id); err != nil {
 		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("start tmux session: %w", err))
 	}
 	// No fallback launch line behind this one, unlike a restart: an attach that
@@ -186,7 +187,7 @@ func Attach(ctx context.Context, cfg *core.Config, req AttachRequest) (*AttachRe
 
 	now := time.Now()
 	s := &core.Session{
-		ID:             core.NewID(),
+		ID:             id,
 		Title:          title,
 		RepoID:         repo.ID,
 		Group:          strings.TrimSpace(req.Group),

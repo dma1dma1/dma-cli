@@ -223,6 +223,18 @@ func (m Model) keyBoard(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "i", "n":
+		m.joinID = ""
+		m.focus = focusInput
+		return m, m.onFocusChange()
+
+	case "N":
+		// A second agent on the same work: same worktree, same branch, its own
+		// card and terminal.
+		s := m.selected()
+		if s == nil {
+			return m, nil
+		}
+		m.joinID = s.ID
 		m.focus = focusInput
 		return m, m.onFocusChange()
 
@@ -501,7 +513,9 @@ func (m Model) sessionAction(key string) (tea.Model, tea.Cmd) {
 		// half of the action reaches other people's review queues -- so the
 		// confirm names the PR rather than letting it go quietly.
 		prompt := fmt.Sprintf("Prune worktree and branch for %q?", s.Title)
-		if s.HasOpenPR() {
+		if others := core.SharedWith(m.sessions, s); len(others) > 0 {
+			prompt = fmt.Sprintf("Remove agent %q? %s is still using this worktree, so only this agent's terminal goes; the worktree, branch and PR stay.", s.Title, others[0].Title)
+		} else if s.HasOpenPR() {
 			prompt = fmt.Sprintf("Close PR #%d and prune worktree and branch for %q?", s.PRNumber, s.Title)
 		}
 		return m.askConfirm(prompt,
@@ -579,6 +593,7 @@ func (m Model) moveCard(right bool) (tea.Model, tea.Cmd) {
 func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc":
+		m.joinID = ""
 		m.focus = focusBoard
 		return m, m.onFocusChange()
 
@@ -648,6 +663,7 @@ func (m Model) keyInput(msg tea.KeyPressMsg, key string) (tea.Model, tea.Cmd) {
 func (m Model) startTask() (tea.Model, tea.Cmd) {
 	task := strings.TrimSpace(m.input.Value())
 	if task == "" {
+		m.joinID = ""
 		m.focus = focusBoard
 		return m, m.onFocusChange()
 	}
@@ -655,6 +671,7 @@ func (m Model) startTask() (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m, errStatus(err)
 	}
+	m.joinID = ""
 	pending := startingSession(core.NewID(), req)
 	m.sessions = append(m.sessions, pending)
 	m.rebuild()
@@ -679,6 +696,7 @@ func startingSession(id string, req ops.CreateRequest) *core.Session {
 		Title:           req.Title,
 		RepoID:          req.RepoID,
 		Group:           req.Group,
+		WorktreePath:    req.Worktree,
 		BaseBranch:      req.BaseBranch,
 		AgentProfile:    req.Profile,
 		CreatedAt:       startedAt,
@@ -704,7 +722,7 @@ func (m Model) retryStart(s *core.Session) (tea.Model, tea.Cmd) {
 	cols, rows := m.previewDims()
 	req := ops.CreateRequest{Title: failure.Title, InitialPrompt: failure.Prompt,
 		RepoID: s.RepoID, Group: s.Group, Profile: s.AgentProfile, BaseBranch: s.BaseBranch,
-		HookURL: m.hookURL, Cols: cols, Rows: rows}
+		Worktree: s.WorktreePath, HookURL: m.hookURL, Cols: cols, Rows: rows}
 	for _, png := range failure.Images {
 		req.InitialImages = append(req.InitialImages, ops.ImageAttachment{PNG: append([]byte(nil), png...)})
 	}
@@ -728,6 +746,20 @@ func (m Model) newSessionRequest(task string) (ops.CreateRequest, error) {
 	images := make([]ops.ImageAttachment, len(m.pendingImages))
 	for i, image := range m.pendingImages {
 		images[i] = ops.ImageAttachment{PNG: append([]byte(nil), image.PNG...)}
+	}
+	if m.joinID != "" {
+		join := core.FindByID(m.sessions, m.joinID)
+		if join == nil || join.WorktreePath == "" {
+			return ops.CreateRequest{}, fmt.Errorf("the session to share a worktree with is gone — press esc and pick another")
+		}
+		// The worktree's repo, base and project, whatever the chips say: the new
+		// agent is joining that work, not starting its own.
+		return ops.CreateRequest{
+			Title: firstLine(task), RepoID: join.RepoID, Cols: cols, Rows: rows,
+			Group: join.Group, Profile: m.agentChoice, BaseBranch: join.BaseBranch,
+			Worktree: join.WorktreePath, InitialPrompt: task, InitialImages: images,
+			HookURL: m.hookURL,
+		}, nil
 	}
 	return ops.CreateRequest{
 		// A task that arrived with line breaks in it still names one session: the

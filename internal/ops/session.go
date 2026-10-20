@@ -27,6 +27,9 @@ type CreateProgress string
 // CreateRequest describes a session to be created. Everything except Title has
 // a sensible inferred default, so the common path stays "type a title, enter".
 type CreateRequest struct {
+	// ID is the session's id, for a caller that already shows a card under one.
+	// Empty mints a fresh id.
+	ID            string
 	Title         string
 	RepoID        string
 	Group         string
@@ -34,6 +37,10 @@ type CreateRequest struct {
 	BaseBranch    string
 	InitialPrompt string
 	InitialImages []ImageAttachment
+	// Worktree starts the agent in an existing session's worktree instead of
+	// cutting a new one. Nothing is fetched or bootstrapped, and a failed start
+	// leaves the worktree alone: it holds the other session's work.
+	Worktree string
 	// HookURL points at the running board's hook listener. Empty disables hook
 	// installation, leaving the session on liveness-only state reporting.
 	HookURL string
@@ -143,64 +150,37 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 		}
 	}
 
-	// Every session starts from the remote tip. Fetching is what makes that
-	// true; without it the start point is a local ref nobody has updated since
-	// the last time someone worked in the repo directly.
-	report(CreateProgress("fetching " + base))
+	id := req.ID
+	if id == "" {
+		id = core.NewID()
+	}
+	worktree := req.Worktree
+	// fail undoes a half-made start. A shared worktree is not this start's to
+	// remove, so only the terminal goes.
+	fail := func(tmuxName string, cause error) error {
+		if req.Worktree == "" {
+			return abort(ctx, repo, worktree, tmuxName, cause)
+		}
+		if tmuxName != "" {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+			_ = tmuxx.KillSession(cleanup, tmuxName)
+			cancel()
+		}
+		return cause
+	}
 	var warnings []string
-	if err := gitx.Fetch(ctx, repo.Path, base); err != nil {
-		warnings = append(warnings, fmt.Sprintf("fetch origin %s: %v — starting from the last fetched tip", base, err))
-	}
-	start := gitx.StartPoint(ctx, repo.Path, base)
-
-	// From here to the end of bootstrap is the filesystem-heavy part of a start:
-	// the checkout writes every tracked file and the clones every dependency
-	// entry. One start at a time; the fetch above stays outside because it is
-	// network-bound and overlapping fetches cost nothing.
-	release, err := acquireSetupGate(ctx, report)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	// The title here is the task as it was typed, which is usually a paragraph
-	// -- its summary does not exist yet and arrives after the session does. So
-	// the directory is named from the opening of that paragraph, cut at a word
-	// rather than wherever forty characters happens to land.
-	report("creating worktree")
-	worktree, err := uniqueWorktreeDir(ctx, repo, core.Slug(summarize.Shorten(title)))
-	if err != nil {
-		return nil, fmt.Errorf("choose worktree: %w", err)
-	}
-	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
-		return nil, fmt.Errorf("create worktree: %w", err)
-	}
-
-	// Bootstrap gets a budget of its own. Materializing a large monorepo's
-	// dependency trees is minutes of work -- a few hundred thousand files
-	// through a deliberately throttled clone -- and sharing one deadline with
-	// the rest of the start meant a slow bootstrap left nothing but an expired
-	// context for the tmux session that follows it. The agent then launched into
-	// a worktree whose dependencies were still arriving, so the wait is spent
-	// here rather than deferred.
-	bootCtx, cancelBoot := context.WithTimeout(ctx, bootstrapTimeout)
-	bootWarnings, err := bootstrapWithProgress(bootCtx, repo, worktree, req.Progress)
-	cancelBoot()
-	warnings = append(warnings, bootWarnings...)
-	if err != nil {
-		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("bootstrap worktree: %w", err))
-	}
-	// Everything after this is light -- direnv, hooks, tmux -- so the next start
-	// can begin its checkout now rather than after the agent launches.
-	release()
-
-	if err := authorizeMatchingDirenv(ctx, repo.Path, worktree); err != nil {
-		warnings = append(warnings, fmt.Sprintf("authorize direnv: %v", err))
+	if worktree == "" {
+		var err error
+		if worktree, warnings, err = newWorktree(ctx, repo, base, title, report); err != nil {
+			return nil, err
+		}
+	} else if info, err := os.Stat(worktree); err != nil || !info.IsDir() {
+		return nil, &WorktreeMissingError{Path: worktree}
 	}
 
 	imagePaths, err := stageImages(ctx, worktree, req.InitialImages)
 	if err != nil {
-		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("stage initial images: %w", err))
+		return nil, fail("", fmt.Errorf("stage initial images: %w", err))
 	}
 
 	// Hooks are installed into the worktree before the agent starts, so the
@@ -217,8 +197,8 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	tmuxName = uniqueTmux(ctx, tmuxName)
 
 	report("starting terminal")
-	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows); err != nil {
-		return nil, abort(ctx, repo, worktree, "", fmt.Errorf("start tmux session: %w", err))
+	if err := tmuxx.NewSession(ctx, tmuxName, worktree, req.Cols, req.Rows, hooks.SessionEnv+"="+id); err != nil {
+		return nil, fail("", fmt.Errorf("start tmux session: %w", err))
 	}
 
 	// The prompt is part of the launch line, so the agent starts already working
@@ -227,12 +207,12 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 	// reading a trailing semicolon as its own command separator.
 	report(CreateProgress("launching " + profile))
 	if err := tmuxx.SendLiteral(ctx, tmuxName, prof.LaunchCommand(req.InitialPrompt, imagePaths...)); err != nil {
-		return nil, abort(ctx, repo, worktree, tmuxName, fmt.Errorf("launch agent: %w", err))
+		return nil, fail(tmuxName, fmt.Errorf("launch agent: %w", err))
 	}
 
 	now := time.Now()
 	s := &core.Session{
-		ID:              core.NewID(),
+		ID:              id,
 		Title:           title,
 		RepoID:          repo.ID,
 		Group:           strings.TrimSpace(req.Group),
@@ -251,6 +231,67 @@ func Create(ctx context.Context, cfg *core.Config, req CreateRequest) (*CreateRe
 		TmuxAlive:       true,
 	}
 	return &CreateResult{Session: s, Warnings: warnings}, nil
+}
+
+// newWorktree cuts and bootstraps a fresh worktree for a session at the
+// fetched tip of base.
+func newWorktree(ctx context.Context, repo core.Repo, base, title string, report func(CreateProgress)) (string, []string, error) {
+	// Every session starts from the remote tip. Fetching is what makes that
+	// true; without it the start point is a local ref nobody has updated since
+	// the last time someone worked in the repo directly.
+	report(CreateProgress("fetching " + base))
+	var warnings []string
+	if err := gitx.Fetch(ctx, repo.Path, base); err != nil {
+		warnings = append(warnings, fmt.Sprintf("fetch origin %s: %v — starting from the last fetched tip", base, err))
+	}
+	start := gitx.StartPoint(ctx, repo.Path, base)
+
+	// From here to the end of bootstrap is the filesystem-heavy part of a start:
+	// the checkout writes every tracked file and the clones every dependency
+	// entry. One start at a time; the fetch above stays outside because it is
+	// network-bound and overlapping fetches cost nothing.
+	release, err := acquireSetupGate(ctx, report)
+	if err != nil {
+		return "", nil, err
+	}
+	defer release()
+
+	// The title here is the task as it was typed, which is usually a paragraph
+	// -- its summary does not exist yet and arrives after the session does. So
+	// the directory is named from the opening of that paragraph, cut at a word
+	// rather than wherever forty characters happens to land.
+	report("creating worktree")
+	worktree, err := uniqueWorktreeDir(ctx, repo, core.Slug(summarize.Shorten(title)))
+	if err != nil {
+		return "", nil, fmt.Errorf("choose worktree: %w", err)
+	}
+	if err := gitx.AddDetachedWorktree(ctx, repo.Path, worktree, start); err != nil {
+		return "", nil, fmt.Errorf("create worktree: %w", err)
+	}
+
+	// Bootstrap gets a budget of its own. Materializing a large monorepo's
+	// dependency trees is minutes of work -- a few hundred thousand files
+	// through a deliberately throttled clone -- and sharing one deadline with
+	// the rest of the start meant a slow bootstrap left nothing but an expired
+	// context for the tmux session that follows it. The agent then launched into
+	// a worktree whose dependencies were still arriving, so the wait is spent
+	// here rather than deferred.
+	bootCtx, cancelBoot := context.WithTimeout(ctx, bootstrapTimeout)
+	bootWarnings, err := bootstrapWithProgress(bootCtx, repo, worktree, report)
+	cancelBoot()
+	warnings = append(warnings, bootWarnings...)
+	if err != nil {
+		return "", nil, abort(ctx, repo, worktree, "", fmt.Errorf("bootstrap worktree: %w", err))
+	}
+	// Everything after this is light -- direnv, hooks, tmux -- so the next start
+	// can begin its checkout now rather than after the agent launches.
+	release()
+
+	if err := authorizeMatchingDirenv(ctx, repo.Path, worktree); err != nil {
+		warnings = append(warnings, fmt.Sprintf("authorize direnv: %v", err))
+	}
+
+	return worktree, warnings, nil
 }
 
 const attachmentExclude = ".dma/attachments-*/"
@@ -375,6 +416,20 @@ func Teardown(ctx context.Context, cfg *core.Config, s *core.Session, opt Teardo
 	repo, ok := cfg.Repo(s.RepoID)
 	if !ok {
 		return fmt.Errorf("session references unknown repo %q", s.RepoID)
+	}
+
+	// Another agent still working in this worktree owns everything but this
+	// session's terminal: the files, the branch and the PR are its work too.
+	// The record on disk is the authority, so every caller gets the same answer.
+	// ponytail: a sibling still starting is not on disk yet, so pruning its
+	// source mid-start takes the worktree; pass the board's list if that bites.
+	if all, err := core.LoadSessions(); err == nil && len(core.SharedWith(all, s)) > 0 {
+		if tmuxx.HasSession(ctx, s.TmuxSession) {
+			if err := tmuxx.KillSession(ctx, s.TmuxSession); err != nil {
+				return fmt.Errorf("kill tmux session: %w", err)
+			}
+		}
+		return nil
 	}
 
 	if !opt.Force {
@@ -558,6 +613,15 @@ func Restart(ctx context.Context, cfg *core.Config, s *core.Session, req Restart
 	// tearing down, or one this board does not own.
 	name := uniqueTmux(ctx, s.TmuxSession)
 
+	// Resume by id whenever one is known. "The most recent conversation in this
+	// directory" stops naming one session once a worktree holds two agents, and a
+	// Claude agent's hooks have told us its id even when dma did not start it
+	// from one.
+	conversation := s.AgentSessionID
+	if conversation == "" {
+		conversation = s.ClaudeSessionID
+	}
+
 	var warnings []string
 	if req.HookURL != "" {
 		if err := hooks.InstallInWorktree(ctx, s.WorktreePath, req.HookURL); err != nil {
@@ -565,13 +629,13 @@ func Restart(ctx context.Context, cfg *core.Config, s *core.Session, req Restart
 		}
 	}
 
-	if err := tmuxx.NewSession(ctx, name, s.WorktreePath, req.Cols, req.Rows); err != nil {
+	if err := tmuxx.NewSession(ctx, name, s.WorktreePath, req.Cols, req.Rows, hooks.SessionEnv+"="+s.ID); err != nil {
 		return nil, fmt.Errorf("start tmux session: %w", err)
 	}
 	// SendLiteral for the same reason Create uses it: the line carries whatever the
 	// profile's command is, and only the literal path keeps tmux from reading part
 	// of it as a command of its own.
-	if err := tmuxx.SendLiteral(ctx, name, prof.RestartCommandFor(s.AgentSessionID)); err != nil {
+	if err := tmuxx.SendLiteral(ctx, name, prof.RestartCommandFor(conversation)); err != nil {
 		// The terminal is ours and was made a moment ago, so taking it back leaves
 		// the session exactly as it was found -- not running, and restartable again.
 		// The worktree is never touched here: unlike a failed create, there is
@@ -590,7 +654,7 @@ func Restart(ctx context.Context, cfg *core.Config, s *core.Session, req Restart
 		TmuxSession: name,
 		// An attached session resumes by id, which is a form of resume the
 		// profile can have without having the by-directory one.
-		Resumed:  prof.ResumeIDLine(s.AgentSessionID) != "" || strings.TrimSpace(prof.ResumeCommand) != "",
+		Resumed:  prof.ResumeIDLine(conversation) != "" || strings.TrimSpace(prof.ResumeCommand) != "",
 		Warnings: warnings,
 	}, nil
 }

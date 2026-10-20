@@ -258,7 +258,11 @@ func (m Model) cardLines(s *core.Session, selected bool, width int) []string {
 		push(fill(st.ProjectTag).Render(truncate("◆ "+s.Group, textW)))
 	}
 
-	push(fill(meta).Render(truncate(m.branchOrPR(s), textW)))
+	label := m.branchOrPR(s)
+	if n := len(core.SharedWith(m.sessions, s)); n > 0 {
+		label += fmt.Sprintf("  ⧉ %d", n+1)
+	}
+	push(fill(meta).Render(truncate(label, textW)))
 	push(fill(st.badgeStyle(s)).Render(truncate(st.badgeText(s), textW)))
 
 	if s.AgentState == core.AgentNeedsYou && s.AgentStateDetail != "" {
