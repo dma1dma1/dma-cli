@@ -11,11 +11,24 @@ import (
 
 // hookEntry is one HTTP hook target.
 type hookEntry struct {
-	Type          string `json:"type"`
-	URL           string `json:"url"`
-	Timeout       int    `json:"timeout,omitempty"`
-	StatusMessage string `json:"statusMessage,omitempty"`
+	Type           string            `json:"type"`
+	URL            string            `json:"url"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	AllowedEnvVars []string          `json:"allowedEnvVars,omitempty"`
+	Timeout        int               `json:"timeout,omitempty"`
+	StatusMessage  string            `json:"statusMessage,omitempty"`
 }
+
+// SessionEnv names the board session an agent was started for. dma sets it in
+// the agent's tmux session, and the hook sends it back as SessionHeader.
+//
+// The settings file belongs to the worktree, and a worktree can hold several
+// agents, so the file alone cannot say which one is reporting. The environment
+// is per agent.
+const (
+	SessionEnv    = "DMA_SESSION_ID"
+	SessionHeader = "X-Dma-Session"
+)
 
 // matcherGroup binds a matcher to a list of hooks.
 type matcherGroup struct {
@@ -34,7 +47,13 @@ type Settings struct {
 // support matchers, and the kind of notification arrives as notification_type
 // in the payload instead.
 func BuildSettings(url string) Settings {
-	h := []hookEntry{{Type: "http", URL: url, Timeout: 5}}
+	h := []hookEntry{{
+		Type:           "http",
+		URL:            url,
+		Headers:        map[string]string{SessionHeader: "$" + SessionEnv},
+		AllowedEnvVars: []string{SessionEnv},
+		Timeout:        5,
+	}}
 	return Settings{Hooks: map[string][]matcherGroup{
 		"SessionStart": {{Matcher: "startup|resume|clear|compact", Hooks: h}},
 		"Notification": {{Hooks: h}},

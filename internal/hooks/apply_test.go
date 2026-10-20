@@ -136,3 +136,20 @@ func TestBuildSettingsShape(t *testing.T) {
 		t.Errorf("SessionStart matcher = %q", m)
 	}
 }
+
+// Two agents in one worktree share a cwd, so the board session id the agent
+// was started with is what tells them apart.
+func TestCorrelateSharedWorktree(t *testing.T) {
+	a := &core.Session{ID: "a", WorktreePath: "/wt/auth", ClaudeSessionID: "cs-a"}
+	b := &core.Session{ID: "b", WorktreePath: "/wt/auth"}
+	sessions := []*core.Session{a, b}
+
+	if got := Correlate(sessions, Event{Cwd: "/wt/auth", SessionID: "b", ClaudeSessionID: "cs-a"}); got != b {
+		t.Fatalf("header matched %v, want b", got)
+	}
+	// Without the header, an unknown conversation belongs to the agent that has
+	// not reported yet.
+	if got := Correlate(sessions, Event{Cwd: "/wt/auth", ClaudeSessionID: "cs-new"}); got != b {
+		t.Fatalf("unclaimed fallback matched %v, want b", got)
+	}
+}

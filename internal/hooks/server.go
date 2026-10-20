@@ -27,7 +27,10 @@ type Event struct {
 	ToolName         string
 	Cwd              string
 	ClaudeSessionID  string
-	At               time.Time
+	// SessionID is the board session the agent was started for, empty for an
+	// agent launched without SessionEnv.
+	SessionID string
+	At        time.Time
 }
 
 // payload mirrors the subset of the hook input schema this tool reads.
@@ -116,6 +119,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		ToolName:         p.ToolName,
 		Cwd:              p.Cwd,
 		ClaudeSessionID:  p.SessionID,
+		SessionID:        strings.TrimSpace(r.Header.Get(SessionHeader)),
 		At:               time.Now(),
 	}
 

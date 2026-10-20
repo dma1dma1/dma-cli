@@ -448,6 +448,76 @@ func TestCreateAndTeardown(t *testing.T) {
 	}
 }
 
+// A second agent joins an existing worktree rather than cutting one, and
+// pruning either of the two leaves the worktree to the other.
+func TestCreateInSharedWorktree(t *testing.T) {
+	if !tmuxx.Available() {
+		t.Skip("tmux not installed")
+	}
+	repoPath := newTestRepo(t, "shared")
+	cfg := &core.Config{
+		Repos: []core.Repo{{
+			ID: "testrepo", Path: repoPath, BaseBranch: "main",
+			WorktreeRoot: filepath.Join(t.TempDir(), "worktrees"),
+		}},
+		DefaultRepo:    "testrepo",
+		AgentProfiles:  []core.AgentProfile{{Name: "noop", Command: "true"}},
+		DefaultProfile: "noop",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	first, err := Create(ctx, cfg, CreateRequest{Title: "token refresh", Profile: "noop"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a := first.Session
+	second, err := Create(ctx, cfg, CreateRequest{Title: "write tests", Profile: "noop", Worktree: a.WorktreePath})
+	if err != nil {
+		t.Fatalf("Create in shared worktree: %v", err)
+	}
+	b := second.Session
+	t.Cleanup(func() {
+		_ = tmuxx.KillSession(context.Background(), a.TmuxSession)
+		_ = tmuxx.KillSession(context.Background(), b.TmuxSession)
+		_ = core.SaveSessions(nil)
+	})
+	if b.WorktreePath != a.WorktreePath {
+		t.Fatalf("second session in %q, want %q", b.WorktreePath, a.WorktreePath)
+	}
+	if b.TmuxSession == a.TmuxSession || b.ID == a.ID {
+		t.Fatal("second session shares a terminal or id with the first")
+	}
+	if err := core.SaveSessions([]*core.Session{a, b}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dirty, so a real teardown would refuse; a shared one only kills.
+	if err := os.WriteFile(filepath.Join(a.WorktreePath, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Teardown(ctx, cfg, b, TeardownOptions{}); err != nil {
+		t.Fatalf("teardown of shared session: %v", err)
+	}
+	if _, err := os.Stat(a.WorktreePath); err != nil {
+		t.Fatal("pruning one agent removed the worktree the other is using")
+	}
+	if tmuxx.HasSession(ctx, b.TmuxSession) {
+		t.Error("pruned agent's terminal still running")
+	}
+
+	// Once alone, the last agent's teardown is the full one again.
+	if err := core.SaveSessions([]*core.Session{a}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Teardown(ctx, cfg, a, TeardownOptions{Force: true}); err != nil {
+		t.Fatalf("teardown of last session: %v", err)
+	}
+	if _, err := os.Stat(a.WorktreePath); !os.IsNotExist(err) {
+		t.Error("worktree still present after the last agent was pruned")
+	}
+}
+
 // Teardown's dirty check covers uncommitted work. Work the agent committed
 // before naming a branch is just as easy to lose and far less visible: nothing
 // but the worktree's HEAD refers to it.
