@@ -394,9 +394,9 @@ The built-in profiles are:
 [
   {
     "name": "claude",
-    "command": "claude --permission-mode auto",
-    "resume_command": "claude --permission-mode auto --continue",
-    "resume_id_command": "claude --permission-mode auto --resume {session}",
+    "command": "claude --chrome --permission-mode auto",
+    "resume_command": "claude --chrome --permission-mode auto --continue",
+    "resume_id_command": "claude --chrome --permission-mode auto --resume {session}",
     "hooks": true
   },
   {
@@ -422,7 +422,10 @@ The built-in profiles are:
 Claude Code is the default and starts with `--permission-mode auto` so parallel
 sessions can make progress without stopping at every ordinary permission
 prompt. Review whether that permission mode is appropriate for your environment
-before using it. You can change the command in `~/.dma/config.json`.
+before using it. It also starts with `--chrome`, so every session can use the
+browser through the Claude in Chrome extension; without the extension the
+browser tools are simply unavailable. You can change the command in
+`~/.dma/config.json`.
 
 pi needs no permission flag: it has no per-tool approval prompt, so a pi session
 never stops to ask before running a command. Its `-a` answers a different
@@ -723,8 +726,8 @@ An example configuration, shown as valid JSON:
   "agent_profiles": [
     {
       "name": "claude",
-      "command": "claude --permission-mode auto",
-      "resume_command": "claude --permission-mode auto --continue",
+      "command": "claude --chrome --permission-mode auto",
+      "resume_command": "claude --chrome --permission-mode auto --continue",
       "hooks": true
     },
     {
@@ -817,7 +820,7 @@ worktrees stayed. Press `C` to restart them all, or `c` for one. See
 **A restarted agent has forgotten what it was doing**
 
 Its profile has no `resume_command`, so the restart launched `command` instead.
-Add one; the built-in profiles use `claude --permission-mode auto --continue`,
+Add one; the built-in profiles use `claude --chrome --permission-mode auto --continue`,
 `codex resume --last` and `pi -a -c`. A profile whose `command` you edited is never given a
 generated resume line, since the two have to name the same program.
 

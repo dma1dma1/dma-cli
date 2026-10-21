@@ -412,7 +412,11 @@ const (
 // for. The mode is a starting point, not a lock: shift+tab still cycles it from
 // the panel or an attached terminal.
 //
-// The flag rides in Command because that string is typed into the pane as a
+// It also starts with --chrome, so every session can drive the browser through
+// the Claude in Chrome extension without being restarted to get it. Without the
+// extension installed the flag only leaves the browser tools unavailable.
+//
+// The flags ride in Command because that string is typed into the pane as a
 // shell line, so profiles carry their own arguments and dma needs no schema for
 // per-agent flags.
 //
@@ -438,9 +442,9 @@ func DefaultProfiles() []AgentProfile {
 	return []AgentProfile{
 		{
 			Name:            "claude",
-			Command:         "claude --permission-mode auto",
-			ResumeCommand:   "claude --permission-mode auto --continue",
-			ResumeIDCommand: "claude --permission-mode auto --resume {session}",
+			Command:         "claude --chrome --permission-mode auto",
+			ResumeCommand:   "claude --chrome --permission-mode auto --continue",
+			ResumeIDCommand: "claude --chrome --permission-mode auto --resume {session}",
 			Hooks:           true,
 		},
 		{
@@ -595,34 +599,51 @@ func (c *Config) adoptDefaultResumeCommands() {
 	}
 }
 
-// bareCommands are the commands built-in profiles used to ship with, before the
-// defaults grew flags. A profile still holding one of these has never been
-// edited, so it is safe to move it onto the current default.
-var bareCommands = map[string]string{
-	"claude": "claude",
-	"pi":     "pi -a",
+// priorDefaults are the built-in profiles as earlier dma versions shipped them.
+// A profile still matching one of these has never been edited, so it is safe to
+// move it onto the current default.
+var priorDefaults = []AgentProfile{
+	{Name: "claude", Command: "claude"},
+	{Name: "pi", Command: "pi -a"},
+	{
+		Name:            "claude",
+		Command:         "claude --permission-mode auto",
+		ResumeCommand:   "claude --permission-mode auto --continue",
+		ResumeIDCommand: "claude --permission-mode auto --resume {session}",
+	},
 }
 
 // adoptDefaultFlags brings profiles written by an older dma onto the current
 // default command.
 //
 // Backfilling only covers agents a config has never heard of, so without this a
-// config created before the flag existed would keep launching the bare command
+// config created before the flag existed would keep launching the old command
 // forever -- the change would apply to new installs and to nobody else.
 //
 // The upgrade is deliberately narrow: it fires only when the stored command is
-// byte-for-byte the old default, which means the user never touched it. Anything
+// byte-for-byte an old default, which means the user never touched it. Anything
 // else -- an added flag, a wrapper script, a different binary -- is a deliberate
-// choice and is left alone, the same rule the backfill above follows.
+// choice and is left alone, the same rule the backfill above follows. Each
+// resume line moves only if it too is still that old default's, so a resume
+// line the user wrote survives the command beneath it being upgraded.
 func (c *Config) adoptDefaultFlags() {
-	for _, p := range DefaultProfiles() {
-		bare, ok := bareCommands[p.Name]
-		if !ok || bare == p.Command {
-			continue
-		}
-		for i := range c.AgentProfiles {
-			if c.AgentProfiles[i].Name == p.Name && c.AgentProfiles[i].Command == bare {
-				c.AgentProfiles[i].Command = p.Command
+	for _, cur := range DefaultProfiles() {
+		for _, old := range priorDefaults {
+			if old.Name != cur.Name {
+				continue
+			}
+			for i := range c.AgentProfiles {
+				mine := &c.AgentProfiles[i]
+				if mine.Name != old.Name || mine.Command != old.Command {
+					continue
+				}
+				mine.Command = cur.Command
+				if mine.ResumeCommand == old.ResumeCommand {
+					mine.ResumeCommand = cur.ResumeCommand
+				}
+				if mine.ResumeIDCommand == old.ResumeIDCommand {
+					mine.ResumeIDCommand = cur.ResumeIDCommand
+				}
 			}
 		}
 	}
