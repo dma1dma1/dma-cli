@@ -158,7 +158,7 @@ func TestNormalizeUpgradesUntouchedClaudeCommand(t *testing.T) {
 	c.normalize()
 
 	got, _ := c.Profile("claude")
-	if got.Command != "claude --permission-mode auto" {
+	if got.Command != "claude --chrome --permission-mode auto" {
 		t.Errorf("claude command = %q, want the current default", got.Command)
 	}
 	if !got.Hooks {
@@ -197,7 +197,7 @@ func TestNormalizeLeavesCustomizedClaudeCommandAlone(t *testing.T) {
 	}
 }
 
-// Only profiles listed in bareCommands are eligible, so an agent whose default
+// Only profiles listed in priorDefaults are eligible, so an agent whose default
 // never changed is not rewritten by a later edit to some other profile.
 func TestNormalizeDoesNotRewriteOtherProfiles(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{{Name: "codex", Command: "codex"}}}
@@ -225,7 +225,7 @@ func TestLoadConfigUpgradesBareClaudeCommand(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	got, _ := cfg.Profile("claude")
-	if got.Command != "claude --permission-mode auto" {
+	if got.Command != "claude --chrome --permission-mode auto" {
 		t.Errorf("loaded claude command = %q, want auto mode", got.Command)
 	}
 }
@@ -238,14 +238,14 @@ func TestLoadConfigCreatesDefaultWithAutoMode(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	got, _ := cfg.Profile("claude")
-	if got.Command != "claude --permission-mode auto" {
+	if got.Command != "claude --chrome --permission-mode auto" {
 		t.Errorf("new config claude command = %q, want auto mode", got.Command)
 	}
 	on, err := os.ReadFile(ConfigPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(on), "claude --permission-mode auto") {
+	if !strings.Contains(string(on), "claude --chrome --permission-mode auto") {
 		t.Errorf("config on disk lacks the flag:\n%s", on)
 	}
 }
@@ -267,7 +267,7 @@ func TestDefaultProfilesKnowHowToResume(t *testing.T) {
 // same conversation.
 func TestDefaultResumeCommandsAreScopedToTheWorktree(t *testing.T) {
 	claude, _ := DefaultConfig().Profile("claude")
-	if claude.ResumeCommand != "claude --permission-mode auto --continue" {
+	if claude.ResumeCommand != "claude --chrome --permission-mode auto --continue" {
 		t.Errorf("claude resume = %q, want --continue, which is scoped to the current directory",
 			claude.ResumeCommand)
 	}
@@ -372,7 +372,7 @@ func TestNormalizeLeavesACustomizedCommandWithoutAForkLine(t *testing.T) {
 func TestRestartCommandFallsBackToAPlainLaunch(t *testing.T) {
 	p, _ := DefaultConfig().Profile("claude")
 	got := p.RestartCommand()
-	if want := "claude --permission-mode auto --continue || claude --permission-mode auto"; got != want {
+	if want := "claude --chrome --permission-mode auto --continue || claude --chrome --permission-mode auto"; got != want {
 		t.Errorf("restart command = %q, want %q", got, want)
 	}
 }
@@ -400,13 +400,13 @@ func TestRestartCommandDropsThePromptPlaceholder(t *testing.T) {
 // installs and nobody else.
 func TestNormalizeBackfillsResumeCommands(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{
-		{Name: "claude", Command: "claude --permission-mode auto", Hooks: true},
+		{Name: "claude", Command: "claude --chrome --permission-mode auto", Hooks: true},
 		{Name: "codex", Command: "codex", ImageArgument: "--image {path}"},
 	}}
 	c.normalize()
 
 	for _, want := range []struct{ name, resume string }{
-		{"claude", "claude --permission-mode auto --continue"},
+		{"claude", "claude --chrome --permission-mode auto --continue"},
 		{"codex", "codex resume --last"},
 	} {
 		got, _ := c.Profile(want.name)
@@ -437,7 +437,7 @@ func TestNormalizeLeavesCustomizedCommandsWithoutAResumeLine(t *testing.T) {
 func TestNormalizeKeepsAWrittenResumeCommand(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{{
 		Name:          "claude",
-		Command:       "claude --permission-mode auto",
+		Command:       "claude --chrome --permission-mode auto",
 		ResumeCommand: "claude --resume-my-way",
 	}}}
 	c.normalize()
@@ -456,10 +456,10 @@ func TestNormalizeUpgradesBareClaudeAndGivesItAResumeLine(t *testing.T) {
 	c.normalize()
 
 	got, _ := c.Profile("claude")
-	if got.Command != "claude --permission-mode auto" {
+	if got.Command != "claude --chrome --permission-mode auto" {
 		t.Fatalf("claude command = %q, want auto mode", got.Command)
 	}
-	if got.ResumeCommand != "claude --permission-mode auto --continue" {
+	if got.ResumeCommand != "claude --chrome --permission-mode auto --continue" {
 		t.Errorf("claude resume = %q, want the current default", got.ResumeCommand)
 	}
 }
@@ -483,9 +483,9 @@ func TestLaunchCommandPassesThePromptAsOneArgument(t *testing.T) {
 		},
 		{
 			name:    "kept clear of the profile's own flags",
-			profile: AgentProfile{Command: "claude --permission-mode auto"},
+			profile: AgentProfile{Command: "claude --chrome --permission-mode auto"},
 			prompt:  "ship it",
-			want:    "claude --permission-mode auto 'ship it'",
+			want:    "claude --chrome --permission-mode auto 'ship it'",
 		},
 		{
 			name:    "pi multiline bullet list follows the option separator",
@@ -507,9 +507,9 @@ func TestLaunchCommandPassesThePromptAsOneArgument(t *testing.T) {
 		},
 		{
 			name:    "no prompt leaves the command alone",
-			profile: AgentProfile{Command: "claude --permission-mode auto"},
+			profile: AgentProfile{Command: "claude --chrome --permission-mode auto"},
 			prompt:  "  ",
-			want:    "claude --permission-mode auto",
+			want:    "claude --chrome --permission-mode auto",
 		},
 		{
 			name:    "placeholder puts the prompt behind a flag",
@@ -656,7 +656,7 @@ func TestProjectRepoIgnoresUnregisteredRepos(t *testing.T) {
 func TestDefaultProfilesKnowHowToResumeByID(t *testing.T) {
 	c := DefaultConfig()
 	for _, want := range []struct{ name, line string }{
-		{"claude", "claude --permission-mode auto --resume 'abc-123'"},
+		{"claude", "claude --chrome --permission-mode auto --resume 'abc-123'"},
 		{"codex", "codex resume 'abc-123'"},
 	} {
 		p, ok := c.Profile(want.name)
@@ -705,7 +705,7 @@ func TestResumeIDLineIsEmptyWithoutBothHalves(t *testing.T) {
 func TestRestartCommandForPrefersTheConversationID(t *testing.T) {
 	p, _ := DefaultConfig().Profile("claude")
 	got := p.RestartCommandFor("abc-123")
-	want := "claude --permission-mode auto --resume 'abc-123' || claude --permission-mode auto"
+	want := "claude --chrome --permission-mode auto --resume 'abc-123' || claude --chrome --permission-mode auto"
 	if got != want {
 		t.Errorf("restart = %q, want %q", got, want)
 	}
@@ -724,13 +724,13 @@ func TestRestartCommandForWithoutAnIDIsUnchanged(t *testing.T) {
 // attaching would work on new installs and nowhere else.
 func TestNormalizeBackfillsResumeIDCommands(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{
-		{Name: "claude", Command: "claude --permission-mode auto", ResumeCommand: "claude --permission-mode auto --continue"},
+		{Name: "claude", Command: "claude --chrome --permission-mode auto", ResumeCommand: "claude --chrome --permission-mode auto --continue"},
 		{Name: "codex", Command: "codex", ImageArgument: "--image {path}"},
 	}}
 	c.normalize()
 
 	for _, want := range []struct{ name, line string }{
-		{"claude", "claude --permission-mode auto --resume {session}"},
+		{"claude", "claude --chrome --permission-mode auto --resume {session}"},
 		{"codex", "codex resume {session}"},
 	} {
 		got, _ := c.Profile(want.name)
@@ -756,7 +756,7 @@ func TestNormalizeLeavesCustomizedCommandsWithoutAResumeIDLine(t *testing.T) {
 func TestNormalizeKeepsAWrittenResumeIDCommand(t *testing.T) {
 	c := &Config{AgentProfiles: []AgentProfile{{
 		Name:            "claude",
-		Command:         "claude --permission-mode auto",
+		Command:         "claude --chrome --permission-mode auto",
 		ResumeIDCommand: "claude --resume-my-way {session}",
 	}}}
 	c.normalize()
@@ -773,5 +773,40 @@ func TestForkLineDoesNotTreatTheIDAsAPlaceholder(t *testing.T) {
 	got := p.ForkLine("{new}", "minted")
 	if got != "agent --fork '{new}' --id 'minted'" {
 		t.Errorf("fork line = %q", got)
+	}
+}
+
+// A config written while auto mode was the whole default carries the old command
+// and both resume lines; all three have to pick up --chrome together, or a
+// resumed session would come back without the browser tools a fresh one has.
+func TestNormalizeUpgradesUntouchedAutoModeClaudeProfile(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{
+		Name:            "claude",
+		Command:         "claude --permission-mode auto",
+		ResumeCommand:   "claude --permission-mode auto --continue",
+		ResumeIDCommand: "claude --permission-mode auto --resume {session}",
+		Hooks:           true,
+	}}}
+	c.normalize()
+
+	got, _ := c.Profile("claude")
+	want, _ := DefaultConfig().Profile("claude")
+	if got.Command != want.Command || got.ResumeCommand != want.ResumeCommand || got.ResumeIDCommand != want.ResumeIDCommand {
+		t.Errorf("claude profile = %+v, want the current default %+v", got, want)
+	}
+}
+
+// A resume line the user wrote survives the command beneath it being upgraded.
+func TestNormalizeKeepsCustomResumeWhenUpgradingCommand(t *testing.T) {
+	c := &Config{AgentProfiles: []AgentProfile{{
+		Name:          "claude",
+		Command:       "claude --permission-mode auto",
+		ResumeCommand: "my-resume-wrapper",
+	}}}
+	c.normalize()
+
+	got, _ := c.Profile("claude")
+	if got.ResumeCommand != "my-resume-wrapper" {
+		t.Errorf("claude resume = %q, want the user's line untouched", got.ResumeCommand)
 	}
 }
